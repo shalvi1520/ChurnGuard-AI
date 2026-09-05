@@ -1,0 +1,196 @@
+@import "tailwindcss";
+
+/* ============================================
+   ChurnGuard Design System – Global Styles
+   ============================================ */
+
+@theme {
+  /* Brand colors */
+  --color-bg-primary: #0D0F13;
+  --color-bg-secondary: #141720;
+  --color-bg-tertiary: #1A1E2C;
+  --color-bg-card: #1E2235;
+  --color-bg-elevated: #242840;
+  --color-border: #2A2F42;
+  --color-border-light: #363C52;
+  --color-text-primary: #F1F3F8;
+  --color-text-secondary: #9BA3B8;
+  --color-text-tertiary: #6B7490;
+  --color-accent: #86BC25;
+  --color-accent-dim: #6A9A1E;
+  --color-accent-bg: rgba(134, 188, 37, 0.08);
+  --color-risk-low: #4ADE80;
+  --color-risk-medium: #FBBF24;
+  --color-risk-high: #F97316;
+  --color-risk-critical: #EF4444;
+  --color-status-active: #4ADE80;
+  --color-status-dormant: #9BA3B8;
+  --color-status-churned: #EF4444;
+
+  /* Font */
+  --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+}
+
+/* ============================================
+   Base Styles
+   ============================================ */
+
+/* Must live in @layer base — Tailwind v4 puts all utilities in named layers,
+   and per the CSS Cascade Layers spec, unlayered rules beat ANY layered rule
+   regardless of specificity. An unlayered `* { margin: 0 }` here previously
+   silently overrode every Tailwind margin/padding utility app-wide (e.g. the
+   sidebar's `lg:ml-60` content offset), causing page content to render
+   underneath the fixed sidebar on every authenticated route. */
+@layer base {
+  * {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+  }
+
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    font-family: var(--font-sans);
+    background-color: var(--color-bg-primary);
+    color: var(--color-text-primary);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+  }
+}
+
+/* ============================================
+   Scrollbar
+   ============================================ */
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-border-light);
+}
+
+/* ============================================
+   Focus States
+   ============================================ */
+
+*:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* ============================================
+   Selection
+   ============================================ */
+
+::selection {
+  background: rgba(134, 188, 37, 0.3);
+  color: var(--color-text-primary);
+}
+
+/* ============================================
+   Custom Utilities
+   ============================================ */
+
+.glass {
+  background: rgba(30, 34, 53, 0.7);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(42, 47, 66, 0.5);
+}
+
+.glass-light {
+  background: rgba(255, 255, 255, 0.03);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.gradient-accent {
+  background: linear-gradient(135deg, #86BC25 0%, #6A9A1E 100%);
+}
+
+.gradient-dark {
+  background: linear-gradient(180deg, #141720 0%, #0D0F13 100%);
+}
+
+.text-gradient {
+  background: linear-gradient(135deg, #86BC25, #A8D94A);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* Risk tier backgrounds */
+.risk-low-bg { background-color: rgba(74, 222, 128, 0.1); }
+.risk-medium-bg { background-color: rgba(251, 191, 36, 0.1); }
+.risk-high-bg { background-color: rgba(249, 115, 22, 0.1); }
+.risk-critical-bg { background-color: rgba(239, 68, 68, 0.1); }
+
+/* ============================================
+   Animations
+   ============================================ */
+
+@keyframes pulse-subtle {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
+}
+
+@keyframes shimmer {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+
+.animate-pulse-subtle {
+  animation: pulse-subtle 2s ease-in-out infinite;
+}
+
+/* ============================================
+   Recharts Overrides
+   ============================================ */
+
+.recharts-cartesian-grid-horizontal line,
+.recharts-cartesian-grid-vertical line {
+  stroke: var(--color-border) !important;
+  stroke-opacity: 0.5;
+}
+
+.recharts-text {
+  fill: var(--color-text-tertiary) !important;
+  font-size: 11px !important;
+}
+
+.recharts-tooltip-wrapper {
+  outline: none;
+}
+
+/* ============================================
+   Typography helpers
+   ============================================ */
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+.tracking-tight {
+  letter-spacing: -0.025em;
+}
+
+.tracking-tighter {
+  letter-spacing: -0.04em;
+}
