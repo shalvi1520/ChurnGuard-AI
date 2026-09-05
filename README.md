@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # ChurnGuard - AI-Powered Customer Retention Intelligence
 
 ## 1. Project Overview
@@ -76,3 +77,32 @@ Create a `.env` file in the root of the project.
 - **Development Mode**: `npm run dev` starts the Vite dev server with Hot Module Replacement (HMR).
 - **Production Build**: `npm run build` compiles the application into static files in the `dist` directory.
 - **Mock Mode**: Ensure `VITE_USE_MOCK_API=true` is set. You can log in with any credentials or use the demo credentials (`demo@churnguard.ai` / `demo2026`).
+=======
+# ChurnGuard 
+
+AI-powered customer retention intelligence system — predicts which customers are likely to churn, explains *why* using SHAP, and surfaces both through a dashboard, instead of handing Customer Success teams a bare risk score with no context.
+
+## Problem
+
+SaaS and telecom companies lose customers who quietly disengage before cancelling. Most churn tools output a risk score without explaining what's driving it or what to do about it, so Customer Success teams react late, with generic offers, after the customer has already decided to leave. ChurnGuard closes that gap: **Predict → Explain → Serve**.
+
+## Tech Stack
+
+**ML**
+- LightGBM, CatBoost, PyTorch-TabNet — base models in a stacking ensemble
+- Logistic Regression — meta-learner
+- scikit-learn, Optuna (hyperparameter tuning), SHAP (explainability)
+
+**Backend**
+- FastAPI — `/predict`, `/explain`, `/model-performance` endpoints
+- PostgreSQL / SQLite — prediction history
+
+**Frontend**
+- Next.js — churn-risk customer list, per-customer explanation view, model performance dashboard
+
+**Deployment**
+- Docker Compose
+
+**Dataset**
+- [IBM Telco Customer Churn](https://www.kaggle.com/datasets/yeanzc/telco-customer-churn-ibm-dataset) (Kaggle) — used for prototyping
+>>>>>>> 684a4dbf8422698864f2c5573ae13887aad8073e
