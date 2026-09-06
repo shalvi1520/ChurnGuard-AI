@@ -11,9 +11,11 @@ from pydantic import BaseModel, Field
 
 from .. import predictor
 from .generic_routes import router as generic_router
+from .orchestration_routes import router as orchestration_router
 
 app = FastAPI(title="ChurnGuard Backend (stub)")
 app.include_router(generic_router)
+app.include_router(orchestration_router)
 
 
 class CustomerFeatures(BaseModel):

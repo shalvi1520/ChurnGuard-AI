@@ -12,3 +12,9 @@ fastapi
 uvicorn
 pydantic
 python-multipart
+langgraph
+langchain
+langchain-google-genai
+langchain-openai
+langchain-groq
+python-dotenv
