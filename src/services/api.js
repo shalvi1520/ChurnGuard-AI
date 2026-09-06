@@ -13,7 +13,10 @@ import { demoCredentials, mockUsers } from '../mock/users';
 import { mockPlaybooks } from '../mock/playbooks';
 import { delay } from '../utils/helpers';
 
-const USE_MOCK = import.meta.env.VITE_USE_MOCK_API === 'true';
+// This is a frontend prototype and ships with a complete local demo data layer.
+// Default to that layer when no .env file is present; a live backend must be
+// opted into explicitly with VITE_USE_MOCK_API=false.
+const USE_MOCK = import.meta.env.VITE_USE_MOCK_API !== 'false';
 const BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api';
 
 // AI Assistant: when enabled, the frontend calls a server-side proxy (server.js)
