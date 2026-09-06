@@ -1,6 +1,8 @@
 import { lazy, Suspense } from 'react';
 import { createBrowserRouter, Navigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import { useApp } from '../context/AppContext';
+import { requiresDatasetSetup } from './accessRules';
 import AuthLayout from '../layouts/AuthLayout';
 import AppLayout from '../layouts/AppLayout';
 
@@ -16,13 +18,9 @@ const AnalyticsPage = lazy(() => import('../pages/AnalyticsPage'));
 const ExplainabilityPage = lazy(() => import('../pages/ExplainabilityPage'));
 const RecommendationsPage = lazy(() => import('../pages/RecommendationsPage'));
 const OutreachPage = lazy(() => import('../pages/OutreachPage'));
-const SimulatorPage = lazy(() => import('../pages/SimulatorPage'));
 const DataManagementPage = lazy(() => import('../pages/DataManagementPage'));
-const AIAssistantPage = lazy(() => import('../pages/AIAssistantPage'));
 const SettingsPage = lazy(() => import('../pages/SettingsPage'));
 const ExecutiveOverviewPage = lazy(() => import('../pages/ExecutiveOverviewPage'));
-const PlaybooksPage = lazy(() => import('../pages/PlaybooksPage'));
-const CreateAutomationPage = lazy(() => import('../pages/CreateAutomationPage'));
 const OnboardingPage = lazy(() => import('../pages/OnboardingPage'));
 const NotFoundPage = lazy(() => import('../pages/NotFoundPage'));
 
@@ -37,10 +35,18 @@ function PageLoader() {
   );
 }
 
-function ProtectedRoute({ children }) {
+// Connecting a dataset is the first required step of the product: without one
+// there is nothing to show on the Overview or any analysis page. Which paths
+// are exempt lives in `accessRules.js` so the sidebar and this guard agree.
+function ProtectedRoute({ children, requiresDataset = true }) {
   const { isAuthenticated, isLoading } = useAuth();
+  const { datasetSetupComplete, datasetSetupHydrated } = useApp();
   if (isLoading) return <PageLoader />;
   if (!isAuthenticated) return <Navigate to="/login" replace />;
+  if (requiresDataset) {
+    if (!datasetSetupHydrated) return <PageLoader />;
+    if (!datasetSetupComplete) return <Navigate to="/data-management" replace />;
+  }
   return <AppLayout>{children}</AppLayout>;
 }
 
@@ -55,9 +61,11 @@ function BareProtectedRoute({ children }) {
 
 function AuthRoute({ children }) {
   const { isAuthenticated, isLoading } = useAuth();
+  const { datasetSetupComplete, datasetSetupHydrated } = useApp();
   if (isLoading) return <PageLoader />;
-  if (isAuthenticated) return <Navigate to="/dashboard" replace />;
-  return children;
+  if (!isAuthenticated) return children;
+  if (!datasetSetupHydrated) return <PageLoader />;
+  return <Navigate to={datasetSetupComplete ? '/dashboard' : '/data-management'} replace />;
 }
 
 export const router = createBrowserRouter([
@@ -91,17 +99,13 @@ export const router = createBrowserRouter([
     { path: '/explainability', Page: ExplainabilityPage },
     { path: '/recommendations', Page: RecommendationsPage },
     { path: '/outreach', Page: OutreachPage },
-    { path: '/simulator', Page: SimulatorPage },
     { path: '/data-management', Page: DataManagementPage },
-    { path: '/ai-assistant', Page: AIAssistantPage },
-    { path: '/playbooks', Page: PlaybooksPage },
-    { path: '/playbooks/new', Page: CreateAutomationPage },
     { path: '/settings', Page: SettingsPage },
     { path: '/executive', Page: ExecutiveOverviewPage },
   ].map(({ path, Page }) => ({
     path,
     element: (
-      <ProtectedRoute>
+      <ProtectedRoute requiresDataset={requiresDatasetSetup(path)}>
         <Suspense fallback={<PageLoader />}>
           <Page />
         </Suspense>

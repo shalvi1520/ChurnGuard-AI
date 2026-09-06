@@ -30,8 +30,10 @@ export default function OnboardingPage() {
 
   const update = (field, value) => setForm(prev => ({ ...prev, [field]: value }));
 
+  // Both paths lead to data setup — it's the required next step either way, and
+  // this wizard only collects optional context ahead of it.
   const finish = () => navigate('/data-management');
-  const skip = () => navigate('/dashboard');
+  const skip = () => navigate('/data-management');
 
   return (
     <div className="min-h-screen bg-bg-primary flex flex-col">
@@ -43,7 +45,7 @@ export default function OnboardingPage() {
           <span className="text-xs font-bold tracking-wider text-text-primary">CHURNGUARD</span>
         </div>
         <button onClick={skip} className="text-xs text-text-tertiary hover:text-text-primary transition-colors cursor-pointer">
-          Skip setup
+          Skip for now
         </button>
       </div>
 
@@ -150,10 +152,10 @@ export default function OnboardingPage() {
               <Card>
                 <CardHeader>
                   <CardTitle>Connect your data</CardTitle>
-                  <CardDescription>Upload a customer dataset now, or explore ChurnGuard with our demo dataset first — you can always connect real data later.</CardDescription>
+                  <CardDescription>One last step: ChurnGuard needs a customer dataset before it can show you any risk, explanations or recommendations.</CardDescription>
                 </CardHeader>
                 <div className="p-4 rounded-lg bg-bg-tertiary/30 border border-border text-sm text-text-secondary">
-                  You're all set. Head to Data Management to upload a CSV/Excel file or load the demo dataset to see ChurnGuard's full workflow in action.
+                  Next you'll upload a CSV export of your customers — or load the demo dataset in one click if you'd rather explore first. Your Overview unlocks as soon as that's done.
                 </div>
               </Card>
             )}
@@ -164,7 +166,7 @@ export default function OnboardingPage() {
             {step < steps.length - 1 ? (
               <Button iconRight={ArrowRight} onClick={() => setStep(s => s + 1)}>Continue</Button>
             ) : (
-              <Button icon={Database} onClick={finish}>Go to Data Management</Button>
+              <Button icon={Database} onClick={finish}>Continue to data setup</Button>
             )}
           </div>
         </div>

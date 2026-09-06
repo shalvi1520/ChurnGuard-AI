@@ -29,7 +29,10 @@ export default function LoginPage() {
   const onSubmit = async (data) => {
     try {
       await login(data.email, data.password);
-      navigate('/dashboard');
+      // Connecting a dataset is the first required step: the Overview and the
+      // analysis pages have nothing to show until it's done, and the route
+      // guard in routes/index.jsx would bounce us straight back here anyway.
+      navigate('/data-management');
     } catch (e) {
       // error handled in context
     }

@@ -36,7 +36,7 @@ export default function ExecutiveOverviewPage() {
 
   const kpis = [
     { label: 'Total Customers', value: formatNumber(metrics.kpis.totalCustomers.value), icon: Users, color: '#86BC25' },
-    { label: 'High Risk', value: formatNumber(metrics.kpis.highRiskCustomers.value), icon: AlertTriangle, color: '#EF4444' },
+    { label: 'Customers at Risk', value: formatNumber(metrics.kpis.customersAtRisk.value), icon: AlertTriangle, color: '#EF4444' },
     { label: 'Revenue at Risk', value: formatCurrency(metrics.kpis.revenueAtRisk.value), icon: DollarSign, color: '#F97316' },
     { label: 'Retention Rate', value: formatPercent(metrics.kpis.retentionRate.value), icon: TrendingUp, color: '#4ADE80' },
   ];

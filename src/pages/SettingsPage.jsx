@@ -6,9 +6,14 @@ import Button from '../components/ui/Button';
 import Input from '../components/ui/Input';
 import Select from '../components/ui/Select';
 import Tabs from '../components/ui/Tabs';
+import Badge from '../components/ui/Badge';
 import { useAuth } from '../context/AuthContext';
 import { useApp } from '../context/AppContext';
 import { useNavigate } from 'react-router-dom';
+
+// Matches the check in services/api.js exactly — the old indicator tested
+// `=== 'true'`, so with no .env file it wrongly reported demo data as OFF.
+const usingMockData = import.meta.env.VITE_USE_MOCK_API !== 'false';
 
 const tabs = [
   { id: 'profile', label: 'Profile', icon: User },
@@ -16,7 +21,7 @@ const tabs = [
   { id: 'notifications', label: 'Notifications', icon: Bell },
   { id: 'security', label: 'Security', icon: Shield },
   { id: 'appearance', label: 'Appearance', icon: Palette },
-  { id: 'api', label: 'API Config', icon: Key },
+  { id: 'api', label: 'Data source', icon: Key },
   { id: 'data', label: 'Data', icon: Database },
 ];
 
@@ -148,17 +153,31 @@ export default function SettingsPage() {
 
         {activeTab === 'api' && (
           <Card>
-            <CardHeader><CardTitle>API Configuration</CardTitle></CardHeader>
+            <CardHeader>
+              <CardTitle>Data source</CardTitle>
+              <p className="text-xs text-text-tertiary mt-1">
+                Where ChurnGuard reads customer data from. Set in your environment file, not here.
+              </p>
+            </CardHeader>
             <div className="max-w-lg space-y-4">
-              <Input label="API Base URL" value={import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api'} hint="FastAPI backend endpoint" />
-              <div className="flex items-center justify-between py-2">
+              <Input
+                label="Backend API base URL"
+                value={import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api'}
+                readOnly
+                hint="Only used when demo data is switched off (VITE_USE_MOCK_API=false)."
+              />
+              <div className="flex items-start justify-between gap-4 py-2">
                 <div>
-                  <p className="text-sm font-medium text-text-primary">Mock API Mode</p>
-                  <p className="text-xs text-text-tertiary">Use simulated data instead of real backend</p>
+                  <p className="text-sm font-medium text-text-primary">Demo data</p>
+                  <p className="text-xs text-text-tertiary mt-0.5 max-w-sm leading-relaxed">
+                    {usingMockData
+                      ? 'Customer records, risk scores and explanations come from the local demo dataset. No backend is required.'
+                      : 'ChurnGuard is calling the backend above for customer data.'}
+                  </p>
                 </div>
-                <span className="px-2 py-0.5 rounded text-[10px] font-medium bg-accent/10 text-accent border border-accent/20">
-                  {import.meta.env.VITE_USE_MOCK_API === 'true' ? 'ENABLED' : 'DISABLED'}
-                </span>
+                <Badge variant={usingMockData ? 'accent' : 'low'} size="sm">
+                  {usingMockData ? 'ON' : 'OFF'}
+                </Badge>
               </div>
             </div>
           </Card>

@@ -2,11 +2,12 @@ import { useState, useEffect } from 'react';
 import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
-  LayoutDashboard, Users, BarChart3, Brain, Lightbulb, Mail, SlidersHorizontal,
-  Database, MessageSquare, Settings, ChevronLeft, Shield, Presentation, LogOut,
-  Search, Bell, HelpCircle, Menu, X, Sparkles, Zap
+  LayoutDashboard, Users, BarChart3, Brain, Lightbulb, Mail,
+  Database, Settings, ChevronLeft, Shield, Presentation, LogOut,
+  Search, Bell, Menu, X, Lock, Check
 } from 'lucide-react';
 import { cn } from '../utils/helpers';
+import { requiresDatasetSetup } from '../routes/accessRules';
 import { useAuth } from '../context/AuthContext';
 import { useApp } from '../context/AppContext';
 import Avatar from '../components/ui/Avatar';
@@ -14,18 +15,32 @@ import NotificationPanel from '../features/notifications/NotificationPanel';
 import SearchCommand from '../components/SearchCommand';
 import ToastContainer from '../components/ui/Toast';
 import FloatingChatWidget from '../components/ui/FloatingChatWidget';
+import Badge from '../components/ui/Badge';
 
-const navItems = [
-  { to: '/dashboard', icon: LayoutDashboard, label: 'Overview' },
-  { to: '/customers', icon: Users, label: 'Customers' },
-  { to: '/analytics', icon: BarChart3, label: 'Risk Analytics' },
-  { to: '/explainability', icon: Brain, label: 'Explainability' },
-  { to: '/recommendations', icon: Lightbulb, label: 'Recommendations' },
-  { to: '/outreach', icon: Mail, label: 'Outreach' },
-  { to: '/simulator', icon: SlidersHorizontal, label: 'What-If Simulator' },
-  { to: '/data-management', icon: Database, label: 'Data Management' },
-  { to: '/playbooks', icon: Zap, label: 'Playbooks' },
-  { to: '/ai-assistant', icon: MessageSquare, label: 'AI Assistant' },
+// Grouped to follow the product's actual workflow: connect data, watch the
+// portfolio, then act on individual accounts. Data Setup is first because
+// nothing else works until a dataset is connected (see routes/accessRules.js).
+const navGroups = [
+  {
+    label: 'Data Setup',
+    items: [{ to: '/data-management', icon: Database, label: 'Data Management' }],
+  },
+  {
+    label: 'Monitor',
+    items: [
+      { to: '/dashboard', icon: LayoutDashboard, label: 'Overview' },
+      { to: '/customers', icon: Users, label: 'Customers' },
+      { to: '/analytics', icon: BarChart3, label: 'Risk Analytics' },
+    ],
+  },
+  {
+    label: 'Retention',
+    items: [
+      { to: '/explainability', icon: Brain, label: 'Explainability' },
+      { to: '/recommendations', icon: Lightbulb, label: 'Recommendations' },
+      { to: '/outreach', icon: Mail, label: 'Outreach' },
+    ],
+  },
 ];
 
 const bottomItems = [
@@ -33,9 +48,79 @@ const bottomItems = [
   { to: '/settings', icon: Settings, label: 'Settings' },
 ];
 
+// One renderer for both the desktop sidebar and the mobile drawer. Pages that
+// need a connected dataset render as disabled entries until setup completes,
+// so the sidebar never offers a link the route guard would bounce.
+// `status` marks the Data Setup entry: 'required' before a dataset is
+// connected, 'done' afterwards.
+function SidebarLink({ item, locked, collapsed = false, dense = false, status = null }) {
+  const base = cn(
+    'relative flex items-center gap-3 rounded-lg text-sm font-medium transition-all duration-200',
+    dense ? 'px-3 py-2.5' : 'px-3 py-2',
+    collapsed && 'justify-center px-2'
+  );
+
+  if (locked) {
+    return (
+      <span
+        className={cn(base, 'text-text-tertiary/45 cursor-not-allowed select-none')}
+        aria-disabled="true"
+        title={`${item.label} — unlocks once your dataset is connected`}
+      >
+        <item.icon size={18} className="shrink-0" />
+        {!collapsed && (
+          <>
+            <span className="flex-1">{item.label}</span>
+            <Lock size={13} className="shrink-0" />
+          </>
+        )}
+      </span>
+    );
+  }
+
+  return (
+    <NavLink
+      to={item.to}
+      className={({ isActive }) =>
+        cn(
+          base,
+          isActive ? 'bg-accent/10 text-accent' : 'text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary'
+        )
+      }
+      title={collapsed ? item.label : undefined}
+    >
+      <item.icon size={18} className="shrink-0" />
+      {collapsed ? (
+        status === 'required' && (
+          <span className="absolute top-1.5 right-1.5 w-1.5 h-1.5 rounded-full bg-risk-medium" aria-hidden="true" />
+        )
+      ) : (
+        <>
+          <span className="flex-1">{item.label}</span>
+          {status === 'required' && <Badge variant="medium" size="xs">Required</Badge>}
+          {status === 'done' && (
+            <Check size={14} className="text-accent shrink-0" aria-hidden="true" />
+          )}
+        </>
+      )}
+      {status && <span className="sr-only">{status === 'required' ? '— setup required' : '— setup complete'}</span>}
+    </NavLink>
+  );
+}
+
+/** Small uppercase section label above each nav group. */
+function NavGroupLabel({ children, collapsed }) {
+  if (collapsed) return <div className="h-px bg-border mx-2 my-2" role="presentation" />;
+  return (
+    <p className="px-3 pt-3 pb-1.5 text-[10px] font-semibold uppercase tracking-wider text-text-tertiary/70">
+      {children}
+    </p>
+  );
+}
+
 export default function AppLayout({ children }) {
   const { user, logout } = useAuth();
-  const { sidebarCollapsed, presentationMode, demoMode, unreadCount, dispatch, searchOpen } = useApp();
+  const { sidebarCollapsed, presentationMode, demoMode, unreadCount, dispatch, searchOpen, datasetSetupComplete } = useApp();
   const [notifOpen, setNotifOpen] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const location = useLocation();
@@ -55,6 +140,8 @@ export default function AppLayout({ children }) {
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [dispatch]);
+
+  const isLocked = (path) => !datasetSetupComplete && requiresDatasetSetup(path);
 
   const handleLogout = async () => {
     await logout();
@@ -85,6 +172,7 @@ export default function AppLayout({ children }) {
         </div>
         <main className="p-6">{children}</main>
         <ToastContainer />
+        <FloatingChatWidget />
       </div>
     );
   }
@@ -113,48 +201,27 @@ export default function AppLayout({ children }) {
         </div>
 
         {/* Navigation */}
-        <nav className="flex-1 py-3 px-2 space-y-0.5 overflow-y-auto">
-          {navItems.map((item) => (
-            <NavLink
-              key={item.to}
-              to={item.to}
-              className={({ isActive }) =>
-                cn(
-                  'flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-all duration-200',
-                  sidebarCollapsed && 'justify-center px-2',
-                  isActive
-                    ? 'bg-accent/10 text-accent'
-                    : 'text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary'
-                )
-              }
-              title={sidebarCollapsed ? item.label : undefined}
-            >
-              <item.icon size={18} className="shrink-0" />
-              {!sidebarCollapsed && <span>{item.label}</span>}
-            </NavLink>
+        <nav className="flex-1 py-1 px-2 overflow-y-auto" aria-label="Main">
+          {navGroups.map((group) => (
+            <div key={group.label} className="space-y-0.5">
+              <NavGroupLabel collapsed={sidebarCollapsed}>{group.label}</NavGroupLabel>
+              {group.items.map((item) => (
+                <SidebarLink
+                  key={item.to}
+                  item={item}
+                  locked={isLocked(item.to)}
+                  collapsed={sidebarCollapsed}
+                  status={item.to === '/data-management' ? (datasetSetupComplete ? 'done' : 'required') : null}
+                />
+              ))}
+            </div>
           ))}
         </nav>
 
         {/* Bottom items */}
         <div className="py-3 px-2 space-y-0.5 border-t border-border">
           {bottomItems.map((item) => (
-            <NavLink
-              key={item.to}
-              to={item.to}
-              className={({ isActive }) =>
-                cn(
-                  'flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-all duration-200',
-                  sidebarCollapsed && 'justify-center px-2',
-                  isActive
-                    ? 'bg-accent/10 text-accent'
-                    : 'text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary'
-                )
-              }
-              title={sidebarCollapsed ? item.label : undefined}
-            >
-              <item.icon size={18} className="shrink-0" />
-              {!sidebarCollapsed && <span>{item.label}</span>}
-            </NavLink>
+            <SidebarLink key={item.to} item={item} locked={isLocked(item.to)} collapsed={sidebarCollapsed} />
           ))}
 
           <button
@@ -218,18 +285,25 @@ export default function AppLayout({ children }) {
                 </div>
                 <button onClick={() => setMobileMenuOpen(false)} className="p-1 text-text-tertiary cursor-pointer"><X size={18} /></button>
               </div>
-              <nav className="flex-1 py-3 px-2 space-y-0.5 overflow-y-auto">
-                {navItems.map((item) => (
-                  <NavLink key={item.to} to={item.to} className={({ isActive }) => cn('flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium', isActive ? 'bg-accent/10 text-accent' : 'text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary')}>
-                    <item.icon size={18} /> <span>{item.label}</span>
-                  </NavLink>
+              <nav className="flex-1 py-1 px-2 overflow-y-auto" aria-label="Main">
+                {navGroups.map((group) => (
+                  <div key={group.label} className="space-y-0.5">
+                    <NavGroupLabel collapsed={false}>{group.label}</NavGroupLabel>
+                    {group.items.map((item) => (
+                      <SidebarLink
+                        key={item.to}
+                        item={item}
+                        locked={isLocked(item.to)}
+                        dense
+                        status={item.to === '/data-management' ? (datasetSetupComplete ? 'done' : 'required') : null}
+                      />
+                    ))}
+                  </div>
                 ))}
               </nav>
               <div className="py-3 px-2 space-y-0.5 border-t border-border">
                 {bottomItems.map((item) => (
-                  <NavLink key={item.to} to={item.to} className={({ isActive }) => cn('flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium', isActive ? 'bg-accent/10 text-accent' : 'text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary')}>
-                    <item.icon size={18} /> <span>{item.label}</span>
-                  </NavLink>
+                  <SidebarLink key={item.to} item={item} locked={isLocked(item.to)} dense />
                 ))}
                 <button onClick={handleLogout} className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-text-tertiary hover:text-risk-critical w-full cursor-pointer">
                   <LogOut size={18} /> <span>Log Out</span>
@@ -241,7 +315,12 @@ export default function AppLayout({ children }) {
       </AnimatePresence>
 
       {/* Main content area */}
-      <div className={cn('flex-1 flex flex-col transition-all duration-300', sidebarCollapsed ? 'lg:ml-16' : 'lg:ml-60')}>
+      {/* `min-w-0` is what makes `main`'s overflow-x-hidden (and every
+          `overflow-x-auto` table wrapper inside it) actually work: without it
+          this flex item's automatic minimum size is its content's min-content
+          width, so one wide table stretched the whole page sideways instead of
+          scrolling inside its own card. */}
+      <div className={cn('flex-1 min-w-0 flex flex-col transition-all duration-300', sidebarCollapsed ? 'lg:ml-16' : 'lg:ml-60')}>
         {/* Top navbar */}
         <header className="sticky top-0 z-20 h-14 border-b border-border bg-bg-secondary/80 backdrop-blur-sm max-lg:hidden">
           <div className="flex items-center justify-between h-full px-6">
@@ -266,16 +345,6 @@ export default function AppLayout({ children }) {
                 title="Presentation Mode"
               >
                 <Presentation size={16} />
-              </button>
-              <button
-                onClick={() => navigate('/ai-assistant')}
-                className="p-2 rounded-lg text-text-tertiary hover:text-accent hover:bg-accent/5 transition-colors cursor-pointer"
-                title="AI Assistant"
-              >
-                <Sparkles size={16} />
-              </button>
-              <button className="p-2 rounded-lg text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary transition-colors cursor-pointer" title="Help">
-                <HelpCircle size={16} />
               </button>
               <div className="relative">
                 <button
@@ -331,8 +400,8 @@ export default function AppLayout({ children }) {
       {/* Toast notifications */}
       <ToastContainer />
 
-      {/* Floating Chat */}
-      {!presentationMode && <FloatingChatWidget />}
+      {/* AI assistant — a global floating widget, deliberately not a nav item */}
+      <FloatingChatWidget />
     </div>
   );
 }

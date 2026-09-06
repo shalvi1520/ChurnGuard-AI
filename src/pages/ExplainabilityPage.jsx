@@ -1,17 +1,20 @@
 import { useState, useEffect } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
-import { motion } from 'framer-motion';
-import { Brain, ArrowRight, Info, Sparkles } from 'lucide-react';
-import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Cell, CartesianGrid, Tooltip } from 'recharts';
-import Card, { CardHeader, CardTitle, CardDescription } from '../components/ui/Card';
+import { AlertTriangle, ArrowRight, Sparkles, ChevronDown } from 'lucide-react';
+import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Cell, CartesianGrid, Tooltip, ReferenceLine } from 'recharts';
+import Card, { CardHeader, CardTitle } from '../components/ui/Card';
+import ChartCard from '../components/ui/ChartCard';
 import Button from '../components/ui/Button';
 import Select from '../components/ui/Select';
-import Badge from '../components/ui/Badge';
+import Badge, { RiskBadge } from '../components/ui/Badge';
+import { InfoTip } from '../components/ui/Tooltip';
+import EmptyState from '../components/ui/EmptyState';
 import { SkeletonChart } from '../components/ui/Skeleton';
 import ModelArchitecture from '../components/ModelArchitecture';
 import { explainabilityService } from '../services/api';
 import { mockCustomers } from '../mock/customers';
-import { formatPercent } from '../utils/helpers';
+import { getRiskTier } from '../utils/helpers';
+import { metric } from '../utils/glossary';
 
 export default function ExplainabilityPage() {
   const [searchParams] = useSearchParams();
@@ -19,21 +22,25 @@ export default function ExplainabilityPage() {
   const [selectedCustomer, setSelectedCustomer] = useState(searchParams.get('customer') || 'CUST-1001');
   const [explanation, setExplanation] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
+  const [openFeature, setOpenFeature] = useState(null);
 
   useEffect(() => {
-    loadExplanation();
-  }, [selectedCustomer]);
-
-  const loadExplanation = async () => {
-    setLoading(true);
-    try {
-      const data = await explainabilityService.getSHAPExplanation(selectedCustomer);
-      setExplanation(data);
-    } catch (e) {
-      console.error(e);
+    let cancelled = false;
+    async function load() {
+      try {
+        const data = await explainabilityService.getSHAPExplanation(selectedCustomer);
+        if (cancelled) return;
+        setExplanation(data);
+        setError(false);
+      } catch {
+        if (!cancelled) setError(true);
+      }
+      if (!cancelled) setLoading(false);
     }
-    setLoading(false);
-  };
+    load();
+    return () => { cancelled = true; };
+  }, [selectedCustomer]);
 
   const chartData = explanation?.features?.map(f => ({
     feature: f.feature,
@@ -43,61 +50,96 @@ export default function ExplainabilityPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
-        <div>
-          <h1 className="text-xl font-bold text-text-primary tracking-tight">Explainability & SHAP Analysis</h1>
-          <p className="text-sm text-text-tertiary mt-0.5">Understand why customers are at risk using SHAP-based feature contributions.</p>
-        </div>
+      <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-4">
+        <header className="max-w-2xl">
+          <h1 className="text-xl font-bold text-text-primary tracking-tight">Why this account is at risk</h1>
+          <p className="text-sm text-text-secondary mt-1 leading-relaxed">
+            Every customer's risk score is built from a handful of signals. This page shows which ones pushed this
+            account's score up, which held it down, and by how much.
+          </p>
+        </header>
         <Select
+          label="Account"
           value={selectedCustomer}
           onChange={(e) => setSelectedCustomer(e.target.value)}
           options={mockCustomers.map(c => ({ value: c.id, label: `${c.name} (${c.id})` }))}
           placeholder=""
+          className="md:w-72"
         />
       </div>
 
       {loading ? (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6"><SkeletonChart /><SkeletonChart /></div>
+      ) : error ? (
+        <EmptyState
+          icon={AlertTriangle}
+          title="We couldn't load this explanation"
+          description="The factor breakdown for this account didn't come back. Try another account, or reload the page."
+        />
       ) : explanation ? (
         <>
-          {/* Risk Summary */}
+          {/* Risk summary */}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <Card>
-              <span className="text-xs text-text-tertiary uppercase tracking-wider font-medium">Customer</span>
+              <span className="text-xs text-text-tertiary uppercase tracking-wider font-medium">Account</span>
               <p className="text-lg font-bold text-text-primary mt-1">{explanation.customerName}</p>
               <p className="text-xs text-text-tertiary">{selectedCustomer}</p>
             </Card>
             <Card>
-              <span className="text-xs text-text-tertiary uppercase tracking-wider font-medium">Churn Probability</span>
-              <p className="text-3xl font-bold mt-1 tabular-nums" style={{ color: explanation.churnProbability > 70 ? '#EF4444' : explanation.churnProbability > 50 ? '#F97316' : explanation.churnProbability > 30 ? '#FBBF24' : '#4ADE80' }}>
-                {explanation.churnProbability}%
+              <span className="text-xs text-text-tertiary uppercase tracking-wider font-medium inline-flex items-center gap-1">
+                Churn risk
+                <InfoTip content={metric('churnProbability').help} label="What churn risk means" size={11} />
+              </span>
+              <div className="flex items-baseline gap-2 mt-1">
+                <p className="text-3xl font-bold tabular-nums" style={{ color: explanation.churnProbability > 70 ? '#EF4444' : explanation.churnProbability > 50 ? '#F97316' : explanation.churnProbability > 30 ? '#FBBF24' : '#4ADE80' }}>
+                  {explanation.churnProbability}%
+                </p>
+                <RiskBadge tier={getRiskTier(explanation.churnProbability)} size="xs" />
+              </div>
+              <p className="text-[11px] text-text-tertiary mt-1">
+                Against a {explanation.baselineRisk}% average across the customer base.
               </p>
             </Card>
             <Card>
-              <span className="text-xs text-text-tertiary uppercase tracking-wider font-medium">Model Confidence</span>
+              <span className="text-xs text-text-tertiary uppercase tracking-wider font-medium inline-flex items-center gap-1">
+                {metric('modelConfidence').label}
+                <InfoTip content={metric('modelConfidence').help} label="What model confidence means" size={11} />
+              </span>
               <p className="text-3xl font-bold text-accent mt-1 tabular-nums">{(explanation.confidenceScore * 100).toFixed(0)}%</p>
+              <p className="text-[11px] text-text-tertiary mt-1">{metric('modelConfidence').description}</p>
             </Card>
           </div>
 
-          {/* SHAP Chart */}
-          <Card>
-            <CardHeader>
-              <div>
-                <CardTitle>Feature Contributions (SHAP Values)</CardTitle>
-                <CardDescription>How each feature contributes to the churn prediction. Orange increases risk; green decreases risk.</CardDescription>
-              </div>
-            </CardHeader>
+          {/* Factor contributions */}
+          <ChartCard metricKey="shapContribution" isEmpty={chartData.length === 0}>
+            <div className="flex flex-wrap items-center gap-4 mb-3 text-[11px] text-text-tertiary">
+              <span className="flex items-center gap-1.5">
+                <span className="w-2.5 h-2.5 rounded-sm bg-risk-high" /> Pushes risk up
+              </span>
+              <span className="flex items-center gap-1.5">
+                <span className="w-2.5 h-2.5 rounded-sm bg-risk-low" /> Pulls risk down
+              </span>
+              <span>Longer bar = bigger effect on the score.</span>
+            </div>
             <div className="h-80">
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={chartData} layout="vertical" margin={{ left: 20 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#2A2F42" horizontal={false} />
                   <XAxis type="number" tick={{ fontSize: 11, fill: '#6B7490' }} axisLine={false} tickLine={false} domain={[-0.15, 0.4]} />
+                  <ReferenceLine x={0} stroke="#6B7490" strokeWidth={1} />
                   <YAxis type="category" dataKey="feature" tick={{ fontSize: 12, fill: '#9BA3B8' }} width={160} axisLine={false} tickLine={false} />
                   <Tooltip content={({ active, payload }) => active && payload?.[0] ? (
-                    <div className="bg-bg-secondary border border-border rounded-lg p-3 shadow-xl text-xs">
+                    <div className="bg-bg-secondary border border-border rounded-lg p-3 shadow-xl text-xs max-w-[240px]">
                       <p className="text-text-primary font-medium">{payload[0].payload.feature}</p>
-                      <p className="text-text-secondary mt-1">Contribution: <span className="font-semibold" style={{ color: payload[0].payload.fill }}>{payload[0].value > 0 ? '+' : ''}{payload[0].value.toFixed(2)}</span></p>
-                      <p className="text-text-tertiary mt-0.5">{payload[0].value > 0 ? 'Increases' : 'Decreases'} churn risk</p>
+                      <p className="text-text-secondary mt-1">
+                        Effect on risk:{' '}
+                        <span className="font-semibold" style={{ color: payload[0].payload.fill }}>
+                          {payload[0].value > 0 ? '+' : ''}{payload[0].value.toFixed(2)}
+                        </span>
+                      </p>
+                      <p className="text-text-tertiary mt-0.5">
+                        {payload[0].value > 0 ? 'Pushes this account toward churning' : 'Holds this account back from churning'}
+                      </p>
                     </div>
                   ) : null} />
                   <Bar dataKey="contribution" radius={[0, 4, 4, 0]} barSize={20}>
@@ -109,31 +151,46 @@ export default function ExplainabilityPage() {
               </ResponsiveContainer>
             </div>
 
-            {/* Feature detail table */}
-            <div className="mt-4 border-t border-border pt-4">
-              <div className="grid gap-2">
-                {explanation.features.map((f, i) => (
-                  <div key={i} className="flex items-center justify-between py-2 px-3 rounded-lg hover:bg-bg-tertiary/30 transition-colors">
-                    <div className="flex items-center gap-3">
-                      <div className="w-2 h-2 rounded-full" style={{ backgroundColor: f.direction === 'increases' ? '#F97316' : '#4ADE80' }} />
-                      <div>
-                        <span className="text-sm font-medium text-text-primary">{f.feature}</span>
-                        <span className="text-xs text-text-tertiary ml-2">{f.value}</span>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-3">
-                      <Badge variant={f.direction === 'increases' ? 'high' : 'low'} size="xs">
-                        {f.direction === 'increases' ? '↑ Increases Risk' : '↓ Decreases Risk'}
-                      </Badge>
-                      <span className="text-sm font-semibold tabular-nums" style={{ color: f.direction === 'increases' ? '#F97316' : '#4ADE80' }}>
-                        {f.contribution > 0 ? '+' : ''}{f.contribution.toFixed(2)}
-                      </span>
-                    </div>
-                  </div>
-                ))}
-              </div>
+            {/* Factor list - open one to see what was actually measured */}
+            <div className="mt-5 border-t border-border pt-4">
+              <p className="text-xs text-text-tertiary mb-2">Select a factor to see what was measured.</p>
+              <ul className="grid gap-1.5">
+                {explanation.features.map((f, i) => {
+                  const isOpen = openFeature === i;
+                  return (
+                    <li key={f.feature} className="rounded-lg border border-border/60 bg-bg-tertiary/20">
+                      <button
+                        type="button"
+                        onClick={() => setOpenFeature(isOpen ? null : i)}
+                        aria-expanded={isOpen}
+                        className="w-full flex items-center justify-between gap-3 py-2.5 px-3 text-left cursor-pointer hover:bg-bg-tertiary/40 rounded-lg transition-colors"
+                      >
+                        <span className="flex items-center gap-3 min-w-0">
+                          <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: f.direction === 'increases' ? '#F97316' : '#4ADE80' }} />
+                          <span className="min-w-0">
+                            <span className="text-sm font-medium text-text-primary">{f.feature}</span>
+                            <span className="text-xs text-text-tertiary ml-2">{f.value}</span>
+                          </span>
+                        </span>
+                        <span className="flex items-center gap-3 shrink-0">
+                          <Badge variant={f.direction === 'increases' ? 'high' : 'low'} size="xs">
+                            {f.direction === 'increases' ? 'Raises risk' : 'Lowers risk'}
+                          </Badge>
+                          <span className="text-sm font-semibold tabular-nums" style={{ color: f.direction === 'increases' ? '#F97316' : '#4ADE80' }}>
+                            {f.contribution > 0 ? '+' : ''}{f.contribution.toFixed(2)}
+                          </span>
+                          <ChevronDown size={14} className={`text-text-tertiary transition-transform ${isOpen ? 'rotate-180' : ''}`} aria-hidden="true" />
+                        </span>
+                      </button>
+                      {isOpen && f.description && (
+                        <p className="px-3 pb-3 text-xs text-text-secondary leading-relaxed">{f.description}</p>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
             </div>
-          </Card>
+          </ChartCard>
 
           {/* AI Explanation */}
           <Card>
@@ -143,26 +200,34 @@ export default function ExplainabilityPage() {
                   <Sparkles size={16} className="text-accent" />
                 </div>
                 <div>
-                  <CardTitle>AI-Generated Explanation</CardTitle>
-                  <CardDescription>Natural language interpretation of the SHAP analysis</CardDescription>
+                  <CardTitle>The same analysis, in plain English</CardTitle>
+                  <p className="text-xs text-text-tertiary mt-0.5">
+                    A written summary of the factors above — a demo write-up in this prototype, not live model output.
+                  </p>
                 </div>
               </div>
             </CardHeader>
             <div className="p-4 rounded-lg bg-bg-tertiary/30 border border-border">
               <p className="text-sm text-text-secondary leading-relaxed">{explanation.aiExplanation}</p>
             </div>
-            <div className="flex items-center gap-3 mt-4">
-              <Button size="sm" icon={Sparkles} onClick={() => navigate(`/recommendations?customer=${selectedCustomer}`)}>Get Recommendations</Button>
-              <Button variant="outline" size="sm" onClick={() => navigate(`/simulator?customer=${selectedCustomer}`)}>What-If Analysis</Button>
+            <div className="flex flex-wrap items-center gap-3 mt-4">
+              <Button size="sm" icon={Sparkles} iconRight={ArrowRight} onClick={() => navigate(`/recommendations?customer=${selectedCustomer}`)}>
+                What to do about it
+              </Button>
+              <Button variant="ghost" size="sm" onClick={() => navigate(`/customers/${selectedCustomer}`)}>
+                Back to the account
+              </Button>
             </div>
           </Card>
 
           <ModelArchitecture />
         </>
       ) : (
-        <Card className="py-12 text-center">
-          <p className="text-text-tertiary">Select a customer to view their SHAP explanation.</p>
-        </Card>
+        <EmptyState
+          icon={AlertTriangle}
+          title="No explanation available for this account"
+          description="Pick a different account from the selector above to see its risk breakdown."
+        />
       )}
     </div>
   );

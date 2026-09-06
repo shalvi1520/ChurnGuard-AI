@@ -10,8 +10,8 @@ export default defineConfig({
   server: {
     proxy: {
       // Forwards to server.js (the Grok/xAI proxy) when running `npm run server`.
-      // Only used when VITE_USE_LIVE_ASSISTANT=true; otherwise the AI Assistant
-      // uses local demo responses and never calls this route.
+      // Only used when VITE_USE_LIVE_ASSISTANT=true; otherwise the floating AI
+      // widget uses local demo responses and never calls this route.
       '/api/assistant': {
         target: 'http://localhost:8787',
         changeOrigin: true,

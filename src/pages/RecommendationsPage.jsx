@@ -1,15 +1,17 @@
 import { useState, useEffect } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { Lightbulb, Check, X, Edit, ArrowRight, AlertTriangle, Sparkles, Mail } from 'lucide-react';
-import Card, { CardHeader, CardTitle, CardDescription } from '../components/ui/Card';
+import { Lightbulb, Check, X, AlertTriangle, Sparkles, Mail, Brain } from 'lucide-react';
+import Card from '../components/ui/Card';
 import Button from '../components/ui/Button';
-import Badge from '../components/ui/Badge';
+import Badge, { RiskBadge } from '../components/ui/Badge';
 import Select from '../components/ui/Select';
 import EmptyState from '../components/ui/EmptyState';
+import { InfoTip } from '../components/ui/Tooltip';
 import { recommendationService } from '../services/api';
 import { mockCustomers } from '../mock/customers';
 import { useApp } from '../context/AppContext';
+import { metric } from '../utils/glossary';
 
 const priorityConfig = {
   critical: { color: 'critical', label: 'Critical' },
@@ -31,45 +33,99 @@ export default function RecommendationsPage() {
   const [selectedCustomer, setSelectedCustomer] = useState(searchParams.get('customer') || 'CUST-1001');
   const [recommendations, setRecommendations] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
 
-  useEffect(() => { load(); }, [selectedCustomer]);
+  const customer = mockCustomers.find((c) => c.id === selectedCustomer);
 
-  const load = async () => {
-    setLoading(true);
-    try {
-      const data = await recommendationService.getRecommendations(selectedCustomer);
-      setRecommendations(data);
-    } catch (e) { console.error(e); }
-    setLoading(false);
-  };
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      try {
+        const data = await recommendationService.getRecommendations(selectedCustomer);
+        if (cancelled) return;
+        setRecommendations(data);
+        setError(false);
+      } catch {
+        if (!cancelled) setError(true);
+      }
+      if (!cancelled) setLoading(false);
+    }
+    load();
+    return () => { cancelled = true; };
+  }, [selectedCustomer]);
 
   const handleAction = async (recId, action) => {
     try {
       await recommendationService.updateStatus(recId, action);
       setRecommendations(prev => prev.map(r => r.id === recId ? { ...r, status: action } : r));
-      addToast({ type: 'success', message: `Recommendation ${action}` });
+      addToast({
+        type: 'success',
+        message: action === 'approved' ? 'Added to your actions' : 'Recommendation dismissed',
+      });
     } catch (e) { console.error(e); }
   };
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
-        <div>
-          <h1 className="text-xl font-bold text-text-primary tracking-tight">AI Retention Recommendations</h1>
-          <p className="text-sm text-text-tertiary mt-0.5">AI-generated actions to reduce churn risk and improve customer retention.</p>
-        </div>
+      <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-4">
+        <header className="max-w-2xl">
+          <h1 className="text-xl font-bold text-text-primary tracking-tight">Recommended actions</h1>
+          <p className="text-sm text-text-secondary mt-1 leading-relaxed">
+            Suggested next steps for this account, each tied to the risk factors driving its score. Approve the ones
+            you'll act on — nothing here reaches the customer by itself.
+          </p>
+        </header>
         <Select
+          label="Account"
           value={selectedCustomer}
           onChange={(e) => setSelectedCustomer(e.target.value)}
           options={mockCustomers.map(c => ({ value: c.id, label: `${c.name} (${c.id})` }))}
           placeholder=""
+          className="md:w-72"
         />
       </div>
 
+      {/* The risk these actions are responding to */}
+      {customer && (
+        <Card className="flex flex-col sm:flex-row sm:items-center gap-4 justify-between">
+          <div className="flex items-center gap-4 flex-wrap">
+            <div>
+              <p className="text-[10px] uppercase tracking-wider text-text-tertiary">Account</p>
+              <p className="text-sm font-semibold text-text-primary mt-0.5">{customer.name}</p>
+            </div>
+            <div>
+              <p className="text-[10px] uppercase tracking-wider text-text-tertiary inline-flex items-center gap-1">
+                Churn risk
+                <InfoTip content={metric('churnProbability').help} label="What churn risk means" size={11} />
+              </p>
+              <div className="flex items-center gap-2 mt-0.5">
+                <span className="text-sm font-semibold text-text-primary tabular-nums">{customer.churnProbability}%</span>
+                <RiskBadge tier={customer.riskTier} size="xs" />
+              </div>
+            </div>
+          </div>
+          <Button variant="ghost" size="sm" icon={Brain} onClick={() => navigate(`/explainability?customer=${selectedCustomer}`)}>
+            Why is it at risk?
+          </Button>
+        </Card>
+      )}
+
       {loading ? (
         <div className="space-y-4">{Array.from({ length: 3 }).map((_, i) => <div key={i} className="h-40 rounded-xl bg-bg-card border border-border animate-pulse" />)}</div>
+      ) : error ? (
+        <EmptyState
+          icon={AlertTriangle}
+          title="We couldn't load recommendations"
+          description="The suggestions for this account didn't come back. Try selecting the account again."
+        />
       ) : recommendations.length === 0 ? (
-        <EmptyState icon={Lightbulb} title="No recommendations yet" description="Generate AI recommendations by analyzing a customer's risk profile." actionLabel="Analyze Customer" action={() => navigate(`/explainability?customer=${selectedCustomer}`)} />
+        <EmptyState
+          icon={Lightbulb}
+          title="No actions suggested for this account"
+          description="Nothing about this account's current signals calls for intervention. Its risk breakdown is still worth a look."
+          actionLabel="See the risk breakdown"
+          action={() => navigate(`/explainability?customer=${selectedCustomer}`)}
+        />
       ) : (
         <div className="space-y-4">
           {recommendations.map((rec, i) => (
@@ -86,37 +142,39 @@ export default function RecommendationsPage() {
                         <Badge variant={priorityConfig[rec.priority]?.color} size="xs">{priorityConfig[rec.priority]?.label} Priority</Badge>
                         <span className={`text-xs font-medium ${impactConfig[rec.expectedImpact]?.color}`}>{impactConfig[rec.expectedImpact]?.label}</span>
                       </div>
-                      <p className="text-sm text-text-secondary mb-2">{rec.description}</p>
+                      <p className="text-sm text-text-secondary mb-3">{rec.description}</p>
                       <div className="p-3 rounded-lg bg-bg-tertiary/30 border border-border mb-3">
-                        <p className="text-xs text-text-tertiary mb-1 font-medium">Why this matters:</p>
-                        <p className="text-xs text-text-secondary">{rec.reason}</p>
+                        <p className="text-xs text-text-tertiary mb-1 font-medium">Why it's being suggested</p>
+                        <p className="text-xs text-text-secondary leading-relaxed">{rec.reason}</p>
                       </div>
                       <div className="p-3 rounded-lg bg-accent/5 border border-accent/10">
-                        <p className="text-xs text-accent mb-1 font-medium">Suggested Action:</p>
-                        <p className="text-xs text-text-secondary">{rec.suggestedAction}</p>
+                        <p className="text-xs text-accent mb-1 font-medium">How to do it</p>
+                        <p className="text-xs text-text-secondary leading-relaxed">{rec.suggestedAction}</p>
                       </div>
                     </div>
                   </div>
                   <div className="flex flex-col items-end gap-2 shrink-0">
                     <div className="text-right">
-                      <div className="text-xs text-text-tertiary">Impact Score</div>
-                      <div className="text-lg font-bold text-accent tabular-nums">{rec.impactScore}</div>
+                      <div className="text-xs text-text-tertiary inline-flex items-center gap-1">
+                        {metric('impactScore').label}
+                        <InfoTip content={metric('impactScore').help} label="What impact score means" size={11} side="bottom" />
+                      </div>
+                      <div className="text-lg font-bold text-accent tabular-nums">{rec.impactScore}<span className="text-xs text-text-tertiary font-normal">/100</span></div>
                     </div>
                   </div>
                 </div>
                 {rec.status === 'pending' && (
                   <div className="flex items-center gap-2 mt-4 pt-4 border-t border-border">
-                    <Button size="sm" icon={Check} onClick={() => handleAction(rec.id, 'approved')}>Approve</Button>
-                    <Button variant="secondary" size="sm" icon={Edit} onClick={() => {}}>Edit</Button>
-                    <Button variant="ghost" size="sm" icon={X} onClick={() => handleAction(rec.id, 'rejected')}>Reject</Button>
+                    <Button size="sm" icon={Check} onClick={() => handleAction(rec.id, 'approved')}>I'll do this</Button>
+                    <Button variant="ghost" size="sm" icon={X} onClick={() => handleAction(rec.id, 'rejected')}>Dismiss</Button>
                     <div className="flex-1" />
-                    <Button variant="outline" size="sm" icon={Mail} onClick={() => navigate(`/outreach?customer=${selectedCustomer}`)}>Draft Email</Button>
+                    <Button variant="outline" size="sm" icon={Mail} onClick={() => navigate(`/outreach?customer=${selectedCustomer}`)}>Draft an email</Button>
                   </div>
                 )}
                 {rec.status !== 'pending' && (
                   <div className="mt-4 pt-3 border-t border-border">
                     <Badge variant={rec.status === 'approved' ? 'approved' : 'critical'} size="xs">
-                      {rec.status === 'approved' ? '✓ Approved' : '✗ Rejected'}
+                      {rec.status === 'approved' ? 'Accepted — on your list' : 'Dismissed'}
                     </Badge>
                   </div>
                 )}

@@ -3,7 +3,6 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { MessageSquare, X, Send, Sparkles, User, Minus } from 'lucide-react';
 import { chatService } from '../../services/api';
 import { formatRelativeDate } from '../../utils/helpers';
-import Button from './Button';
 
 export default function FloatingChatWidget() {
   const [isOpen, setIsOpen] = useState(false);
@@ -50,7 +49,7 @@ export default function FloatingChatWidget() {
         content: response.message,
         timestamp: new Date().toISOString(),
       }]);
-    } catch (error) {
+    } catch {
       setMessages(prev => [...prev, {
         id: (Date.now() + 1).toString(),
         role: 'assistant',

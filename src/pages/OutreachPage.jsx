@@ -1,19 +1,28 @@
 import { useState, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { motion } from 'framer-motion';
-import { Mail, Send, Check, Edit, RefreshCw, Copy, Sparkles, AlertTriangle, Clock, CheckCircle } from 'lucide-react';
-import Card, { CardHeader, CardTitle, CardDescription } from '../components/ui/Card';
+import { Mail, Send, Check, Edit, RefreshCw, Copy, Sparkles, ShieldCheck, Clock, CheckCircle } from 'lucide-react';
+import Card, { CardHeader, CardTitle } from '../components/ui/Card';
 import Button from '../components/ui/Button';
 import Badge from '../components/ui/Badge';
-import Select from '../components/ui/Select';
 import EmptyState from '../components/ui/EmptyState';
+import { SkeletonCard } from '../components/ui/Skeleton';
 import { outreachService } from '../services/api';
 import { mockCustomers } from '../mock/customers';
 import { useApp } from '../context/AppContext';
-import { formatRelativeDate } from '../utils/helpers';
+import { formatRelativeDate, getPrimaryRiskDriver } from '../utils/helpers';
 
-const statusFlow = { draft: 'Draft', reviewed: 'Reviewed', approved: 'Approved', sent: 'Sent' };
+const statusFlow = { draft: 'Draft', reviewed: 'Edited', approved: 'Approved', sent: 'Sent' };
 const statusColors = { draft: 'draft', reviewed: 'reviewed', approved: 'approved', sent: 'sent' };
+
+// The review path a draft travels. Shown once, at the top, so the human-approval
+// rule is structural rather than a warning people learn to skim past.
+const REVIEW_STEPS = [
+  { key: 'draft', label: 'AI drafts it' },
+  { key: 'reviewed', label: 'You review and edit' },
+  { key: 'approved', label: 'You approve' },
+  { key: 'sent', label: 'You send' },
+];
+const STEP_ORDER = REVIEW_STEPS.map((s) => s.key);
 
 export default function OutreachPage() {
   const [searchParams] = useSearchParams();
@@ -26,6 +35,8 @@ export default function OutreachPage() {
   const [editBody, setEditBody] = useState('');
   const [editSubject, setEditSubject] = useState('');
   const customerId = searchParams.get('customer');
+  const draftCustomer = mockCustomers.find((c) => c.id === selectedEmail?.customerId);
+  const draftDriver = getPrimaryRiskDriver(draftCustomer);
 
   useEffect(() => { loadEmails(); }, []);
 
@@ -48,11 +59,11 @@ export default function OutreachPage() {
     setEditMode(false);
   };
 
-  const handleGenerate = async () => {
-    if (!customerId) return;
+  const handleGenerate = async (targetId = customerId) => {
+    if (!targetId) return;
     setGenerating(true);
     try {
-      const email = await outreachService.generateEmail(customerId);
+      const email = await outreachService.generateEmail(targetId);
       setEmails(prev => [email, ...prev]);
       selectEmail(email);
       addToast({ type: 'success', message: 'Email draft generated' });
@@ -67,7 +78,7 @@ export default function OutreachPage() {
       const updated = { ...selectedEmail, status: 'approved' };
       setSelectedEmail(updated);
       setEmails(prev => prev.map(e => e.id === selectedEmail.id ? updated : e));
-      addToast({ type: 'success', message: 'Email approved for sending' });
+      addToast({ type: 'success', message: 'Approved — you can send it when ready' });
     } catch (e) { console.error(e); }
   };
 
@@ -91,35 +102,64 @@ export default function OutreachPage() {
     addToast({ type: 'info', message: 'Changes saved' });
   };
 
-  return (
-    <div className="space-y-6">
-      <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
-        <div>
-          <h1 className="text-xl font-bold text-text-primary tracking-tight">AI-Generated Retention Outreach</h1>
-          <p className="text-sm text-text-tertiary mt-0.5">Review, edit, and approve AI-generated retention emails before sending.</p>
-        </div>
-        <div className="flex items-center gap-2">
-          {customerId && (
-            <Button size="sm" icon={Sparkles} loading={generating} onClick={handleGenerate}>Generate New</Button>
-          )}
+  if (loading) {
+    return (
+      <div className="space-y-6">
+        <div className="h-7 w-64 bg-bg-tertiary rounded animate-pulse" />
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          <SkeletonCard />
+          <div className="lg:col-span-2"><SkeletonCard /></div>
         </div>
       </div>
+    );
+  }
 
-      {/* Human review banner */}
-      <div className="flex items-center gap-3 p-3 rounded-lg bg-risk-medium/5 border border-risk-medium/20">
-        <AlertTriangle size={16} className="text-risk-medium shrink-0" />
-        <p className="text-xs text-risk-medium font-medium">AI Generated — Requires Human Review. All emails must be reviewed and approved before sending.</p>
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-4">
+        <header className="max-w-2xl">
+          <h1 className="text-xl font-bold text-text-primary tracking-tight">Retention outreach</h1>
+          <p className="text-sm text-text-secondary mt-1 leading-relaxed">
+            ChurnGuard drafts a starting point from the account's risk factors. You edit it, you approve it, and
+            nothing is sent until you say so.
+          </p>
+        </header>
+        {customerId && (
+          <Button size="sm" icon={Sparkles} loading={generating} onClick={handleGenerate}>Draft a new email</Button>
+        )}
+      </div>
+
+      {/* How a draft travels — the human-approval rule, shown as the actual flow */}
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-2 p-3 rounded-lg bg-bg-tertiary/30 border border-border">
+        <ShieldCheck size={15} className="text-accent shrink-0" aria-hidden="true" />
+        {REVIEW_STEPS.map((step, i) => {
+          const reached = selectedEmail ? STEP_ORDER.indexOf(selectedEmail.status) >= i : i === 0;
+          return (
+            <span key={step.key} className="flex items-center gap-2">
+              <span className={`text-[11px] font-medium ${reached ? 'text-text-primary' : 'text-text-tertiary'}`}>
+                {step.label}
+              </span>
+              {i < REVIEW_STEPS.length - 1 && <span className="text-text-tertiary text-[11px]" aria-hidden="true">→</span>}
+            </span>
+          );
+        })}
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Email List */}
         <Card padding={false} className="lg:col-span-1">
           <div className="p-3 border-b border-border">
-            <p className="text-xs font-semibold text-text-tertiary uppercase tracking-wider">Outreach Drafts</p>
+            <p className="text-xs font-semibold text-text-tertiary uppercase tracking-wider">Drafts</p>
+            <p className="text-[11px] text-text-tertiary mt-0.5">Select one to review it.</p>
           </div>
           <div className="divide-y divide-border max-h-[600px] overflow-y-auto">
             {emails.length === 0 ? (
-              <div className="p-6 text-center text-xs text-text-tertiary">No outreach drafts</div>
+              <div className="p-6 text-center">
+                <p className="text-xs text-text-secondary">No drafts yet.</p>
+                <p className="text-[11px] text-text-tertiary mt-1">
+                  Open a customer and choose &ldquo;Draft an outreach email&rdquo; to create one.
+                </p>
+              </div>
             ) : (
               emails.map(email => (
                 <button
@@ -149,19 +189,47 @@ export default function OutreachPage() {
                     <Badge variant={statusColors[selectedEmail.status]} size="md">{statusFlow[selectedEmail.status]}</Badge>
                     <div className="flex items-center gap-2">
                       <Button variant="ghost" size="sm" icon={Copy} onClick={() => { navigator.clipboard.writeText(selectedEmail.body); addToast({ type: 'info', message: 'Copied to clipboard' }); }}>Copy</Button>
-                      <Button variant="ghost" size="sm" icon={RefreshCw}>Regenerate</Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        icon={RefreshCw}
+                        loading={generating}
+                        onClick={() => handleGenerate(selectedEmail.customerId)}
+                      >
+                        Redraft
+                      </Button>
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-2 gap-4 text-sm">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm">
                     <div>
                       <span className="text-xs text-text-tertiary">To</span>
-                      <p className="text-text-primary font-medium">{selectedEmail.contactName} ({selectedEmail.contactEmail})</p>
+                      <p className="text-text-primary font-medium break-words">
+                        {selectedEmail.contactName} · {selectedEmail.contactEmail}
+                      </p>
                     </div>
                     <div>
-                      <span className="text-xs text-text-tertiary">Customer</span>
+                      <span className="text-xs text-text-tertiary">Account</span>
                       <p className="text-text-primary font-medium">{selectedEmail.customerName}</p>
                     </div>
+                  </div>
+
+                  {/* What this draft was written from */}
+                  <div className="p-3 rounded-lg bg-bg-tertiary/30 border border-border">
+                    <p className="text-xs text-text-tertiary font-medium mb-1">What this draft is based on</p>
+                    <p className="text-xs text-text-secondary leading-relaxed">
+                      {draftCustomer ? (
+                        <>
+                          {draftCustomer.name} is at{' '}
+                          <span className="text-text-primary font-medium">{draftCustomer.churnProbability}% churn risk</span>
+                          {draftDriver && <> with {draftDriver.label.toLowerCase()} at {draftDriver.display}</>}.
+                          {' '}The wording is a generic starting point — check it against what you know about the account
+                          before sending.
+                        </>
+                      ) : (
+                        <>A generic retention template. Check it against what you know about the account before sending.</>
+                      )}
+                    </p>
                   </div>
 
                   <div>
@@ -193,14 +261,14 @@ export default function OutreachPage() {
                   <div className="flex items-center gap-2 pt-2 border-t border-border flex-wrap">
                     {editMode ? (
                       <>
-                        <Button size="sm" icon={Check} onClick={handleSave}>Save Changes</Button>
+                        <Button size="sm" icon={Check} onClick={handleSave}>Save my edits</Button>
                         <Button variant="ghost" size="sm" onClick={() => { setEditBody(selectedEmail.body); setEditSubject(selectedEmail.subject); setEditMode(false); }}>Cancel</Button>
                       </>
                     ) : (
                       <>
                         <Button variant="secondary" size="sm" icon={Edit} onClick={() => setEditMode(true)}>Edit</Button>
                         {selectedEmail.status !== 'approved' && selectedEmail.status !== 'sent' && (
-                          <Button size="sm" icon={Check} onClick={handleApprove}>Approve</Button>
+                          <Button size="sm" icon={Check} onClick={handleApprove}>Approve for sending</Button>
                         )}
                         {selectedEmail.status === 'approved' && (
                           <Button size="sm" icon={Send} onClick={handleSend}>Send Email</Button>
@@ -213,7 +281,10 @@ export default function OutreachPage() {
 
               {/* Audit Trail */}
               <Card>
-                <CardHeader><CardTitle>Audit Trail</CardTitle></CardHeader>
+                <CardHeader>
+                  <CardTitle>What has happened to this draft</CardTitle>
+                  <p className="text-xs text-text-tertiary mt-1">A record of who did what, and when.</p>
+                </CardHeader>
                 <div className="space-y-2">
                   {(selectedEmail.auditTrail || []).map((entry, i) => (
                     <div key={i} className="flex items-center gap-3 py-1.5">

@@ -2,8 +2,14 @@ import { motion } from 'framer-motion';
 import { TrendingUp, TrendingDown } from 'lucide-react';
 import { cn, formatNumber, formatCurrency, formatPercent } from '../../utils/helpers';
 import { LineChart, Line, ResponsiveContainer } from 'recharts';
+import { InfoTip } from './Tooltip';
 
-export default function MetricCard({ title, value, change, trend, format = 'number', sparklineData, icon: Icon, className, delay = 0 }) {
+/**
+ * `description` is visible supporting text — it says what the number means
+ * without needing a mouse. `help` is the extra detail behind the info icon.
+ * Both usually come from utils/glossary.js so the wording matches everywhere.
+ */
+export default function MetricCard({ title, value, change, trend, format = 'number', sparklineData, icon: Icon, description, help, className, delay = 0 }) {
   const formattedValue = format === 'currency'
     ? formatCurrency(value)
     : format === 'percent'
@@ -30,31 +36,41 @@ export default function MetricCard({ title, value, change, trend, format = 'numb
         className
       )}
     >
-      <div className="flex items-start justify-between mb-3">
-        <span className="text-xs font-medium text-text-tertiary uppercase tracking-wider">{title}</span>
+      <div className="flex items-start justify-between gap-2 mb-3">
+        <div className="min-w-0">
+          <div className="flex items-center gap-1.5">
+            <span className="text-xs font-medium text-text-tertiary uppercase tracking-wider">{title}</span>
+            {help && <InfoTip content={help} label={`What ${title} means`} size={12} />}
+          </div>
+          {description && (
+            <p className="text-[11px] text-text-tertiary/90 mt-1 leading-snug">{description}</p>
+          )}
+        </div>
         {Icon && (
-          <div className="p-1.5 rounded-lg bg-bg-tertiary text-text-tertiary group-hover:text-accent transition-colors">
-            <Icon size={14} />
+          <div className="p-1.5 rounded-lg bg-bg-tertiary text-text-tertiary group-hover:text-accent transition-colors shrink-0">
+            <Icon size={14} aria-hidden="true" />
           </div>
         )}
       </div>
-      <div className="flex items-end justify-between">
-        <div>
+      <div className="flex items-end justify-between gap-2">
+        <div className="min-w-0">
           <div className="text-2xl font-bold text-text-primary tracking-tight tabular-nums">
             {formattedValue}
           </div>
           {change !== undefined && (
-            <div className={cn('flex items-center gap-1 mt-1.5', changeColor)}>
-              <TrendIcon size={12} />
+            <div className={cn('flex items-center gap-1 mt-1.5 whitespace-nowrap', changeColor)}>
+              <TrendIcon size={12} aria-hidden="true" />
               <span className="text-xs font-medium tabular-nums">
                 {isPositiveChange ? '+' : ''}{change}%
               </span>
-              <span className="text-xs text-text-tertiary ml-0.5">this month</span>
+              <span className="text-xs text-text-tertiary ml-0.5">vs last mo.</span>
+              {/* Colour alone shouldn't carry the good/bad signal. */}
+              <span className="sr-only">{isGoodTrend ? '(improving)' : '(worsening)'}</span>
             </div>
           )}
         </div>
         {sparklineData && (
-          <div className="w-20 h-10 opacity-60 group-hover:opacity-100 transition-opacity">
+          <div className="w-14 h-9 shrink-0 opacity-60 group-hover:opacity-100 transition-opacity">
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={sparklineData.map((v, i) => ({ v, i }))}>
                 <Line

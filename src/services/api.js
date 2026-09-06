@@ -10,7 +10,9 @@ import { mockRecommendations, getDefaultRecommendations } from '../mock/recommen
 import { mockOutreachEmails } from '../mock/outreach';
 import { mockNotifications, mockChatResponses } from '../mock/notifications';
 import { demoCredentials, mockUsers } from '../mock/users';
-import { mockPlaybooks } from '../mock/playbooks';
+import { REQUIRED_FIELDS, suggestMappings } from '../mock/datasetSchema';
+import { profileDataset, countChurnLabels } from '../utils/csv';
+import { readTabularFile, isSupportedFile, getFileExtension, SUPPORTED_EXTENSIONS } from '../utils/spreadsheet';
 import { delay } from '../utils/helpers';
 
 // This is a frontend prototype and ships with a complete local demo data layer.
@@ -22,7 +24,7 @@ const BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api
 // AI Assistant: when enabled, the frontend calls a server-side proxy (server.js)
 // which holds the Grok (xAI) API key. The key is never present in client code.
 // When disabled (default) or when the live call fails, the assistant falls back
-// to canned demo responses so the UI always works without a backend.
+// to canned demo responses so the widget always works without a backend.
 const USE_LIVE_ASSISTANT = import.meta.env.VITE_USE_LIVE_ASSISTANT === 'true';
 const ASSISTANT_URL = import.meta.env.VITE_ASSISTANT_API_URL || '/api/assistant';
 
@@ -339,20 +341,183 @@ export const outreachService = {
 // Dataset Services
 // ============================================
 
+// Upload constraints. Exported so the upload UI can state the real limits
+// instead of describing formats or sizes the code doesn't actually handle.
+export const DATASET_UPLOAD = {
+  maxSizeBytes: 50 * 1024 * 1024,
+  // Kept in step with what `utils/spreadsheet.js` can actually parse — the UI
+  // reads this list, so it can never advertise a format we don't handle.
+  extensions: SUPPORTED_EXTENSIONS,
+  accept: {
+    'text/csv': ['.csv'],
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx'],
+    'application/vnd.ms-excel': ['.xls'],
+  },
+};
+
+/**
+ * A problem with the user's dataset that we can explain in plain language.
+ * `message` says what is wrong, `hint` says what to do about it.
+ */
+export class DatasetError extends Error {
+  constructor(message, hint) {
+    super(message);
+    this.name = 'DatasetError';
+    this.hint = hint;
+  }
+}
+
+// Datasets picked during this session, keyed by the id returned from upload.
+// The mock layer keeps the parsed file here so validation, mapping and
+// prediction all report figures computed from the user's actual data rather
+// than hardcoded statistics. In-memory, resets on reload — same pattern as the
+// other mock stores in this file.
+const uploadedDatasets = new Map();
+
+const FORMAT_LIST = SUPPORTED_EXTENSIONS.map((e) => e.replace('.', '').toUpperCase()).join(', ');
+
+/** Reads any supported file into `{ columns, rows, sheetName }` — see utils/spreadsheet.js. */
+async function readDataset(file) {
+  if (!isSupportedFile(file?.name)) {
+    throw new DatasetError(
+      `ChurnGuard can't read ${getFileExtension(file?.name) || 'that kind of'} files.`,
+      `Supported formats are ${FORMAT_LIST}. Export or re-save your customer list in one of those and try again.`
+    );
+  }
+  try {
+    return await readTabularFile(file);
+  } catch {
+    throw new DatasetError(
+      "We couldn't read that file.",
+      'It may be corrupted, password-protected, or still open in another program. Try re-saving it and uploading again.'
+    );
+  }
+}
+
+function pluralize(count, singular, plural = `${singular}s`) {
+  return count === 1 ? singular : plural;
+}
+
+/** Turns a parsed dataset into the plain-language report the setup flow shows. */
+function buildValidationReport(datasetId, entry) {
+  const { parsed, profile } = entry;
+  const suggestedMappings = suggestMappings(parsed.columns);
+  const missingRequired = REQUIRED_FIELDS.filter((f) => !suggestedMappings[f.key]);
+
+  const warnings = [];
+  const issues = [];
+
+  if (profile.rowCount < 2) {
+    issues.push({
+      title: 'This file only contains a single customer row.',
+      why: 'ChurnGuard compares customers against each other, so one row cannot produce a retention view.',
+      action: 'Upload an export that contains your customer base, or continue with the demo dataset.',
+    });
+  }
+
+  if (profile.emptyColumns.length === profile.columnCount && profile.columnCount > 0) {
+    issues.push({
+      title: 'Every column in this file is empty.',
+      why: 'There are headers but no values underneath them, so there is nothing to analyse.',
+      action: 'Check the export settings in your source system and upload the file again.',
+    });
+  }
+
+  if (profile.missingCells > 0) {
+    const worst = profile.columns
+      .filter((c) => c.missing > 0)
+      .sort((a, b) => b.missing - a.missing)
+      .slice(0, 3);
+    warnings.push({
+      title: `${profile.missingCells.toLocaleString()} empty ${pluralize(profile.missingCells, 'value')} across ${worst.length === 1 ? '1 column' : `${profile.columns.filter((c) => c.missing > 0).length} columns`}`,
+      why: 'Customers with gaps are still included, but the missing fields contribute less to their risk picture.',
+      action: `Most affected: ${worst.map((c) => `${c.name} (${c.missing})`).join(', ')}. Fill these in your source system if they matter to you — otherwise you can continue.`,
+    });
+  }
+
+  if (profile.duplicateRows > 0) {
+    warnings.push({
+      title: `${profile.duplicateRows} identical ${pluralize(profile.duplicateRows, 'row')}`,
+      why: 'A repeated customer is counted more than once, which skews totals and revenue at risk.',
+      action: 'Remove the duplicates in your export if they were not intentional.',
+    });
+  }
+
+  if (profile.emptyColumns.length > 0 && issues.length === 0) {
+    warnings.push({
+      title: `${profile.emptyColumns.length} ${pluralize(profile.emptyColumns.length, 'column')} with no values`,
+      why: 'Columns that are entirely blank add nothing to the analysis.',
+      action: `${profile.emptyColumns.slice(0, 4).join(', ')} will simply be ignored — no action needed.`,
+    });
+  }
+
+  if (missingRequired.length > 0) {
+    warnings.push({
+      title: `Couldn't automatically match ${missingRequired.map((f) => f.label).join(', ')}`,
+      why: 'ChurnGuard needs these fields to build a customer view; your column names just differ from the ones we recognise.',
+      action: 'Choose the matching column yourself in the next step.',
+    });
+  }
+
+  return {
+    datasetId,
+    status: issues.length > 0 ? 'blocked' : warnings.length > 0 ? 'warning' : 'ready',
+    columns: profile.columns,
+    missingCells: profile.missingCells,
+    missingPercent: Math.round(profile.missingPercent * 100) / 100,
+    duplicateRows: profile.duplicateRows,
+    preview: profile.preview,
+    warnings,
+    issues,
+    suggestedMappings,
+    requiredDetected: REQUIRED_FIELDS.length - missingRequired.length,
+    requiredTotal: REQUIRED_FIELDS.length,
+  };
+}
+
 export const datasetService = {
   async uploadDataset(file, onProgress) {
     if (USE_MOCK) {
-      // Simulate upload progress
-      for (let i = 0; i <= 100; i += 10) {
-        await mockDelay(200);
-        onProgress?.(i);
+      onProgress?.(5);
+      const parsed = await readDataset(file);
+
+      onProgress?.(60);
+      if (parsed.columns.length === 0) {
+        throw new DatasetError(
+          'That file appears to be empty.',
+          'Export your customer list again and make sure it has a header row plus at least one customer.'
+        );
       }
+      if (parsed.columns.length < 2) {
+        throw new DatasetError(
+          "We couldn't split that file into columns.",
+          'Check that the first row names each column, and that a CSV export used commas as the separator.'
+        );
+      }
+      if (parsed.rows.length === 0) {
+        throw new DatasetError(
+          'This file has column headers but no customer rows.',
+          'Check that the export actually included your data, then upload it again.'
+        );
+      }
+
+      onProgress?.(80);
+      const profile = profileDataset(parsed);
+      await mockDelay(700);
+      onProgress?.(100);
+
+      const id = `DS-${Date.now()}`;
+      uploadedDatasets.set(id, { parsed, profile, mappings: null });
+
       return {
-        id: `DS-${Date.now()}`,
+        id,
         filename: file.name,
-        rows: 7043,
-        columns: 21,
+        rows: profile.rowCount,
+        columns: profile.columnCount,
         size: file.size,
+        // Null for CSV; for a workbook, which sheet we read and how many it had.
+        sheetName: parsed.sheetName,
+        sheetCount: parsed.sheetCount,
         uploadDate: new Date().toISOString(),
         status: 'uploaded',
       };
@@ -368,59 +533,39 @@ export const datasetService = {
   async validateDataset(datasetId) {
     if (USE_MOCK) {
       await mockDelay(1500);
-      return {
-        datasetId,
-        health: 92,
-        missingValues: 2.3,
-        duplicates: 14,
-        status: 'passed_with_warnings',
-        columns: [
-          { name: 'customerID', type: 'string', missing: 0, unique: 7043 },
-          { name: 'gender', type: 'categorical', missing: 0, unique: 2 },
-          { name: 'SeniorCitizen', type: 'numeric', missing: 0, unique: 2 },
-          { name: 'Partner', type: 'categorical', missing: 0, unique: 2 },
-          { name: 'Dependents', type: 'categorical', missing: 0, unique: 2 },
-          { name: 'tenure', type: 'numeric', missing: 0, unique: 73 },
-          { name: 'PhoneService', type: 'categorical', missing: 0, unique: 2 },
-          { name: 'MultipleLines', type: 'categorical', missing: 0, unique: 3 },
-          { name: 'InternetService', type: 'categorical', missing: 0, unique: 3 },
-          { name: 'OnlineSecurity', type: 'categorical', missing: 0, unique: 3 },
-          { name: 'OnlineBackup', type: 'categorical', missing: 0, unique: 3 },
-          { name: 'DeviceProtection', type: 'categorical', missing: 0, unique: 3 },
-          { name: 'TechSupport', type: 'categorical', missing: 0, unique: 3 },
-          { name: 'StreamingTV', type: 'categorical', missing: 0, unique: 3 },
-          { name: 'StreamingMovies', type: 'categorical', missing: 0, unique: 3 },
-          { name: 'Contract', type: 'categorical', missing: 0, unique: 3 },
-          { name: 'PaperlessBilling', type: 'categorical', missing: 0, unique: 2 },
-          { name: 'PaymentMethod', type: 'categorical', missing: 0, unique: 4 },
-          { name: 'MonthlyCharges', type: 'numeric', missing: 0, unique: 1585 },
-          { name: 'TotalCharges', type: 'numeric', missing: 11, unique: 6531 },
-          { name: 'Churn', type: 'categorical', missing: 0, unique: 2 },
-        ],
-        warnings: [
-          'TotalCharges has 11 missing values (0.16%)',
-          '14 potential duplicate rows detected',
-          'customerID appears to be an identifier column',
-        ],
-        preview: Array.from({ length: 5 }, (_, i) => ({
-          customerID: `${7590 - i}-FAKEC`,
-          gender: i % 2 === 0 ? 'Female' : 'Male',
-          SeniorCitizen: i % 3 === 0 ? 1 : 0,
-          tenure: [1, 34, 2, 45, 8][i],
-          Contract: ['Month-to-month', 'One year', 'Month-to-month', 'Two year', 'Month-to-month'][i],
-          MonthlyCharges: [29.85, 56.95, 53.85, 42.30, 70.70][i],
-          TotalCharges: [29.85, 1889.5, 108.15, 1840.75, 151.65][i],
-          Churn: ['Yes', 'No', 'Yes', 'No', 'Yes'][i],
-        })),
-      };
+      const entry = uploadedDatasets.get(datasetId);
+      if (!entry) {
+        throw new DatasetError(
+          'That upload is no longer available.',
+          'Uploads are held for the current session only — please select your file again.'
+        );
+      }
+      return buildValidationReport(datasetId, entry);
     }
     return apiClient.post(`/datasets/${datasetId}/validate`);
   },
 
+  /** `mappings` is `{ [yourColumnName]: churnguardFieldKey }`. */
   async mapColumns(datasetId, mappings) {
     if (USE_MOCK) {
       await mockDelay(800);
-      return { datasetId, mappings, status: 'mapped' };
+      const entry = uploadedDatasets.get(datasetId);
+      if (!entry) {
+        throw new DatasetError(
+          'That upload is no longer available.',
+          'Uploads are held for the current session only — please select your file again.'
+        );
+      }
+      const mapped = new Set(Object.values(mappings || {}));
+      const missing = REQUIRED_FIELDS.filter((f) => !mapped.has(f.key));
+      if (missing.length > 0) {
+        throw new DatasetError(
+          `Still missing a column for ${missing.map((f) => f.label).join(', ')}.`,
+          'Pick the matching column from your dataset for each required field.'
+        );
+      }
+      entry.mappings = { ...mappings };
+      return { datasetId, mappings: entry.mappings, status: 'mapped' };
     }
     return apiClient.post(`/datasets/${datasetId}/map-columns`, { mappings });
   },
@@ -428,7 +573,24 @@ export const datasetService = {
   async runPrediction(datasetId) {
     if (USE_MOCK) {
       await mockDelay(3000);
-      return { datasetId, status: 'completed', customersProcessed: 7043, highRisk: 1869 };
+      const entry = uploadedDatasets.get(datasetId);
+      if (!entry) {
+        throw new DatasetError(
+          'That upload is no longer available.',
+          'Uploads are held for the current session only — please select your file again.'
+        );
+      }
+      const churnColumn = Object.keys(entry.mappings || {}).find((col) => entry.mappings[col] === 'churn');
+      return {
+        datasetId,
+        status: 'completed',
+        customersProcessed: entry.profile.rowCount,
+        fieldsMapped: Object.keys(entry.mappings || {}).length,
+        // A fact read straight out of the file — not a model output.
+        labelledChurnCount: countChurnLabels(entry.parsed.rows, entry.parsed.columns.indexOf(churnColumn)),
+        // Risk scores in this prototype are demo data; the UI says so.
+        simulated: USE_MOCK,
+      };
     }
     return apiClient.post(`/datasets/${datasetId}/predict`);
   },
@@ -437,6 +599,9 @@ export const datasetService = {
 // ============================================
 // Chat Services
 // ============================================
+//
+// Powers the floating AI assistant widget (components/ui/FloatingChatWidget).
+// There is no assistant *page* — the widget is the whole surface.
 
 async function getDemoChatResponse(message, context = {}) {
   await mockDelay(1200);
@@ -460,10 +625,13 @@ async function getDemoChatResponse(message, context = {}) {
     };
   }
   if (lower.includes('summarize') || lower.includes('summary')) {
+    // Figures come from the same derived KPIs the Overview renders, so the
+    // assistant can never quote a number that contradicts the dashboard.
+    const { totalCustomers, customersAtRisk, revenueAtRisk } = mockDashboardKPIs;
     return {
-      message: '**Today\'s Retention Summary:**\n\n📊 **2,847** total customers monitored\n⚠️ **342** customers at High/Critical risk\n💰 **$4.28M** revenue at risk\n📉 Churn rate trending **up 2.5%** vs last month\n\n**Top concerns:**\n- 12 customers moved to High Risk this week\n- 3 critical accounts need immediate attention\n- 1 outreach email awaiting approval\n\n**Recommended priorities:**\n1. Contact DataSphere Solutions (88.1% risk)\n2. Review Zenith Healthcare support tickets\n3. Approve pending outreach for Acme Technologies',
+      message: `**Today's Retention Summary:**\n\n📊 **${totalCustomers.value.toLocaleString()}** total customers monitored\n⚠️ **${customersAtRisk.value.toLocaleString()}** customers at High/Critical risk\n💰 **$${(revenueAtRisk.value / 1000000).toFixed(2)}M** revenue at risk\n📉 Churn rate trending **up ${Math.abs(mockDashboardKPIs.retentionRate.change)}%** vs last month\n\n**Top concerns:**\n- 3 critical accounts need immediate attention\n- 1 outreach email awaiting approval\n\n**Recommended priorities:**\n1. Contact DataSphere Solutions (88.1% risk)\n2. Review Zenith Healthcare support tickets\n3. Approve pending outreach for Acme Technologies`,
       actions: [
-        { label: 'View Dashboard', link: '/dashboard' },
+        { label: 'View Overview', link: '/dashboard' },
         { label: 'High Risk Customers', link: '/customers?risk=critical' },
       ],
     };
@@ -496,50 +664,6 @@ export const chatService = {
 };
 
 // ============================================
-// Playbooks / Automation Services
-// ============================================
-
-let playbooksStore = [...mockPlaybooks];
-
-export const playbookService = {
-  async getPlaybooks() {
-    if (USE_MOCK) {
-      await mockDelay(400);
-      return playbooksStore;
-    }
-    return apiClient.get('/playbooks');
-  },
-
-  async togglePlaybook(id) {
-    if (USE_MOCK) {
-      await mockDelay(300);
-      playbooksStore = playbooksStore.map(p =>
-        p.id === id ? { ...p, status: p.status === 'active' ? 'paused' : 'active' } : p
-      );
-      return playbooksStore.find(p => p.id === id);
-    }
-    return apiClient.post(`/playbooks/${id}/toggle`);
-  },
-
-  async createPlaybook(data) {
-    if (USE_MOCK) {
-      await mockDelay(600);
-      const playbook = {
-        id: `PB-${String(playbooksStore.length + 1).padStart(3, '0')}`,
-        runsCount: 0,
-        lastRun: null,
-        createdAt: new Date().toISOString(),
-        status: 'active',
-        ...data,
-      };
-      playbooksStore = [playbook, ...playbooksStore];
-      return playbook;
-    }
-    return apiClient.post('/playbooks', data);
-  },
-};
-
-// ============================================
 // Notification Services
 // ============================================
 
@@ -566,38 +690,5 @@ export const notificationService = {
       return { success: true };
     }
     return apiClient.put('/notifications/read-all');
-  },
-};
-
-// ============================================
-// Simulator Services
-// ============================================
-
-export const simulatorService = {
-  async simulate(customerId, adjustments) {
-    if (USE_MOCK) {
-      await mockDelay(1000);
-      const customer = mockCustomers.find(c => c.id === customerId);
-      if (!customer) throw new Error('Customer not found');
-
-      const currentRisk = customer.churnProbability;
-      let reduction = 0;
-      if (adjustments.usageImprovement) reduction += adjustments.usageImprovement * 0.45;
-      if (adjustments.loginFrequency) reduction += adjustments.loginFrequency * 0.35;
-      if (adjustments.featureAdoption) reduction += adjustments.featureAdoption * 0.30;
-      if (adjustments.supportResolution) reduction += adjustments.supportResolution * 0.25;
-      if (adjustments.engagementScore) reduction += adjustments.engagementScore * 0.20;
-
-      const projectedRisk = Math.max(5, currentRisk - reduction);
-      return {
-        customerId,
-        currentRisk,
-        projectedRisk: Math.round(projectedRisk * 10) / 10,
-        improvement: Math.round((currentRisk - projectedRisk) * 10) / 10,
-        adjustments,
-        confidence: 0.87,
-      };
-    }
-    return apiClient.post(`/simulator/what-if`, { customerId, adjustments });
   },
 };

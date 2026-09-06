@@ -1,19 +1,22 @@
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { motion } from 'framer-motion';
 import {
-  ArrowLeft, Building2, Calendar, Mail, Phone, User, TrendingDown, TrendingUp,
-  AlertTriangle, CheckCircle, Clock, MessageSquare, FileText, Activity,
-  Brain, Lightbulb, Send, Edit, UserPlus, MoreHorizontal
+  ArrowLeft, Building2, Mail, Phone, User, UserX,
+  AlertTriangle, MessageSquare, FileText, Activity,
+  Brain, Lightbulb, ArrowRight
 } from 'lucide-react';
 import { LineChart, Line, ResponsiveContainer, XAxis, YAxis, CartesianGrid, Tooltip } from 'recharts';
-import Card, { CardHeader, CardTitle, CardDescription } from '../components/ui/Card';
+import Card, { CardHeader, CardTitle } from '../components/ui/Card';
+import ChartCard from '../components/ui/ChartCard';
 import Button from '../components/ui/Button';
-import Badge, { RiskBadge, StatusBadge } from '../components/ui/Badge';
+import { RiskBadge, StatusBadge } from '../components/ui/Badge';
+import { InfoTip } from '../components/ui/Tooltip';
 import Avatar from '../components/ui/Avatar';
+import EmptyState from '../components/ui/EmptyState';
 import { SkeletonCard } from '../components/ui/Skeleton';
 import { customerService } from '../services/api';
-import { formatCurrency, formatDate, formatRelativeDate, getRiskColor, formatPercent } from '../utils/helpers';
+import { formatCurrency, formatDate, formatRelativeDate, getRiskColor, getPrimaryRiskDriver } from '../utils/helpers';
+import { metric } from '../utils/glossary';
 
 const timelineIcons = {
   risk: AlertTriangle,
@@ -35,8 +38,8 @@ export default function CustomerDetailPage() {
       try {
         const data = await customerService.getCustomer(id);
         setCustomer(data);
-      } catch (e) {
-        console.error(e);
+      } catch {
+        // The page renders a "we couldn't find that account" state below.
       }
       setLoading(false);
     }
@@ -57,14 +60,18 @@ export default function CustomerDetailPage() {
 
   if (!customer) {
     return (
-      <div className="text-center py-20">
-        <p className="text-text-tertiary">Customer not found.</p>
-        <Button variant="ghost" onClick={() => navigate('/customers')} className="mt-4">Back to Customers</Button>
-      </div>
+      <EmptyState
+        icon={UserX}
+        title="We couldn't find that account"
+        description={`No customer with the ID "${id}" exists in the connected dataset. It may have been removed, or the link may be out of date.`}
+        actionLabel="Back to Customers"
+        action={() => navigate('/customers')}
+      />
     );
   }
 
   const riskColor = getRiskColor(customer.riskTier);
+  const primaryDriver = getPrimaryRiskDriver(customer);
 
   return (
     <div className="space-y-6">
@@ -91,9 +98,7 @@ export default function CustomerDetailPage() {
           </div>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
-          <Button variant="secondary" size="sm" icon={Brain} onClick={() => navigate(`/explainability?customer=${customer.id}`)}>Analyze</Button>
-          <Button variant="secondary" size="sm" icon={Lightbulb} onClick={() => navigate(`/recommendations?customer=${customer.id}`)}>Recommend</Button>
-          <Button size="sm" icon={Mail} onClick={() => navigate(`/outreach?customer=${customer.id}`)}>Draft Email</Button>
+          <Button size="sm" icon={Mail} onClick={() => navigate(`/outreach?customer=${customer.id}`)}>Draft outreach</Button>
         </div>
       </div>
 
@@ -103,7 +108,15 @@ export default function CustomerDetailPage() {
         <div className="lg:col-span-2 space-y-6">
           {/* Risk Score */}
           <Card>
-            <CardHeader><CardTitle>Churn Risk Assessment</CardTitle></CardHeader>
+            <CardHeader>
+              <div className="flex items-center gap-1.5">
+                <CardTitle>Churn risk</CardTitle>
+                <InfoTip content={metric('churnProbability').help} label="What churn risk means" size={12} />
+              </div>
+              <p className="text-xs text-text-tertiary mt-1">
+                How likely this account is to leave, and the account signals behind that score.
+              </p>
+            </CardHeader>
             <div className="flex flex-col md:flex-row items-center gap-8">
               {/* Radial gauge */}
               <div className="relative w-40 h-40 shrink-0">
@@ -119,23 +132,24 @@ export default function CustomerDetailPage() {
                 </svg>
                 <div className="absolute inset-0 flex flex-col items-center justify-center">
                   <span className="text-3xl font-bold text-text-primary tabular-nums">{customer.churnProbability}%</span>
-                  <span className="text-xs font-medium" style={{ color: riskColor }}>
-                    {customer.riskTier === 'critical' ? 'Critical Risk' : customer.riskTier === 'high' ? 'High Risk' : customer.riskTier === 'medium' ? 'Medium Risk' : 'Low Risk'}
-                  </span>
+                  <span className="text-[11px] text-text-tertiary">chance of churning</span>
                 </div>
               </div>
 
               {/* Health scores */}
               <div className="flex-1 grid grid-cols-2 gap-4 w-full">
                 {[
-                  { label: 'Engagement Score', value: customer.engagement, max: 100 },
-                  { label: 'Usage Score', value: customer.usage, max: 100 },
-                  { label: 'Health Score', value: customer.healthScore, max: 100 },
-                  { label: 'NPS Score', value: customer.nps, max: 10 },
-                ].map(score => (
-                  <div key={score.label}>
-                    <div className="flex items-center justify-between mb-1">
-                      <span className="text-xs text-text-tertiary">{score.label}</span>
+                  { key: 'engagement', value: customer.engagement, max: 100 },
+                  { key: 'usage', value: customer.usage, max: 100 },
+                  { key: 'healthScore', value: customer.healthScore, max: 100 },
+                  { key: 'nps', value: customer.nps, max: 10 },
+                ].map((score) => (
+                  <div key={score.key}>
+                    <div className="flex items-center justify-between gap-2 mb-1">
+                      <span className="text-xs text-text-tertiary inline-flex items-center gap-1">
+                        {metric(score.key).label}
+                        <InfoTip content={metric(score.key).help} label={`What ${metric(score.key).label} means`} size={11} />
+                      </span>
                       <span className="text-xs font-semibold text-text-primary tabular-nums">{score.value}/{score.max}</span>
                     </div>
                     <div className="w-full h-1.5 rounded-full bg-bg-tertiary">
@@ -153,9 +167,41 @@ export default function CustomerDetailPage() {
             </div>
           </Card>
 
+          {/* Why — the bridge from "what" to "what next" */}
+          <Card className="border-border">
+            <CardHeader>
+              <CardTitle>Why this account is scored this way</CardTitle>
+            </CardHeader>
+            <p className="text-sm text-text-secondary leading-relaxed">
+              {primaryDriver ? (
+                <>
+                  The weakest signal on this account right now is{' '}
+                  <span className="text-text-primary font-medium">{primaryDriver.label.toLowerCase()}</span>{' '}
+                  at <span className="text-text-primary font-medium">{primaryDriver.display}</span>.
+                  {' '}Explainability breaks down every factor moving this score and by how much.
+                </>
+              ) : (
+                <>No account signal is currently below its healthy threshold. Explainability shows the full factor breakdown.</>
+              )}
+            </p>
+            <div className="flex flex-wrap gap-2 mt-4">
+              <Button size="sm" variant="secondary" icon={Brain} iconRight={ArrowRight} onClick={() => navigate(`/explainability?customer=${customer.id}`)}>
+                See the full breakdown
+              </Button>
+              <Button size="sm" variant="ghost" icon={Lightbulb} onClick={() => navigate(`/recommendations?customer=${customer.id}`)}>
+                What to do about it
+              </Button>
+            </div>
+          </Card>
+
           {/* Risk Trend */}
-          <Card>
-            <CardHeader><CardTitle>Risk Trend</CardTitle></CardHeader>
+          <ChartCard
+            title="Risk over time"
+            description="This account's churn risk across recent months. A rising line means the account is drifting."
+            help="Each point is the churn risk recorded for this account at that time, so you can tell a sudden change from a long slide."
+            isEmpty={!customer.riskHistory?.length}
+            emptyMessage="No risk history has been recorded for this account yet."
+          >
             <div className="h-48">
               <ResponsiveContainer width="100%" height="100%">
                 <LineChart data={customer.riskHistory}>
@@ -168,32 +214,35 @@ export default function CustomerDetailPage() {
                       <p className="text-text-primary font-semibold">{payload[0].value}%</p>
                     </div>
                   ) : null} />
-                  <Line type="monotone" dataKey="risk" stroke={riskColor} strokeWidth={2.5} dot={{ r: 4, fill: riskColor }} />
+                  <Line type="monotone" dataKey="risk" name="Churn risk" stroke={riskColor} strokeWidth={2.5} dot={{ r: 4, fill: riskColor }} />
                 </LineChart>
               </ResponsiveContainer>
             </div>
-          </Card>
+          </ChartCard>
 
           {/* Account Info */}
           <Card>
-            <CardHeader><CardTitle>Account Information</CardTitle></CardHeader>
+            <CardHeader><CardTitle>Account information</CardTitle></CardHeader>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
               {[
-                { label: 'MRR', value: formatCurrency(customer.mrr) },
-                { label: 'ARR', value: formatCurrency(customer.arr) },
-                { label: 'Tenure', value: `${customer.tenure} months` },
+                { label: 'MRR', value: formatCurrency(customer.mrr), help: metric('mrr').help },
+                { label: 'ARR', value: formatCurrency(customer.arr), help: 'Annual contract value — what this account is worth over a year.' },
+                { label: 'Tenure', value: `${customer.tenure} months`, help: metric('tenure').help },
                 { label: 'Contract', value: customer.contractType },
                 { label: 'Contact', value: customer.contactName },
                 { label: 'Role', value: customer.contactRole },
                 { label: 'Industry', value: customer.industry },
                 { label: 'Region', value: customer.region },
-                { label: 'Join Date', value: formatDate(customer.joinDate) },
-                { label: 'Last Contacted', value: formatDate(customer.lastContacted) },
-                { label: 'Support Tickets', value: `${customer.supportTickets} (${customer.openTickets} open)` },
-                { label: 'Login Freq.', value: `${customer.loginFrequency}/week` },
+                { label: 'Customer since', value: formatDate(customer.joinDate) },
+                { label: 'Last contacted', value: formatDate(customer.lastContacted), help: 'The last time your team reached out to this account.' },
+                { label: 'Support tickets', value: `${customer.supportTickets} total · ${customer.openTickets} open`, help: metric('supportTickets').help },
+                { label: 'Logins', value: `${customer.loginFrequency} / week`, help: metric('loginFrequency').help },
               ].map(item => (
                 <div key={item.label}>
-                  <span className="text-[10px] text-text-tertiary uppercase tracking-wider font-medium">{item.label}</span>
+                  <span className="text-[10px] text-text-tertiary uppercase tracking-wider font-medium inline-flex items-center gap-1">
+                    {item.label}
+                    {item.help && <InfoTip content={item.help} label={`What ${item.label} means`} size={11} />}
+                  </span>
                   <p className="text-sm text-text-primary font-medium mt-0.5">{item.value}</p>
                 </div>
               ))}
@@ -205,15 +254,15 @@ export default function CustomerDetailPage() {
         <div className="space-y-6">
           {/* Action Center */}
           <Card>
-            <CardHeader><CardTitle>Action Center</CardTitle></CardHeader>
+            <CardHeader>
+              <CardTitle>What to do next</CardTitle>
+              <p className="text-xs text-text-tertiary mt-1">Nothing here contacts the customer on its own.</p>
+            </CardHeader>
             <div className="space-y-2">
               {[
-                { icon: Brain, label: 'Analyze Risk', color: 'text-accent', action: () => navigate(`/explainability?customer=${customer.id}`) },
-                { icon: Lightbulb, label: 'Get Recommendations', color: 'text-risk-medium', action: () => navigate(`/recommendations?customer=${customer.id}`) },
-                { icon: Mail, label: 'Draft Outreach Email', color: 'text-blue-400', action: () => navigate(`/outreach?customer=${customer.id}`) },
-                { icon: MessageSquare, label: 'Ask AI Assistant', color: 'text-purple-400', action: () => navigate('/ai-assistant') },
-                { icon: Edit, label: 'Add Note', color: 'text-text-secondary', action: () => {} },
-                { icon: UserPlus, label: 'Assign Owner', color: 'text-text-secondary', action: () => {} },
+                { icon: Brain, label: 'Explain this risk score', color: 'text-accent', action: () => navigate(`/explainability?customer=${customer.id}`) },
+                { icon: Lightbulb, label: 'See recommended actions', color: 'text-risk-medium', action: () => navigate(`/recommendations?customer=${customer.id}`) },
+                { icon: Mail, label: 'Draft an outreach email', color: 'text-blue-400', action: () => navigate(`/outreach?customer=${customer.id}`) },
               ].map(act => (
                 <button
                   key={act.label}
@@ -229,7 +278,10 @@ export default function CustomerDetailPage() {
 
           {/* Timeline */}
           <Card>
-            <CardHeader><CardTitle>Activity Timeline</CardTitle></CardHeader>
+            <CardHeader>
+              <CardTitle>Recent activity</CardTitle>
+              <p className="text-xs text-text-tertiary mt-1">What has happened on this account lately.</p>
+            </CardHeader>
             <div className="space-y-0">
               {(customer.timeline || []).map((event, i) => {
                 const Icon = timelineIcons[event.type] || Activity;

@@ -19,9 +19,7 @@ This repository contains the production-ready frontend application built with Re
 - **SHAP Explainability View**: Visualizes exactly which factors (e.g., feature adoption, support tickets) are increasing or decreasing a customer's churn risk.
 - **AI-Generated Recommendations**: Context-aware suggested actions for customer success managers, with an approve/reject workflow.
 - **Automated Outreach Generation**: AI drafts personalized emails addressing the specific churn drivers. Requires human review before sending.
-- **What-If Simulator**: Interactive sliders allowing users to model how improvements in engagement or feature usage would impact the churn probability of a specific customer.
 - **Data Management Workflow**: A multi-step stepper for uploading datasets (CSV/Excel), validation, column mapping, and triggering predictions.
-- **AI Assistant**: An integrated chat interface to query retention data, summarize risks, and draft emails.
 - **Mock/Real API Toggle**: The frontend can run completely offline using an extensive suite of mock data or connect to a real FastAPI backend via environment variables.
 
 ## 3. Technology Stack

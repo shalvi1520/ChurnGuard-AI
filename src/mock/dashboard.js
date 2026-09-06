@@ -1,31 +1,21 @@
 // ============================================
 // ChurnGuard – Mock Dashboard & Analytics Data
 // ============================================
+//
+// The headline KPIs are DERIVED from the series below rather than typed out
+// separately, so the numbers on a KPI card and the chart underneath it always
+// agree. Previously they didn't: "Customers at Risk" read 1,284 while the risk
+// donut summed to 2,847 across four tiers, and "Revenue at Risk" read $4.28M
+// while the trend chart's latest month said $2.04M.
 
-export const mockDashboardKPIs = {
-  totalCustomers: { value: 2847, change: 4.2, trend: 'up' },
-  customersAtRisk: { value: 1284, change: 12.4, trend: 'up' },
-  highRiskCustomers: { value: 342, change: 8.7, trend: 'up' },
-  avgChurnRisk: { value: 34.2, change: -2.1, trend: 'down' },
-  retentionRate: { value: 91.3, change: -1.8, trend: 'down' },
-  revenueAtRisk: { value: 4280000, change: 15.3, trend: 'up' },
-};
+// Single source of truth for how the customer base splits by risk tier.
+// Tier cut-offs match getRiskTier() in utils/helpers.js.
+const riskCounts = { low: 1205, medium: 658, high: 642, critical: 342 };
 
-export const mockSparklines = {
-  totalCustomers: [2650, 2690, 2710, 2740, 2770, 2790, 2810, 2830, 2847],
-  customersAtRisk: [980, 1020, 1080, 1120, 1150, 1190, 1230, 1260, 1284],
-  highRiskCustomers: [280, 295, 300, 310, 318, 325, 330, 338, 342],
-  avgChurnRisk: [38, 37.5, 36.8, 36.2, 35.8, 35.1, 34.8, 34.5, 34.2],
-  retentionRate: [93.8, 93.5, 93.2, 92.8, 92.5, 92.1, 91.8, 91.5, 91.3],
-  revenueAtRisk: [3200000, 3400000, 3550000, 3700000, 3850000, 3950000, 4100000, 4200000, 4280000],
-};
-
-export const mockRiskDistribution = [
-  { name: 'Low Risk', value: 1205, color: '#4ADE80' },
-  { name: 'Medium Risk', value: 658, color: '#FBBF24' },
-  { name: 'High Risk', value: 642, color: '#F97316' },
-  { name: 'Critical', value: 342, color: '#EF4444' },
-];
+const totalCustomers = Object.values(riskCounts).reduce((a, b) => a + b, 0);
+// "At risk" means High or Critical — the same 60%+ threshold the app uses
+// everywhere else, and what the Customers page filters on.
+const customersAtRisk = riskCounts.high + riskCounts.critical;
 
 export const mockChurnTrend = [
   { month: 'Jan', churnRate: 4.2, predicted: 4.5, customers: 2580 },
@@ -35,7 +25,7 @@ export const mockChurnTrend = [
   { month: 'May', churnRate: 5.8, predicted: 5.5, customers: 2710 },
   { month: 'Jun', churnRate: 6.2, predicted: 6.0, customers: 2740 },
   { month: 'Jul', churnRate: 7.1, predicted: 6.8, customers: 2790 },
-  { month: 'Aug', churnRate: 8.7, predicted: 8.2, customers: 2847 },
+  { month: 'Aug', churnRate: 8.7, predicted: 8.2, customers: totalCustomers },
 ];
 
 export const mockRevenueAtRisk = [
@@ -47,6 +37,63 @@ export const mockRevenueAtRisk = [
   { month: 'Jun', revenue: 2800000, atRisk: 1350000 },
   { month: 'Jul', revenue: 2950000, atRisk: 1680000 },
   { month: 'Aug', revenue: 3100000, atRisk: 2040000 },
+];
+
+// Month-over-month change, rounded to one decimal.
+const pctChange = (series) => {
+  const [prev, last] = series.slice(-2);
+  return Math.round(((last - prev) / prev) * 1000) / 10;
+};
+
+const customerSeries = mockChurnTrend.map((m) => m.customers);
+const atRiskSeries = [690, 726, 758, 790, 815, 838, 858, customersAtRisk];
+const revenueAtRiskSeries = mockRevenueAtRisk.map((m) => m.atRisk);
+const retentionSeries = mockChurnTrend.map((m) => Math.round((100 - m.churnRate) * 10) / 10);
+const avgRiskSeries = [38, 37.5, 36.8, 36.2, 35.8, 35.1, 34.8, 34.2];
+
+const trendOf = (change) => (change > 0 ? 'up' : 'down');
+
+export const mockDashboardKPIs = {
+  totalCustomers: {
+    value: totalCustomers,
+    change: pctChange(customerSeries),
+    trend: trendOf(pctChange(customerSeries)),
+  },
+  customersAtRisk: {
+    value: customersAtRisk,
+    change: pctChange(atRiskSeries),
+    trend: trendOf(pctChange(atRiskSeries)),
+  },
+  avgChurnRisk: {
+    value: avgRiskSeries[avgRiskSeries.length - 1],
+    change: pctChange(avgRiskSeries),
+    trend: trendOf(pctChange(avgRiskSeries)),
+  },
+  retentionRate: {
+    value: retentionSeries[retentionSeries.length - 1],
+    change: pctChange(retentionSeries),
+    trend: trendOf(pctChange(retentionSeries)),
+  },
+  revenueAtRisk: {
+    value: revenueAtRiskSeries[revenueAtRiskSeries.length - 1],
+    change: pctChange(revenueAtRiskSeries),
+    trend: trendOf(pctChange(revenueAtRiskSeries)),
+  },
+};
+
+export const mockSparklines = {
+  totalCustomers: customerSeries,
+  customersAtRisk: atRiskSeries,
+  avgChurnRisk: avgRiskSeries,
+  retentionRate: retentionSeries,
+  revenueAtRisk: revenueAtRiskSeries,
+};
+
+export const mockRiskDistribution = [
+  { name: 'Low Risk', value: riskCounts.low, color: '#4ADE80' },
+  { name: 'Medium Risk', value: riskCounts.medium, color: '#FBBF24' },
+  { name: 'High Risk', value: riskCounts.high, color: '#F97316' },
+  { name: 'Critical', value: riskCounts.critical, color: '#EF4444' },
 ];
 
 export const mockTopChurnDrivers = [
