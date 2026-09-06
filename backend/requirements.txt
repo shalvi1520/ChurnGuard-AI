@@ -1,0 +1,14 @@
+pandas
+numpy
+scikit-learn
+imbalanced-learn
+lightgbm
+catboost
+optuna
+shap
+joblib
+openpyxl
+fastapi
+uvicorn
+pydantic
+python-multipart
