@@ -147,6 +147,7 @@ export default function DataManagementPage() {
         columns: dataset.columns,
         fieldsMapped: Object.keys(payload).length,
         labelledChurnCount: result?.labelledChurnCount ?? null,
+        trainingMetrics: result?.trainingMetrics ?? null,
       });
       addToast({ type: 'success', message: 'Your dataset is ready — Overview unlocked' });
     } catch (err) {

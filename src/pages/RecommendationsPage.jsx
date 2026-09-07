@@ -8,8 +8,7 @@ import Badge, { RiskBadge } from '../components/ui/Badge';
 import Select from '../components/ui/Select';
 import EmptyState from '../components/ui/EmptyState';
 import { InfoTip } from '../components/ui/Tooltip';
-import { recommendationService } from '../services/api';
-import { mockCustomers } from '../mock/customers';
+import { recommendationService, customerService } from '../services/api';
 import { useApp } from '../context/AppContext';
 import { metric } from '../utils/glossary';
 
@@ -30,19 +29,42 @@ export default function RecommendationsPage() {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const { addToast } = useApp();
-  const [selectedCustomer, setSelectedCustomer] = useState(searchParams.get('customer') || 'CUST-1001');
+  const [selectedCustomer, setSelectedCustomer] = useState(searchParams.get('customer') || '');
+  const [customerOptions, setCustomerOptions] = useState([]);
+  const [customer, setCustomer] = useState(null);
   const [recommendations, setRecommendations] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
 
-  const customer = mockCustomers.find((c) => c.id === selectedCustomer);
-
   useEffect(() => {
     let cancelled = false;
-    async function load() {
+    async function loadCustomerList() {
       try {
-        const data = await recommendationService.getRecommendations(selectedCustomer);
+        const data = await customerService.getCustomers({ sortBy: 'churnProbability', sortDir: 'desc', limit: 200 });
         if (cancelled) return;
+        setCustomerOptions(data.customers);
+        if (!selectedCustomer && data.customers[0]) setSelectedCustomer(data.customers[0].id);
+      } catch {
+        // Selector stays empty; per-selection loads still show their own error state.
+      }
+    }
+    loadCustomerList();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (!selectedCustomer) return;
+    let cancelled = false;
+    async function load() {
+      setLoading(true);
+      try {
+        const [customerData, data] = await Promise.all([
+          customerService.getCustomer(selectedCustomer),
+          recommendationService.getRecommendations(selectedCustomer),
+        ]);
+        if (cancelled) return;
+        setCustomer(customerData);
         setRecommendations(data);
         setError(false);
       } catch {
@@ -79,7 +101,7 @@ export default function RecommendationsPage() {
           label="Account"
           value={selectedCustomer}
           onChange={(e) => setSelectedCustomer(e.target.value)}
-          options={mockCustomers.map(c => ({ value: c.id, label: `${c.name} (${c.id})` }))}
+          options={customerOptions.map(c => ({ value: c.id, label: c.id }))}
           placeholder=""
           className="md:w-72"
         />
@@ -91,7 +113,7 @@ export default function RecommendationsPage() {
           <div className="flex items-center gap-4 flex-wrap">
             <div>
               <p className="text-[10px] uppercase tracking-wider text-text-tertiary">Account</p>
-              <p className="text-sm font-semibold text-text-primary mt-0.5">{customer.name}</p>
+              <p className="text-sm font-semibold text-text-primary mt-0.5">{customer.id}</p>
             </div>
             <div>
               <p className="text-[10px] uppercase tracking-wider text-text-tertiary inline-flex items-center gap-1">

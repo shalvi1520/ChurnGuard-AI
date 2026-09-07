@@ -2,7 +2,7 @@ import { CheckCircle2, ArrowRight, Users, RefreshCw, Sparkles } from 'lucide-rea
 import Card from '../ui/Card';
 import Button from '../ui/Button';
 import Badge from '../ui/Badge';
-import { formatNumber, formatRelativeDate } from '../../utils/helpers';
+import { formatNumber, formatRelativeDate, formatPercent } from '../../utils/helpers';
 
 function Fact({ label, value }) {
   return (
@@ -66,15 +66,25 @@ export default function CompleteStep({ summary, onViewOverview, onViewCustomers,
       <Card>
         <div className="flex gap-3">
           <Sparkles size={16} className="text-accent shrink-0 mt-0.5" />
-          <div>
+          <div className="min-w-0 flex-1">
             <p className="text-sm font-medium text-text-primary">About these results</p>
             <p className="text-xs text-text-secondary mt-1 leading-relaxed max-w-2xl">
-              Row, column and churn-label counts above are measured directly from your file. The risk scores, SHAP
-              explanations and recommendations shown across the rest of ChurnGuard are simulated demo output — this
-              prototype does not train a model on your data. {isDemo && 'This run used ChurnGuard\'s demo dataset of fictional customers.'}
+              A churn model was trained on your uploaded data just now (a stacked LightGBM + CatBoost ensemble) — the
+              risk scores, SHAP explanations, recommendations and outreach drafts across the rest of ChurnGuard come
+              from that model. {isDemo && "This run used ChurnGuard's demo dataset of fictional customers."}
             </p>
+
+            {summary.trainingMetrics && (
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mt-4 pt-4 border-t border-border">
+                <Fact label="Accuracy" value={formatPercent(summary.trainingMetrics.accuracy * 100)} />
+                <Fact label="Precision" value={formatPercent(summary.trainingMetrics.precision * 100)} />
+                <Fact label="Recall" value={formatPercent(summary.trainingMetrics.recall * 100)} />
+                <Fact label="ROC-AUC" value={summary.trainingMetrics.rocAuc.toFixed(2)} />
+              </div>
+            )}
+
             {summary.completedAt && (
-              <p className="text-[11px] text-text-tertiary mt-2">
+              <p className="text-[11px] text-text-tertiary mt-3">
                 Setup completed {formatRelativeDate(summary.completedAt)}.
               </p>
             )}

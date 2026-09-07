@@ -9,7 +9,7 @@ import EmptyState from '../components/ui/EmptyState';
 import { InfoTip } from '../components/ui/Tooltip';
 import { SkeletonTable } from '../components/ui/Skeleton';
 import { customerService } from '../services/api';
-import { formatCurrency, formatRelativeDate } from '../utils/helpers';
+import { formatCurrency } from '../utils/helpers';
 import { metric } from '../utils/glossary';
 
 export default function CustomersPage() {
@@ -21,7 +21,6 @@ export default function CustomersPage() {
   const [search, setSearch] = useState('');
   const [risk, setRisk] = useState(() => new URLSearchParams(window.location.search).get('risk') || 'all');
   const [status, setStatus] = useState('all');
-  const [plan, setPlan] = useState('all');
   const [sortBy, setSortBy] = useState('churnProbability');
   const [sortDir, setSortDir] = useState('desc');
   const [selected, setSelected] = useState([]);
@@ -40,7 +39,7 @@ export default function CustomersPage() {
     setLoading(true);
     try {
       const data = await customerService.getCustomers({
-        search: debouncedSearch, risk, status, plan, page, limit: 10, sortBy, sortDir,
+        search: debouncedSearch, risk, status, page, limit: 10, sortBy, sortDir,
       });
       setCustomers(data.customers);
       setTotal(data.total);
@@ -50,21 +49,19 @@ export default function CustomersPage() {
       setError(true);
     }
     setLoading(false);
-  }, [debouncedSearch, risk, status, plan, page, sortBy, sortDir]);
+  }, [debouncedSearch, risk, status, page, sortBy, sortDir]);
 
   useEffect(() => { loadCustomers(); }, [loadCustomers]);
 
   const activeFilters = [
     risk !== 'all' && { key: 'risk', label: `Risk: ${risk}`, clear: () => setRisk('all') },
     status !== 'all' && { key: 'status', label: `Status: ${status}`, clear: () => setStatus('all') },
-    plan !== 'all' && { key: 'plan', label: `Plan: ${plan}`, clear: () => setPlan('all') },
     debouncedSearch && { key: 'search', label: `Search: "${debouncedSearch}"`, clear: () => setSearch('') },
   ].filter(Boolean);
 
   const clearFilters = () => {
     setRisk('all');
     setStatus('all');
-    setPlan('all');
     setSearch('');
     setPage(1);
   };
@@ -93,14 +90,12 @@ export default function CustomersPage() {
   };
 
   const columns = [
-    { key: 'name', label: 'Customer', sortable: true },
-    { key: 'plan', label: 'Plan', sortable: true, help: metric('plan').help },
-    { key: 'mrr', label: 'MRR', sortable: true, help: metric('mrr').help },
-    { key: 'usage', label: 'Usage', sortable: true, help: metric('usage').help },
-    { key: 'engagement', label: 'Engagement', sortable: true, help: metric('engagement').help },
+    { key: 'id', label: 'Customer ID', sortable: true },
+    { key: 'tenure', label: 'Tenure', sortable: true, help: metric('tenure').help },
+    { key: 'monthlyCharges', label: 'Monthly Charges', sortable: true, help: metric('monthlyCharges').help },
+    { key: 'contractType', label: 'Contract', sortable: true, help: metric('contractType').help },
     { key: 'churnProbability', label: 'Churn Risk', sortable: true, help: metric('churnProbability').help },
     { key: 'riskTier', label: 'Risk Tier', sortable: false, help: metric('riskTier').help },
-    { key: 'lastActive', label: 'Last Active', sortable: true, help: metric('lastActive').help },
     { key: 'status', label: 'Status', sortable: false, help: metric('status').help },
   ];
 
@@ -129,7 +124,7 @@ export default function CustomersPage() {
                   type="search"
                   value={search}
                   onChange={(e) => { setSearch(e.target.value); setPage(1); }}
-                  placeholder="Name, account ID, company or contact"
+                  placeholder="Customer ID"
                   className="w-full pl-9 pr-3 py-2.5 bg-bg-tertiary/50 border border-border rounded-lg text-sm text-text-primary placeholder:text-text-tertiary outline-none focus:border-accent transition-colors"
                 />
               </div>
@@ -155,20 +150,6 @@ export default function CustomersPage() {
                 { value: 'all', label: 'All statuses' },
                 { value: 'active', label: 'Active' },
                 { value: 'at-risk', label: 'At risk' },
-                { value: 'dormant', label: 'Dormant' },
-                { value: 'churned', label: 'Churned' },
-              ]}
-              placeholder=""
-            />
-            <Select
-              label="Plan"
-              value={plan}
-              onChange={(e) => { setPlan(e.target.value); setPage(1); }}
-              options={[
-                { value: 'all', label: 'All plans' },
-                { value: 'Starter', label: 'Starter' },
-                { value: 'Professional', label: 'Professional' },
-                { value: 'Enterprise', label: 'Enterprise' },
               ]}
               placeholder=""
             />
@@ -272,48 +253,33 @@ export default function CustomersPage() {
                         type="checkbox"
                         checked={selected.includes(c.id)}
                         onChange={() => toggleSelect(c.id)}
-                        aria-label={`Select ${c.name}`}
+                        aria-label={`Select ${c.id}`}
                         className="rounded border-border"
                       />
                     </td>
                     <td className="px-4 py-3">
-                      <div className="font-medium text-text-primary">{c.name}</div>
-                      <div className="text-xs text-text-tertiary">{c.id} · {c.contactName}</div>
+                      <div className="font-medium text-text-primary">{c.id}</div>
                     </td>
-                    <td className="px-4 py-3 text-text-secondary text-xs">{c.plan}</td>
-                    <td className="px-4 py-3 text-text-primary tabular-nums">{formatCurrency(c.mrr)}</td>
-                    <td className="px-4 py-3">
-                      <div className="flex items-center gap-2">
-                        <div className="w-12 h-1.5 rounded-full bg-bg-tertiary overflow-hidden">
-                          <div className="h-full rounded-full bg-accent" style={{ width: `${c.usage}%` }} />
-                        </div>
-                        <span className="text-xs text-text-secondary tabular-nums">{c.usage}%</span>
-                      </div>
+                    <td className="px-4 py-3 text-text-secondary text-xs tabular-nums">
+                      {c.tenure !== null && c.tenure !== undefined ? `${c.tenure} mo` : '—'}
                     </td>
-                    <td className="px-4 py-3">
-                      <div className="flex items-center gap-2">
-                        <div className="w-12 h-1.5 rounded-full bg-bg-tertiary overflow-hidden">
-                          <div className="h-full rounded-full" style={{ width: `${c.engagement}%`, backgroundColor: c.engagement > 60 ? '#4ADE80' : c.engagement > 35 ? '#FBBF24' : '#F97316' }} />
-                        </div>
-                        <span className="text-xs text-text-secondary tabular-nums">{c.engagement}%</span>
-                      </div>
-                    </td>
+                    <td className="px-4 py-3 text-text-primary tabular-nums">{formatCurrency(c.monthlyCharges)}</td>
+                    <td className="px-4 py-3 text-text-secondary text-xs">{c.contractType || '—'}</td>
                     <td className="px-4 py-3 text-text-primary font-semibold tabular-nums">{c.churnProbability}%</td>
                     <td className="px-4 py-3"><RiskBadge tier={c.riskTier} size="xs" /></td>
-                    <td className="px-4 py-3 text-text-tertiary text-xs">{formatRelativeDate(c.lastActive)}</td>
                     <td className="px-4 py-3"><StatusBadge status={c.status} size="xs" /></td>
                     <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
                       <div className="flex items-center gap-0.5">
                         <button
                           className="p-1.5 rounded hover:bg-bg-tertiary text-text-tertiary hover:text-text-primary cursor-pointer"
-                          aria-label={`Explain why ${c.name} is at risk`}
+                          aria-label={`Explain why ${c.id} is at risk`}
                           onClick={() => navigate(`/explainability?customer=${c.id}`)}
                         >
                           <Brain size={13} aria-hidden="true" />
                         </button>
                         <button
                           className="p-1.5 rounded hover:bg-bg-tertiary text-text-tertiary hover:text-text-primary cursor-pointer"
-                          aria-label={`Draft outreach for ${c.name}`}
+                          aria-label={`Draft outreach for ${c.id}`}
                           onClick={() => navigate(`/outreach?customer=${c.id}`)}
                         >
                           <Mail size={13} aria-hidden="true" />

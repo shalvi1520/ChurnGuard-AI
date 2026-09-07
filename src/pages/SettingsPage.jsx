@@ -11,10 +11,6 @@ import { useAuth } from '../context/AuthContext';
 import { useApp } from '../context/AppContext';
 import { useNavigate } from 'react-router-dom';
 
-// Matches the check in services/api.js exactly — the old indicator tested
-// `=== 'true'`, so with no .env file it wrongly reported demo data as OFF.
-const usingMockData = import.meta.env.VITE_USE_MOCK_API !== 'false';
-
 const tabs = [
   { id: 'profile', label: 'Profile', icon: User },
   { id: 'organization', label: 'Organization', icon: Building2 },
@@ -164,20 +160,17 @@ export default function SettingsPage() {
                 label="Backend API base URL"
                 value={import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api'}
                 readOnly
-                hint="Only used when demo data is switched off (VITE_USE_MOCK_API=false)."
+                hint="The FastAPI + ML backend (backend/) — every prediction, explanation and recommendation is computed there."
               />
               <div className="flex items-start justify-between gap-4 py-2">
                 <div>
-                  <p className="text-sm font-medium text-text-primary">Demo data</p>
+                  <p className="text-sm font-medium text-text-primary">Connected backend</p>
                   <p className="text-xs text-text-tertiary mt-0.5 max-w-sm leading-relaxed">
-                    {usingMockData
-                      ? 'Customer records, risk scores and explanations come from the local demo dataset. No backend is required.'
-                      : 'ChurnGuard is calling the backend above for customer data.'}
+                    ChurnGuard always calls the backend above — customer records, risk scores and explanations are
+                    computed from the dataset you connected, not demo data.
                   </p>
                 </div>
-                <Badge variant={usingMockData ? 'accent' : 'low'} size="sm">
-                  {usingMockData ? 'ON' : 'OFF'}
-                </Badge>
+                <Badge variant="low" size="sm">LIVE</Badge>
               </div>
             </div>
           </Card>

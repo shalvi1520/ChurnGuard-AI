@@ -15,10 +15,9 @@ import { RiskBadge } from '../components/ui/Badge';
 import Button from '../components/ui/Button';
 import EmptyState from '../components/ui/EmptyState';
 import { SkeletonCard, SkeletonChart } from '../components/ui/Skeleton';
-import { dashboardService } from '../services/api';
-import { formatCurrency, formatNumber, formatRelativeDate, getPrimaryRiskDriver } from '../utils/helpers';
+import { dashboardService, customerService } from '../services/api';
+import { formatCurrency, formatNumber } from '../utils/helpers';
 import { metric } from '../utils/glossary';
-import { mockCustomers } from '../mock/customers';
 
 // Five differentiated KPIs. "High Risk Customers" used to sit alongside
 // "Customers at Risk" saying almost the same thing — it's now one metric that
@@ -35,9 +34,7 @@ const TABLE_COLUMNS = [
   { label: 'Customer' },
   { label: 'Churn Risk', help: metric('churnProbability').help },
   { label: 'Risk Tier', help: metric('riskTier').help },
-  { label: 'Weakest Signal', help: "The lowest-scoring signal in this account's own data. Open Explainability for the full factor breakdown." },
   { label: 'Revenue at Risk', help: metric('customerRevenueAtRisk').help },
-  { label: 'Last Active', help: metric('lastActive').help },
   { label: 'Actions' },
 ];
 
@@ -67,6 +64,7 @@ export default function DashboardPage() {
   const [churnTrend, setChurnTrend] = useState([]);
   const [revenueAtRisk, setRevenueAtRisk] = useState([]);
   const [topDrivers, setTopDrivers] = useState([]);
+  const [atRiskCustomers, setAtRiskCustomers] = useState([]);
   const navigate = useNavigate();
 
   // Retry bumps `reloadKey` from the click handler, which keeps the effect
@@ -77,12 +75,13 @@ export default function DashboardPage() {
     let cancelled = false;
     async function load() {
       try {
-        const [metricsData, risk, trend, revenue, drivers] = await Promise.all([
+        const [metricsData, risk, trend, revenue, drivers, triage] = await Promise.all([
           dashboardService.getMetrics(),
           dashboardService.getRiskDistribution(),
           dashboardService.getChurnTrend(),
           dashboardService.getRevenueAtRisk(),
           dashboardService.getTopDrivers(),
+          customerService.getCustomers({ sortBy: 'churnProbability', sortDir: 'desc', limit: 20 }),
         ]);
         if (cancelled) return;
         setMetrics(metricsData);
@@ -90,6 +89,7 @@ export default function DashboardPage() {
         setChurnTrend(trend);
         setRevenueAtRisk(revenue);
         setTopDrivers(drivers);
+        setAtRiskCustomers(triage.customers.filter((c) => c.riskTier === 'high' || c.riskTier === 'critical').slice(0, 8));
       } catch {
         if (!cancelled) setError(true);
       }
@@ -105,15 +105,7 @@ export default function DashboardPage() {
     setReloadKey((k) => k + 1);
   };
 
-  const atRiskCustomers = mockCustomers
-    .filter((c) => c.riskTier === 'critical' || c.riskTier === 'high')
-    .sort((a, b) => b.churnProbability - a.churnProbability)
-    .slice(0, 8);
-
   const riskTotal = riskDistribution.reduce((sum, d) => sum + d.value, 0);
-  const trendPeriod = churnTrend.length
-    ? `${churnTrend[0].month}–${churnTrend[churnTrend.length - 1].month}`
-    : '';
 
   if (loading) {
     return (
@@ -151,32 +143,34 @@ export default function DashboardPage() {
       <header className="max-w-3xl">
         <h1 className="text-xl font-bold text-text-primary tracking-tight">Retention Overview</h1>
         <p className="text-sm text-text-secondary mt-1 leading-relaxed">
-          Where your customer base stands right now: how many accounts are at risk, what it's worth, and which ones
-          need attention first. Figures cover the most recent month{trendPeriod && ` of an ${churnTrend.length}-month window (${trendPeriod})`}.
+          Where your customer base stands right now, based on the model trained on your connected dataset: how many
+          accounts are at risk, what it's worth, and which ones need attention first.
         </p>
       </header>
 
       {/* KPIs */}
       {metrics && (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
-          {kpiConfig.map((kpi, i) => {
-            const g = metric(kpi.key);
-            return (
-              <MetricCard
-                key={kpi.key}
-                title={g.label}
-                description={g.description}
-                help={g.help}
-                value={metrics.kpis[kpi.key].value}
-                change={metrics.kpis[kpi.key].change}
-                trend={metrics.kpis[kpi.key].trend}
-                format={kpi.format}
-                icon={kpi.icon}
-                sparklineData={metrics.sparklines[kpi.key]}
-                delay={i * 0.05}
-              />
-            );
-          })}
+          {kpiConfig
+            .filter((kpi) => metrics.kpis[kpi.key] !== undefined)
+            .map((kpi, i) => {
+              const g = metric(kpi.key);
+              return (
+                <MetricCard
+                  key={kpi.key}
+                  title={g.label}
+                  description={g.description}
+                  help={g.help}
+                  value={metrics.kpis[kpi.key].value}
+                  change={metrics.kpis[kpi.key].change}
+                  trend={metrics.kpis[kpi.key].trend}
+                  format={kpi.format}
+                  icon={kpi.icon}
+                  sparklineData={metrics.sparklines?.[kpi.key]}
+                  delay={i * 0.05}
+                />
+              );
+            })}
         </div>
       )}
 
@@ -209,7 +203,11 @@ export default function DashboardPage() {
           </div>
         </ChartCard>
 
-        <ChartCard metricKey="churnTrend" isEmpty={churnTrend.length === 0}>
+        <ChartCard
+          metricKey="churnTrend"
+          isEmpty={churnTrend.length === 0}
+          emptyMessage="An uploaded dataset is a single snapshot, not a time series — a churn trend needs repeated uploads over time to compute."
+        >
           <div className="h-56">
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={churnTrend} margin={{ top: 4, right: 8, left: -8, bottom: 0 }}>
@@ -222,15 +220,15 @@ export default function DashboardPage() {
               </LineChart>
             </ResponsiveContainer>
           </div>
-          <div className="flex items-center gap-4 mt-3 text-[11px] text-text-tertiary">
-            <span className="flex items-center gap-1.5"><span className="w-4 h-0.5 rounded bg-risk-high" />Actual churn rate</span>
-            <span className="flex items-center gap-1.5"><span className="w-4 border-t-2 border-dashed border-accent" />Predicted</span>
-          </div>
         </ChartCard>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <ChartCard metricKey="revenueAtRiskTrend" isEmpty={revenueAtRisk.length === 0}>
+        <ChartCard
+          metricKey="revenueAtRiskTrend"
+          isEmpty={revenueAtRisk.length === 0}
+          emptyMessage="An uploaded dataset is a single snapshot, not a time series — this needs repeated uploads over time to compute."
+        >
           <div className="h-56">
             <ResponsiveContainer width="100%" height="100%">
               <AreaChart data={revenueAtRisk} margin={{ top: 4, right: 8, left: -4, bottom: 0 }}>
@@ -242,10 +240,6 @@ export default function DashboardPage() {
                 <Area type="monotone" dataKey="atRisk" name="At risk" stroke="#EF4444" fill="#EF4444" fillOpacity={0.12} strokeWidth={2} animationDuration={500} />
               </AreaChart>
             </ResponsiveContainer>
-          </div>
-          <div className="flex items-center gap-4 mt-3 text-[11px] text-text-tertiary">
-            <span className="flex items-center gap-1.5"><span className="w-4 h-0.5 rounded bg-accent" />Total revenue</span>
-            <span className="flex items-center gap-1.5"><span className="w-4 h-0.5 rounded bg-risk-critical" />At risk</span>
           </div>
         </ChartCard>
 
@@ -266,7 +260,7 @@ export default function DashboardPage() {
             </ResponsiveContainer>
           </div>
           <p className="text-[11px] text-text-tertiary mt-3">
-            Longer bar = stronger push toward churn across the base.
+            Longer bar = stronger push toward churn, averaged over a sample of your customers.
           </p>
         </ChartCard>
       </div>
@@ -294,7 +288,7 @@ export default function DashboardPage() {
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
-              <caption className="sr-only">Accounts with high or critical churn risk</caption>
+              <caption className="sr-only">Accounts with critical churn risk</caption>
               <thead>
                 <tr className="border-b border-border">
                   {TABLE_COLUMNS.map((col) => (
@@ -308,55 +302,41 @@ export default function DashboardPage() {
                 </tr>
               </thead>
               <tbody>
-                {atRiskCustomers.map((c) => {
-                  const driver = getPrimaryRiskDriver(c);
-                  return (
-                    <tr
-                      key={c.id}
-                      className="border-b border-border/50 hover:bg-bg-tertiary/30 transition-colors cursor-pointer"
-                      onClick={() => navigate(`/customers/${c.id}`)}
-                    >
-                      <td className="px-5 py-3">
-                        <div className="font-medium text-text-primary">{c.name}</div>
-                        <div className="text-xs text-text-tertiary">{c.id} · {c.plan}</div>
-                      </td>
-                      <td className="px-5 py-3">
-                        <span className="text-text-primary font-semibold tabular-nums">{c.churnProbability}%</span>
-                      </td>
-                      <td className="px-5 py-3"><RiskBadge tier={c.riskTier} /></td>
-                      <td className="px-5 py-3 text-xs">
-                        {driver ? (
-                          <>
-                            <span className="text-text-secondary">{driver.label}</span>
-                            <span className="text-text-tertiary ml-1.5 tabular-nums">{driver.display}</span>
-                          </>
-                        ) : (
-                          <span className="text-text-tertiary">—</span>
-                        )}
-                      </td>
-                      <td className="px-5 py-3 text-text-primary tabular-nums">{formatCurrency(c.revenueAtRisk)}</td>
-                      <td className="px-5 py-3 text-text-tertiary text-xs">{formatRelativeDate(c.lastActive)}</td>
-                      <td className="px-5 py-3" onClick={(e) => e.stopPropagation()}>
-                        <div className="flex items-center gap-1">
-                          <button
-                            onClick={() => navigate(`/explainability?customer=${c.id}`)}
-                            className="p-1.5 rounded-lg hover:bg-bg-tertiary text-text-tertiary hover:text-text-primary transition-colors cursor-pointer"
-                            aria-label={`Explain why ${c.name} is at risk`}
-                          >
-                            <Brain size={14} aria-hidden="true" />
-                          </button>
-                          <button
-                            onClick={() => navigate(`/outreach?customer=${c.id}`)}
-                            className="p-1.5 rounded-lg hover:bg-bg-tertiary text-text-tertiary hover:text-text-primary transition-colors cursor-pointer"
-                            aria-label={`Draft outreach for ${c.name}`}
-                          >
-                            <Mail size={14} aria-hidden="true" />
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
+                {atRiskCustomers.map((c) => (
+                  <tr
+                    key={c.id}
+                    className="border-b border-border/50 hover:bg-bg-tertiary/30 transition-colors cursor-pointer"
+                    onClick={() => navigate(`/customers/${c.id}`)}
+                  >
+                    <td className="px-5 py-3">
+                      <div className="font-medium text-text-primary">{c.id}</div>
+                      {c.contractType && <div className="text-xs text-text-tertiary">{c.contractType}</div>}
+                    </td>
+                    <td className="px-5 py-3">
+                      <span className="text-text-primary font-semibold tabular-nums">{c.churnProbability}%</span>
+                    </td>
+                    <td className="px-5 py-3"><RiskBadge tier={c.riskTier} /></td>
+                    <td className="px-5 py-3 text-text-primary tabular-nums">{formatCurrency(c.revenueAtRisk)}</td>
+                    <td className="px-5 py-3" onClick={(e) => e.stopPropagation()}>
+                      <div className="flex items-center gap-1">
+                        <button
+                          onClick={() => navigate(`/explainability?customer=${c.id}`)}
+                          className="p-1.5 rounded-lg hover:bg-bg-tertiary text-text-tertiary hover:text-text-primary transition-colors cursor-pointer"
+                          aria-label={`Explain why ${c.id} is at risk`}
+                        >
+                          <Brain size={14} aria-hidden="true" />
+                        </button>
+                        <button
+                          onClick={() => navigate(`/outreach?customer=${c.id}`)}
+                          className="p-1.5 rounded-lg hover:bg-bg-tertiary text-text-tertiary hover:text-text-primary transition-colors cursor-pointer"
+                          aria-label={`Draft outreach for ${c.id}`}
+                        >
+                          <Mail size={14} aria-hidden="true" />
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           </div>

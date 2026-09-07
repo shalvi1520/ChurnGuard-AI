@@ -160,23 +160,3 @@ export function debounce(fn, ms = 300) {
     timer = setTimeout(() => fn(...args), ms);
   };
 }
-
-/**
- * The weakest signal in a customer's own record, chosen by how far each value
- * falls below its healthy threshold (all deficits normalised to 0–1 so they're
- * comparable). This is a plain read of the data shown elsewhere on the account
- * — not a model output. Per-factor model attribution lives on Explainability.
- */
-export function getPrimaryRiskDriver(customer) {
-  if (!customer) return null;
-  const candidates = [
-    { label: 'Product usage', display: `${customer.usage}%`, deficit: (50 - customer.usage) / 50 },
-    { label: 'Engagement', display: `${customer.engagement}/100`, deficit: (50 - customer.engagement) / 50 },
-    { label: 'Login frequency', display: `${customer.loginFrequency}/wk`, deficit: (5 - customer.loginFrequency) / 5 },
-    { label: 'Satisfaction', display: `NPS ${customer.nps}`, deficit: (7 - customer.nps) / 7 },
-    { label: 'Open tickets', display: `${customer.openTickets} open`, deficit: Math.min(customer.openTickets / 8, 1) },
-  ].filter((c) => Number.isFinite(c.deficit) && c.deficit > 0);
-
-  if (candidates.length === 0) return null;
-  return candidates.sort((a, b) => b.deficit - a.deficit)[0];
-}

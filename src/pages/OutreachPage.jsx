@@ -6,10 +6,9 @@ import Button from '../components/ui/Button';
 import Badge from '../components/ui/Badge';
 import EmptyState from '../components/ui/EmptyState';
 import { SkeletonCard } from '../components/ui/Skeleton';
-import { outreachService } from '../services/api';
-import { mockCustomers } from '../mock/customers';
+import { outreachService, customerService, explainabilityService } from '../services/api';
 import { useApp } from '../context/AppContext';
-import { formatRelativeDate, getPrimaryRiskDriver } from '../utils/helpers';
+import { formatRelativeDate } from '../utils/helpers';
 
 const statusFlow = { draft: 'Draft', reviewed: 'Edited', approved: 'Approved', sent: 'Sent' };
 const statusColors = { draft: 'draft', reviewed: 'reviewed', approved: 'approved', sent: 'sent' };
@@ -34,11 +33,36 @@ export default function OutreachPage() {
   const [editMode, setEditMode] = useState(false);
   const [editBody, setEditBody] = useState('');
   const [editSubject, setEditSubject] = useState('');
+  const [draftCustomer, setDraftCustomer] = useState(null);
+  const [draftDriver, setDraftDriver] = useState(null);
   const customerId = searchParams.get('customer');
-  const draftCustomer = mockCustomers.find((c) => c.id === selectedEmail?.customerId);
-  const draftDriver = getPrimaryRiskDriver(draftCustomer);
 
   useEffect(() => { loadEmails(); }, []);
+
+  useEffect(() => {
+    const targetId = selectedEmail?.customerId;
+    if (!targetId) {
+      setDraftCustomer(null);
+      setDraftDriver(null);
+      return;
+    }
+    let cancelled = false;
+    async function loadContext() {
+      try {
+        const [customerData, explanation] = await Promise.all([
+          customerService.getCustomer(targetId),
+          explainabilityService.getSHAPExplanation(targetId),
+        ]);
+        if (cancelled) return;
+        setDraftCustomer(customerData);
+        setDraftDriver(explanation?.features?.[0] || null);
+      } catch {
+        if (!cancelled) { setDraftCustomer(null); setDraftDriver(null); }
+      }
+    }
+    loadContext();
+    return () => { cancelled = true; };
+  }, [selectedEmail?.customerId]);
 
   const loadEmails = async () => {
     try {
@@ -89,7 +113,7 @@ export default function OutreachPage() {
       const updated = { ...selectedEmail, status: 'sent' };
       setSelectedEmail(updated);
       setEmails(prev => prev.map(e => e.id === selectedEmail.id ? updated : e));
-      addToast({ type: 'success', message: 'Email sent successfully' });
+      addToast({ type: 'success', message: 'Marked as sent — ChurnGuard has no email delivery, so send this from your own tools' });
     } catch (e) { console.error(e); }
   };
 
@@ -205,12 +229,15 @@ export default function OutreachPage() {
                     <div>
                       <span className="text-xs text-text-tertiary">To</span>
                       <p className="text-text-primary font-medium break-words">
-                        {selectedEmail.contactName} · {selectedEmail.contactEmail}
+                        Customer {selectedEmail.customerId}
+                      </p>
+                      <p className="text-[11px] text-text-tertiary mt-0.5">
+                        No contact name or email was in your dataset — copy this draft to send from your own tools.
                       </p>
                     </div>
                     <div>
                       <span className="text-xs text-text-tertiary">Account</span>
-                      <p className="text-text-primary font-medium">{selectedEmail.customerName}</p>
+                      <p className="text-text-primary font-medium">{selectedEmail.customerId}</p>
                     </div>
                   </div>
 
@@ -220,14 +247,14 @@ export default function OutreachPage() {
                     <p className="text-xs text-text-secondary leading-relaxed">
                       {draftCustomer ? (
                         <>
-                          {draftCustomer.name} is at{' '}
+                          {draftCustomer.id} is at{' '}
                           <span className="text-text-primary font-medium">{draftCustomer.churnProbability}% churn risk</span>
-                          {draftDriver && <> with {draftDriver.label.toLowerCase()} at {draftDriver.display}</>}.
-                          {' '}The wording is a generic starting point — check it against what you know about the account
-                          before sending.
+                          {draftDriver && <> with {draftDriver.feature.toLowerCase()} at {draftDriver.value}</>}.
+                          {' '}An LLM drafted this from the account's real risk factors — check it against what you know
+                          about the account before sending.
                         </>
                       ) : (
-                        <>A generic retention template. Check it against what you know about the account before sending.</>
+                        <>Check this draft against what you know about the account before sending.</>
                       )}
                     </p>
                   </div>
@@ -271,7 +298,7 @@ export default function OutreachPage() {
                           <Button size="sm" icon={Check} onClick={handleApprove}>Approve for sending</Button>
                         )}
                         {selectedEmail.status === 'approved' && (
-                          <Button size="sm" icon={Send} onClick={handleSend}>Send Email</Button>
+                          <Button size="sm" icon={Send} onClick={handleSend}>Mark as sent</Button>
                         )}
                       </>
                     )}

@@ -48,3 +48,45 @@ def build_messages(customer_id: str, risk_score: float, drivers: List[dict]) -> 
         driver_lines=format_driver_lines(drivers),
     )
     return [SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=user_content)]
+
+
+EXPLAIN_SYSTEM_PROMPT = (
+    "You are a churn-analytics assistant writing a plain-English summary of why a "
+    "machine learning model scored one customer as it did. You will be given the "
+    "customer's predicted churn probability and the top factors driving that "
+    "score, derived from a real SHAP explanation of the model's prediction.\n\n"
+    "Rules:\n"
+    "- Reference ONLY the factors provided to you. Do not invent, assume, or "
+    "speculate about any other reason the customer might be at risk.\n"
+    "- Do not mention SHAP, KernelExplainer, or other technical/statistical "
+    "implementation terms -- write for a customer success manager, not a data "
+    "scientist.\n"
+    "- Be specific about the factor values you were given.\n"
+    "- 3-5 sentences, factual and direct."
+)
+
+EXPLAIN_USER_PROMPT_TEMPLATE = (
+    "Customer ID: {customer_id}\n"
+    "Predicted churn risk: {risk_score:.0%}\n"
+    "Top factors, most significant first (positive effect = pushes risk up, "
+    "negative = pulls risk down):\n"
+    "{driver_lines}\n\n"
+    "Write the plain-English summary."
+)
+
+
+def format_explain_driver_lines(drivers: List[dict]) -> str:
+    lines = []
+    for d in drivers:
+        direction = "increases" if d["contribution"] > 0 else "decreases"
+        lines.append(f"- {d['feature']} = {d['value']}: {direction} risk by {abs(d['contribution']):.2f}")
+    return "\n".join(lines)
+
+
+def build_explain_messages(customer_id: str, risk_score: float, drivers: List[dict]) -> List[BaseMessage]:
+    user_content = EXPLAIN_USER_PROMPT_TEMPLATE.format(
+        customer_id=customer_id,
+        risk_score=risk_score / 100 if risk_score > 1 else risk_score,
+        driver_lines=format_explain_driver_lines(drivers),
+    )
+    return [SystemMessage(content=EXPLAIN_SYSTEM_PROMPT), HumanMessage(content=user_content)]

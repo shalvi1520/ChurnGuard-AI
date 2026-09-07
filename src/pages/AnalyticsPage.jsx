@@ -148,10 +148,14 @@ export default function AnalyticsPage() {
           <p className="text-[11px] text-text-tertiary mt-3">Percentages are the average churn risk of accounts in each band.</p>
         </ChartCard>
 
-        <ChartCard metricKey="riskByRegion" isEmpty={!segmentation?.byRegion?.length}>
+        <ChartCard
+          metricKey="riskByServiceTier"
+          isEmpty={!segmentation?.byServiceTier?.length}
+          emptyMessage="Map a service/product tier column during data setup to see this breakdown."
+        >
           <div className="h-56">
             <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={segmentation?.byRegion} layout="vertical" margin={{ top: 4, right: 12, left: 0, bottom: 0 }}>
+              <BarChart data={segmentation?.byServiceTier} layout="vertical" margin={{ top: 4, right: 12, left: 0, bottom: 0 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#2A2F42" horizontal={false} />
                 <XAxis type="number" tick={{ fontSize: 11, fill: '#6B7490' }} axisLine={false} tickLine={false} />
                 <YAxis type="category" dataKey="segment" tick={{ fontSize: 10, fill: '#9BA3B8' }} width={116} axisLine={false} tickLine={false} />
@@ -192,6 +196,7 @@ export default function AnalyticsPage() {
         metricKey="churnTrend"
         description={`Monthly churn rate, actual against predicted${trendPeriod ? ` (${trendPeriod})` : ''}`}
         isEmpty={churnTrend.length === 0}
+        emptyMessage="An uploaded dataset is a single snapshot, not a time series — this needs repeated uploads over time to compute."
       >
         <div className="h-64">
           <ResponsiveContainer width="100%" height="100%">

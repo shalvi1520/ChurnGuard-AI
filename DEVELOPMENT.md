@@ -6,8 +6,17 @@ The application is highly configurable through standard mechanisms:
 
 - **Styling Config (`src/index.css`)**: Defines the core design system using CSS variables (`--color-bg-primary`, `--color-accent`, etc.). Tailwind CSS utility classes map to these variables. Modifying these variables will globally alter the application's appearance.
 - **Vite Config (`vite.config.js`)**: Standard Vite configuration with the `@vitejs/plugin-react` and `@tailwindcss/vite` plugins.
-- **Environment Variables (`.env`)**: 
-  - `VITE_USE_MOCK_API`: Setting this to `true` bypasses all external network requests and relies entirely on local mock data. Ideal for UI development, testing, and demos.
+- **Environment Variables (`.env`)**:
+  - `VITE_API_BASE_URL`: Base URL of the FastAPI + ML backend (`backend/`), default `http://localhost:8000/api`. There is no mock-data mode any more — the app always calls this backend for customers/dashboard/explainability/recommendations/outreach (see "Running the real backend" below). `authService` alone stays a local/prototype implementation (no backend user accounts exist).
+
+### Running the real backend
+
+```
+pip install -r backend/requirements.txt
+uvicorn backend.api.main:app --reload
+```
+
+This starts the FastAPI app on `http://localhost:8000`. It needs a `backend/.env` with at least one LLM provider key (`GROQ_API_KEY`, `GOOGLE_API_KEY`, or `OPENAI_API_KEY`) for the Explainability AI summary and Outreach drafting to work — everything else (training, prediction, SHAP, recommendations) works without one. Then `npm run dev` as usual. CORS defaults to allowing `http://localhost:5173`; override with `CORS_ORIGINS` (comma-separated) in `backend/.env` if serving the frontend elsewhere.
 
 ## 2. Error Handling and Edge Cases
 
@@ -43,10 +52,10 @@ Basic component tests are implemented in `src/components/ui/` (e.g., `Button.tes
 
 ## 6. Known Limitations
 
-- **Mock Data Dependency**: The application is currently heavily reliant on the mock data structures. The real backend API must exactly match the expected JSON schemas defined implicitly by the mock responses.
-- **Incomplete Error Handling**: Global error boundary (React Error Boundary) is not implemented. Unhandled exceptions in the render cycle could crash the application.
-- **Missing Tests**: No automated tests exist.
-- **Local State Pagination**: The CRM table pagination currently operates on the assumption that the mock data returns the total count, but filtering is simulated.
+- **No backend user accounts.** `authService` (login/signup) is a local/prototype implementation — any email/password is accepted, session token lives in `localStorage`. Building real auth is a separate, larger feature.
+- **In-memory, single-tenant backend.** `backend/api/store.py` holds one active dataset at a time in process memory; restarting the backend clears it. There is no database.
+- **No time-series data.** An uploaded dataset is a single snapshot — churn-trend and revenue-at-risk-over-time charts are honestly empty rather than fabricated (see `PROJECT_MEMORY.md`).
+- **Training runs synchronously in the request.** `POST /datasets/{id}/predict` blocks until training + prediction + a SHAP aggregate finish (tens of seconds to a couple of minutes depending on dataset size). No background job/websocket progress streaming exists yet.
 
 ## 7. Future Improvements
 
@@ -64,9 +73,9 @@ Basic component tests are implemented in `src/components/ui/` (e.g., `Button.tes
 
 ## 8. Troubleshooting
 
-**Problem**: The dashboard is empty and infinite loading spinners appear.
-**Possible Cause**: `VITE_USE_MOCK_API` is set to `false`, but the backend is not running at `VITE_API_BASE_URL`.
-**Solution**: Either start the FastAPI backend server or change `VITE_USE_MOCK_API=true` in the `.env` file to use mock data, then restart the Vite dev server.
+**Problem**: The dashboard is empty, shows a "couldn't load" error, or data setup never finishes.
+**Possible Cause**: The FastAPI backend isn't running at `VITE_API_BASE_URL`, or no dataset has been uploaded and processed yet.
+**Solution**: Start the backend (see "Running the real backend" above), confirm `curl http://localhost:8000/docs` responds, then complete Data Management → upload/demo dataset → validate → map → process.
 
 **Problem**: Changes to Tailwind classes aren't reflecting in the browser.
 **Possible Cause**: The Vite dev server might need a restart, or the class name is dynamically constructed incorrectly (Tailwind cannot purge/compile dynamic class names like `bg-${color}-500`).

@@ -3,30 +3,30 @@ import { motion } from 'framer-motion';
 import { Users, AlertTriangle, DollarSign, TrendingUp, Shield, ArrowRight, Sparkles } from 'lucide-react';
 import { PieChart, Pie, Cell, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip } from 'recharts';
 import Card from '../components/ui/Card';
-import { dashboardService } from '../services/api';
-import { mockCustomers } from '../mock/customers';
+import { dashboardService, customerService } from '../services/api';
 import { formatCurrency, formatNumber, formatPercent, getRiskColor } from '../utils/helpers';
 
 export default function ExecutiveOverviewPage() {
   const [metrics, setMetrics] = useState(null);
   const [riskDistribution, setRiskDistribution] = useState([]);
   const [drivers, setDrivers] = useState([]);
+  const [topAtRisk, setTopAtRisk] = useState([]);
 
   useEffect(() => {
     async function load() {
-      const [m, r, d] = await Promise.all([
+      const [m, r, d, critical] = await Promise.all([
         dashboardService.getMetrics(),
         dashboardService.getRiskDistribution(),
         dashboardService.getTopDrivers(),
+        customerService.getCustomers({ risk: 'critical', sortBy: 'revenueAtRisk', sortDir: 'desc', limit: 5 }),
       ]);
       setMetrics(m);
       setRiskDistribution(r);
       setDrivers(d);
+      setTopAtRisk(critical.customers);
     }
     load();
   }, []);
-
-  const topAtRisk = mockCustomers.filter(c => c.riskTier === 'critical').sort((a, b) => b.revenueAtRisk - a.revenueAtRisk).slice(0, 5);
 
   if (!metrics) return (
     <div className="flex items-center justify-center min-h-[60vh]">
@@ -130,24 +130,28 @@ export default function ExecutiveOverviewPage() {
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-border">
-                {['Account', 'Risk Score', 'Revenue at Risk', 'Primary Driver', 'Recommended Action'].map(h => (
+                {['Account', 'Risk Score', 'Revenue at Risk', 'Contract'].map(h => (
                   <th key={h} className="px-4 py-2.5 text-left text-xs font-semibold text-text-tertiary uppercase tracking-wider">{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {topAtRisk.map(c => (
+              {topAtRisk.length === 0 ? (
+                <tr>
+                  <td colSpan={4} className="px-4 py-6 text-center text-sm text-text-tertiary">
+                    No critical-risk accounts right now.
+                  </td>
+                </tr>
+              ) : topAtRisk.map(c => (
                 <tr key={c.id} className="border-b border-border/50">
                   <td className="px-4 py-3">
-                    <p className="font-semibold text-text-primary">{c.name}</p>
-                    <p className="text-xs text-text-tertiary">{c.plan} · {c.industry}</p>
+                    <p className="font-semibold text-text-primary">{c.id}</p>
                   </td>
                   <td className="px-4 py-3">
                     <span className="text-lg font-bold tabular-nums" style={{ color: getRiskColor(c.riskTier) }}>{c.churnProbability}%</span>
                   </td>
                   <td className="px-4 py-3 font-semibold text-text-primary tabular-nums">{formatCurrency(c.revenueAtRisk)}</td>
-                  <td className="px-4 py-3 text-text-secondary text-xs">Feature usage decline</td>
-                  <td className="px-4 py-3 text-xs text-accent">Schedule urgent CSM call</td>
+                  <td className="px-4 py-3 text-text-secondary text-xs">{c.contractType || '—'}</td>
                 </tr>
               ))}
             </tbody>

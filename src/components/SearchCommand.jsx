@@ -1,8 +1,8 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Search, Users, BarChart3, Settings, ArrowRight } from 'lucide-react';
-import { mockCustomers } from '../mock/customers';
+import { customerService } from '../services/api';
 import { cn, getRiskColor } from '../utils/helpers';
 
 const quickLinks = [
@@ -14,23 +14,29 @@ const quickLinks = [
 
 export default function SearchCommand({ isOpen, onClose }) {
   const [query, setQuery] = useState('');
+  const [results, setResults] = useState([]);
   const navigate = useNavigate();
 
   useEffect(() => {
     if (isOpen) setQuery('');
   }, [isOpen]);
 
-  const results = useMemo(() => {
-    if (!query.trim()) return [];
-    const q = query.toLowerCase();
-    return mockCustomers
-      .filter(c =>
-        c.name.toLowerCase().includes(q) ||
-        c.id.toLowerCase().includes(q) ||
-        c.company.toLowerCase().includes(q) ||
-        c.contactName.toLowerCase().includes(q)
-      )
-      .slice(0, 8);
+  useEffect(() => {
+    const trimmed = query.trim();
+    if (!trimmed) {
+      setResults([]);
+      return;
+    }
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      try {
+        const data = await customerService.getCustomers({ search: trimmed, limit: 8 });
+        if (!cancelled) setResults(data.customers);
+      } catch {
+        if (!cancelled) setResults([]);
+      }
+    }, 250);
+    return () => { cancelled = true; clearTimeout(timer); };
   }, [query]);
 
   const handleSelect = (path) => {
@@ -63,7 +69,7 @@ export default function SearchCommand({ isOpen, onClose }) {
                 autoFocus
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
-                placeholder="Search customers, IDs, companies..."
+                placeholder="Search customers by ID..."
                 className="w-full py-3.5 bg-transparent text-sm text-text-primary outline-none placeholder:text-text-tertiary"
               />
               <kbd className="text-[10px] px-1.5 py-0.5 rounded bg-bg-tertiary text-text-tertiary font-mono shrink-0">ESC</kbd>
@@ -86,8 +92,7 @@ export default function SearchCommand({ isOpen, onClose }) {
                             style={{ backgroundColor: getRiskColor(c.riskTier) }}
                           />
                           <div className="min-w-0">
-                            <div className="text-text-primary font-medium truncate">{c.name}</div>
-                            <div className="text-xs text-text-tertiary">{c.id} · {c.contactName}</div>
+                            <div className="text-text-primary font-medium truncate">{c.id}</div>
                           </div>
                         </div>
                         <ArrowRight size={14} className="text-text-tertiary opacity-0 group-hover:opacity-100 transition-opacity shrink-0" />

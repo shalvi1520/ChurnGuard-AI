@@ -5,15 +5,40 @@ These define request/response shapes and call into predictor.py /
 explainer.py, but are NOT wired to any frontend, database, or
 background-job system yet -- that comes later per the project scope.
 """
+import os
+
 import pandas as pd
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from .. import predictor
+from .dataset_routes import router as dataset_router
 from .generic_routes import router as generic_router
 from .orchestration_routes import router as orchestration_router
 
-app = FastAPI(title="ChurnGuard Backend (stub)")
+app = FastAPI(title="ChurnGuard Backend")
+
+# Explicit origins (comma-separated) still work via CORS_ORIGINS for anyone
+# who wants to lock this down. Left unset, we match any localhost/127.0.0.1
+# port -- Vite auto-increments its port (5173, 5174, 5175, ...) whenever the
+# previous one is still occupied by another dev-server instance, and a fixed
+# allow-list silently breaks the very next time that happens.
+_cors_origins_env = os.getenv("CORS_ORIGINS")
+_cors_kwargs = (
+    {"allow_origins": [o.strip() for o in _cors_origins_env.split(",") if o.strip()]}
+    if _cors_origins_env
+    else {"allow_origin_regex": r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$"}
+)
+app.add_middleware(
+    CORSMiddleware,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+    **_cors_kwargs,
+)
+
+app.include_router(dataset_router)
 app.include_router(generic_router)
 app.include_router(orchestration_router)
 

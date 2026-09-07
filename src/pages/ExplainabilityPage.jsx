@@ -11,15 +11,15 @@ import { InfoTip } from '../components/ui/Tooltip';
 import EmptyState from '../components/ui/EmptyState';
 import { SkeletonChart } from '../components/ui/Skeleton';
 import ModelArchitecture from '../components/ModelArchitecture';
-import { explainabilityService } from '../services/api';
-import { mockCustomers } from '../mock/customers';
+import { explainabilityService, customerService } from '../services/api';
 import { getRiskTier } from '../utils/helpers';
 import { metric } from '../utils/glossary';
 
 export default function ExplainabilityPage() {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
-  const [selectedCustomer, setSelectedCustomer] = useState(searchParams.get('customer') || 'CUST-1001');
+  const [selectedCustomer, setSelectedCustomer] = useState(searchParams.get('customer') || '');
+  const [customerOptions, setCustomerOptions] = useState([]);
   const [explanation, setExplanation] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
@@ -27,7 +27,26 @@ export default function ExplainabilityPage() {
 
   useEffect(() => {
     let cancelled = false;
+    async function loadCustomerList() {
+      try {
+        const data = await customerService.getCustomers({ sortBy: 'churnProbability', sortDir: 'desc', limit: 200 });
+        if (cancelled) return;
+        setCustomerOptions(data.customers);
+        if (!selectedCustomer && data.customers[0]) setSelectedCustomer(data.customers[0].id);
+      } catch {
+        // The account selector just stays empty; the page's error state still works per-selection.
+      }
+    }
+    loadCustomerList();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (!selectedCustomer) return;
+    let cancelled = false;
     async function load() {
+      setLoading(true);
       try {
         const data = await explainabilityService.getSHAPExplanation(selectedCustomer);
         if (cancelled) return;
@@ -62,7 +81,7 @@ export default function ExplainabilityPage() {
           label="Account"
           value={selectedCustomer}
           onChange={(e) => setSelectedCustomer(e.target.value)}
-          options={mockCustomers.map(c => ({ value: c.id, label: `${c.name} (${c.id})` }))}
+          options={customerOptions.map(c => ({ value: c.id, label: c.id }))}
           placeholder=""
           className="md:w-72"
         />
@@ -79,11 +98,10 @@ export default function ExplainabilityPage() {
       ) : explanation ? (
         <>
           {/* Risk summary */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <Card>
               <span className="text-xs text-text-tertiary uppercase tracking-wider font-medium">Account</span>
-              <p className="text-lg font-bold text-text-primary mt-1">{explanation.customerName}</p>
-              <p className="text-xs text-text-tertiary">{selectedCustomer}</p>
+              <p className="text-lg font-bold text-text-primary mt-1">{explanation.customerId}</p>
             </Card>
             <Card>
               <span className="text-xs text-text-tertiary uppercase tracking-wider font-medium inline-flex items-center gap-1">
@@ -97,16 +115,8 @@ export default function ExplainabilityPage() {
                 <RiskBadge tier={getRiskTier(explanation.churnProbability)} size="xs" />
               </div>
               <p className="text-[11px] text-text-tertiary mt-1">
-                Against a {explanation.baselineRisk}% average across the customer base.
+                Against a {explanation.baselineRisk}% baseline (the model's expected risk before this account's specific factors are applied).
               </p>
-            </Card>
-            <Card>
-              <span className="text-xs text-text-tertiary uppercase tracking-wider font-medium inline-flex items-center gap-1">
-                {metric('modelConfidence').label}
-                <InfoTip content={metric('modelConfidence').help} label="What model confidence means" size={11} />
-              </span>
-              <p className="text-3xl font-bold text-accent mt-1 tabular-nums">{(explanation.confidenceScore * 100).toFixed(0)}%</p>
-              <p className="text-[11px] text-text-tertiary mt-1">{metric('modelConfidence').description}</p>
             </Card>
           </div>
 
@@ -193,32 +203,35 @@ export default function ExplainabilityPage() {
           </ChartCard>
 
           {/* AI Explanation */}
-          <Card>
-            <CardHeader>
-              <div className="flex items-center gap-2">
-                <div className="w-8 h-8 rounded-lg bg-accent/10 flex items-center justify-center">
-                  <Sparkles size={16} className="text-accent" />
+          {explanation.aiExplanation && (
+            <Card>
+              <CardHeader>
+                <div className="flex items-center gap-2">
+                  <div className="w-8 h-8 rounded-lg bg-accent/10 flex items-center justify-center">
+                    <Sparkles size={16} className="text-accent" />
+                  </div>
+                  <div>
+                    <CardTitle>The same analysis, in plain English</CardTitle>
+                    <p className="text-xs text-text-tertiary mt-0.5">
+                      An LLM-written summary of the real factors above — it can only reference what's shown here.
+                    </p>
+                  </div>
                 </div>
-                <div>
-                  <CardTitle>The same analysis, in plain English</CardTitle>
-                  <p className="text-xs text-text-tertiary mt-0.5">
-                    A written summary of the factors above — a demo write-up in this prototype, not live model output.
-                  </p>
-                </div>
+              </CardHeader>
+              <div className="p-4 rounded-lg bg-bg-tertiary/30 border border-border">
+                <p className="text-sm text-text-secondary leading-relaxed">{explanation.aiExplanation}</p>
               </div>
-            </CardHeader>
-            <div className="p-4 rounded-lg bg-bg-tertiary/30 border border-border">
-              <p className="text-sm text-text-secondary leading-relaxed">{explanation.aiExplanation}</p>
-            </div>
-            <div className="flex flex-wrap items-center gap-3 mt-4">
-              <Button size="sm" icon={Sparkles} iconRight={ArrowRight} onClick={() => navigate(`/recommendations?customer=${selectedCustomer}`)}>
-                What to do about it
-              </Button>
-              <Button variant="ghost" size="sm" onClick={() => navigate(`/customers/${selectedCustomer}`)}>
-                Back to the account
-              </Button>
-            </div>
-          </Card>
+            </Card>
+          )}
+
+          <div className="flex flex-wrap items-center gap-3">
+            <Button size="sm" icon={Sparkles} iconRight={ArrowRight} onClick={() => navigate(`/recommendations?customer=${selectedCustomer}`)}>
+              What to do about it
+            </Button>
+            <Button variant="ghost" size="sm" onClick={() => navigate(`/customers/${selectedCustomer}`)}>
+              Back to the account
+            </Button>
+          </div>
 
           <ModelArchitecture />
         </>

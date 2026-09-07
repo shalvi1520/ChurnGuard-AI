@@ -59,6 +59,22 @@ def _build_client(provider: str) -> Optional[BaseChatModel]:
     return None
 
 
+def _fix_mojibake(text: str) -> str:
+    """Some provider responses come back with UTF-8 bytes (e.g. an em dash,
+    non-breaking hyphen) mis-decoded as Windows-1252 (the classic 'â€"'
+    artifact -- cp1252 is what maps byte 0x80 to '€', not Latin-1). Encoding
+    back through cp1252 and decoding as UTF-8 reverses exactly that mistake.
+    It's a safe no-op for already-correct text: a genuine character outside
+    cp1252's repertoire makes the .encode() step raise; a genuine cp1252-only
+    character (e.g. a real em dash) still round-trips through .encode(), but
+    the resulting single byte is virtually never valid standalone UTF-8, so
+    .decode('utf-8') raises and the original text is kept."""
+    try:
+        return text.encode("cp1252").decode("utf-8")
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        return text
+
+
 def invoke_with_fallback(messages: List[BaseMessage]) -> Tuple[str, str]:
     """
     Tries each configured provider in PROVIDER_ORDER until one succeeds.
@@ -74,7 +90,7 @@ def invoke_with_fallback(messages: List[BaseMessage]) -> Tuple[str, str]:
         tried_any = True
         try:
             response = client.invoke(messages)
-            return response.content, provider
+            return _fix_mojibake(response.content), provider
         except Exception as exc:  # noqa: BLE001 -- intentional: any single provider's
             # failure (timeout, rate limit, auth, etc.) must fall through to the next
             # provider rather than aborting the whole rotation.

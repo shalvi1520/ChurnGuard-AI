@@ -11,11 +11,13 @@
 // `description` – the short line shown under the value (visible, not hover-only)
 // `help`        – the extra detail behind the info icon; one or two sentences
 //
-// Everything here must match the actual implementation. Risk-tier cut-offs come
-// from `getRiskTier()` in utils/helpers.js; the demo-data caveats are real.
+// Everything here must match the actual implementation: field names mirror
+// CHURNGUARD_FIELDS (mock/datasetSchema.js) and the customer record shape the
+// backend returns (backend/api/dataset_routes.py). Risk-tier cut-offs come
+// from getRiskTier() in utils/helpers.js.
 
 export const METRICS = {
-  // ---------- Portfolio KPIs (mock/dashboard.js) ----------
+  // ---------- Portfolio KPIs (GET /dashboard) ----------
   totalCustomers: {
     label: 'Total Customers',
     description: 'Accounts currently monitored',
@@ -33,85 +35,60 @@ export const METRICS = {
   },
   retentionRate: {
     label: 'Retention Rate',
-    description: 'Customers kept this month',
-    help: 'The share of customers retained in the most recent month. It is the inverse of the churn rate shown in the trend chart.',
+    description: 'Share of customers not already labelled churned',
+    help: 'Computed from your file\'s churn label, not a prediction. Only shown when your dataset had a churn column mapped.',
   },
   revenueAtRisk: {
     label: 'Revenue at Risk',
     description: 'Annual value of at-risk accounts',
-    help: 'Each at-risk account\'s annual contract value weighted by its churn probability, added up. It is an expected loss, not a confirmed one.',
+    help: 'Each at-risk account\'s annual charges (monthly charges × 12) weighted by its churn probability, added up. It is an expected loss, not a confirmed one.',
   },
 
-  // ---------- Customer-level fields (mock/customers.js) ----------
+  // ---------- Customer-level fields ----------
   churnProbability: {
     label: 'Churn Risk',
     description: 'Likelihood this account leaves',
-    help: 'The predicted probability that this customer churns. Higher is worse. In this prototype the score is demo data, not a live model output.',
+    help: 'The predicted probability that this customer churns, from a model trained on your uploaded dataset. Higher is worse.',
   },
   riskTier: {
     label: 'Risk Tier',
     description: 'Churn risk grouped into bands',
     help: 'Derived from the churn risk score: Low below 35%, Medium 35–59%, High 60–79%, Critical 80% and above.',
   },
-  healthScore: {
-    label: 'Health Score',
-    description: 'Overall account health, 0–100',
-    help: 'A single 0–100 summary of account health supplied with the customer record. Lower scores need attention sooner.',
+  tenure: {
+    label: 'Tenure',
+    description: 'How long they have been a customer',
+    help: 'Months since the account started, from your uploaded file.',
   },
-  engagement: {
-    label: 'Engagement',
-    description: 'How actively the team uses the product',
-    help: 'A 0–100 measure of how actively this account\'s users interact with the product. Sustained drops usually precede churn.',
+  monthlyCharges: {
+    label: 'Monthly Charges',
+    description: 'What the customer is billed each month',
+    help: 'From your uploaded file. Multiply by 12 for the annual charge used in Revenue at Risk.',
   },
-  usage: {
-    label: 'Usage',
-    description: 'Share of the product in active use',
-    help: 'A 0–100 measure of how much of the product this account actually uses. Declining usage is the single biggest churn driver in this dataset.',
+  totalCharges: {
+    label: 'Total Charges',
+    description: 'Total billed to date',
+    help: 'Total revenue billed to this customer so far, from your uploaded file.',
   },
-  mrr: {
-    label: 'MRR',
-    description: 'Monthly recurring revenue',
-    help: 'What this account is billed each month. Multiply by 12 for the annual contract value.',
+  contractType: {
+    label: 'Contract',
+    description: 'Plan or commitment length',
+    help: 'The contract/plan value from your uploaded file, e.g. month-to-month or annual.',
   },
   customerRevenueAtRisk: {
     label: 'Revenue at Risk',
     description: 'Expected loss if this account churns',
-    help: 'This account\'s annual contract value weighted by its churn probability.',
-  },
-  nps: {
-    label: 'NPS',
-    description: 'Latest satisfaction score, 0–10',
-    help: 'The most recent Net Promoter Score this account gave. 0–6 counts as a detractor, 9–10 as a promoter.',
-  },
-  tenure: {
-    label: 'Tenure',
-    description: 'How long they have been a customer',
-    help: 'Months since the account started. Shorter tenure correlates with higher churn in this dataset.',
-  },
-  loginFrequency: {
-    label: 'Login Frequency',
-    description: 'Average logins per week',
-    help: 'How often this account signs in during a typical week. A sharp fall is an early warning sign.',
-  },
-  supportTickets: {
-    label: 'Support Tickets',
-    description: 'Total raised, and how many are open',
-    help: 'Unresolved tickets are a strong churn signal — the open count matters more than the total.',
+    help: 'This account\'s annual charges (monthly charges × 12) weighted by its churn probability.',
   },
   status: {
     label: 'Status',
     description: 'Where the account stands today',
-    help: 'Active: healthy and engaged. At Risk: flagged for attention. Dormant: little or no recent activity. Churned: no longer a customer.',
+    help: 'Derived from risk tier: At Risk means High or Critical churn risk (60%+); Active means below that.',
   },
-  lastActive: {
-    label: 'Last Active',
-    description: 'Most recent product activity',
-    help: 'When anyone on this account last used the product.',
-  },
-  plan: {
-    label: 'Plan',
-    description: 'Subscription tier',
-    help: 'Starter, Professional or Enterprise. Lower tiers churn more often in this dataset.',
+  impactScore: {
+    label: 'Impact Score',
+    description: 'How much this factor drives the account\'s risk, 0–100',
+    help: 'This driver\'s SHAP effect on the account\'s score, scaled against the account\'s single strongest driver.',
   },
 
   // ---------- Charts and analysis ----------
@@ -122,48 +99,38 @@ export const METRICS = {
   },
   churnTrend: {
     label: 'Churn Rate Trend',
-    description: 'Monthly churn rate over the last 8 months, actual vs predicted',
-    help: 'The solid line is the churn rate that actually happened each month; the dashed line is what was predicted. The two tracking closely means the predictions have been reliable.',
+    description: 'Month-by-month churn rate',
+    help: 'Needs more than one dataset upload over time to compute — a single upload is a snapshot, not a history.',
   },
   revenueAtRiskTrend: {
     label: 'Revenue at Risk Over Time',
     description: 'At-risk revenue against total revenue, by month',
-    help: 'The gap between the two areas is revenue that is currently safe. A narrowing gap means risk is growing faster than the book.',
+    help: 'Needs more than one dataset upload over time to compute — a single upload is a snapshot, not a history.',
   },
   topDrivers: {
     label: 'Top Churn Drivers',
     description: 'Behaviours pushing risk up across the whole customer base',
-    help: 'Averaged across all customers. A higher bar means that behaviour moves churn risk more. Per-customer drivers live on the Explainability page.',
+    help: 'Averaged SHAP effect over a sample of your customers. A higher bar means that factor moves churn risk more. Per-customer drivers live on the Explainability page.',
   },
   shapContribution: {
     label: 'Feature Contributions',
     description: 'How much each factor moves this customer\'s risk up or down',
-    help: 'Each bar is one factor\'s effect on this customer\'s score. Bars to the right push risk up, bars to the left pull it down, and longer bars matter more.',
-  },
-  modelConfidence: {
-    label: 'Model Confidence',
-    description: 'How certain the prediction is',
-    help: 'How consistent the underlying signals are for this customer. Lower confidence means the factors disagree and the score deserves a second look.',
-  },
-  impactScore: {
-    label: 'Impact Score',
-    description: 'Expected benefit of acting, 0–100',
-    help: 'A relative estimate of how much this action should reduce churn risk compared with the other suggestions for this customer.',
+    help: 'Each bar is one factor\'s real SHAP effect on this customer\'s score. Bars to the right push risk up, bars to the left pull it down, and longer bars matter more.',
   },
   riskByPlan: {
-    label: 'Risk by Plan Tier',
-    description: 'Total accounts vs at-risk accounts in each plan',
-    help: 'Compare the pair of bars: a tall orange bar next to a short grey one means that tier is disproportionately at risk.',
+    label: 'Risk by Contract Type',
+    description: 'Total accounts vs at-risk accounts by contract',
+    help: 'Compare the pair of bars: a tall orange bar next to a short grey one means that contract type is disproportionately at risk.',
   },
   riskByTenure: {
     label: 'Risk by Customer Tenure',
     description: 'Average churn risk by how long accounts have been customers',
-    help: 'Average churn probability within each tenure band. Newer customers typically carry the most risk.',
+    help: 'Average churn probability within each tenure band, computed from your uploaded data.',
   },
-  riskByRegion: {
-    label: 'At-Risk Accounts by Region',
-    description: 'Number of at-risk accounts in each region',
-    help: 'Counts, not percentages — a large region can top this chart while still being healthy in relative terms.',
+  riskByServiceTier: {
+    label: 'At-Risk Accounts by Service Tier',
+    description: 'Number of at-risk accounts on each service/product tier',
+    help: 'Only available when a service/product tier column was mapped during data setup.',
   },
 };
 
