@@ -1,29 +1,30 @@
 import { useState } from 'react';
 import { motion } from 'framer-motion';
-import { User, Building2, Bell, Shield, Palette, Database, Key, Save, LogOut } from 'lucide-react';
+import { User, Building2, Bell, Shield, Palette, Save, LogOut } from 'lucide-react';
 import Card, { CardHeader, CardTitle } from '../components/ui/Card';
 import Button from '../components/ui/Button';
 import Input from '../components/ui/Input';
 import Select from '../components/ui/Select';
 import Tabs from '../components/ui/Tabs';
-import Badge from '../components/ui/Badge';
 import { useAuth } from '../context/AuthContext';
 import { useApp } from '../context/AppContext';
+import { THEME_OPTIONS } from '../utils/theme';
 import { useNavigate } from 'react-router-dom';
 
+// Data lives in Data Management and History, not here. The old "Data source"
+// and "Data preferences" tabs were removed: the first restated an environment
+// variable, the second collected values nothing read.
 const tabs = [
   { id: 'profile', label: 'Profile', icon: User },
   { id: 'organization', label: 'Organization', icon: Building2 },
   { id: 'notifications', label: 'Notifications', icon: Bell },
   { id: 'security', label: 'Security', icon: Shield },
   { id: 'appearance', label: 'Appearance', icon: Palette },
-  { id: 'api', label: 'Data source', icon: Key },
-  { id: 'data', label: 'Data', icon: Database },
 ];
 
 export default function SettingsPage() {
   const { user, logout } = useAuth();
-  const { addToast } = useApp();
+  const { addToast, theme, resolvedTheme, setTheme } = useApp();
   const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState('profile');
   const [profile, setProfile] = useState({
@@ -70,6 +71,22 @@ export default function SettingsPage() {
             </div>
             <div className="flex items-center gap-2 mt-6">
               <Button icon={Save} onClick={handleSave}>Save Changes</Button>
+            </div>
+
+            {/* Signing out lives here as well as under Security — this is where
+                people look for it. Same handler, same auth logic; there is only
+                one logout path in the app (AuthContext.logout → authService). */}
+            <div className="mt-6 pt-6 border-t border-border flex flex-wrap items-center justify-between gap-4">
+              <div className="min-w-0">
+                <p className="text-sm font-medium text-text-primary">Sign out</p>
+                <p className="text-xs text-text-tertiary mt-0.5 max-w-md leading-relaxed">
+                  Ends this session on this device and returns you to the sign-in page. Your
+                  connected dataset stays on the backend but is hidden until you sign in again.
+                </p>
+              </div>
+              <Button variant="danger" size="sm" icon={LogOut} onClick={handleLogout}>
+                Sign Out
+              </Button>
             </div>
           </Card>
         )}
@@ -136,57 +153,35 @@ export default function SettingsPage() {
           </div>
         )}
 
+        {/* One appearance setting for the whole app: this select and the header
+            control both read and write AppContext.theme. Applied on change --
+            a "Save" button would be theatre when the effect is instant. */}
         {activeTab === 'appearance' && (
           <Card>
-            <CardHeader><CardTitle>Appearance</CardTitle></CardHeader>
-            <div className="max-w-md space-y-4">
-              <Select label="Theme" options={[{ value: 'dark', label: 'Dark (Default)' }, { value: 'light', label: 'Light' }, { value: 'system', label: 'System' }]} value="dark" />
-              <Select label="Density" options={[{ value: 'comfortable', label: 'Comfortable' }, { value: 'compact', label: 'Compact' }]} value="comfortable" />
-            </div>
-            <Button icon={Save} onClick={handleSave} className="mt-6">Save Preferences</Button>
-          </Card>
-        )}
-
-        {activeTab === 'api' && (
-          <Card>
             <CardHeader>
-              <CardTitle>Data source</CardTitle>
+              <CardTitle>Appearance</CardTitle>
               <p className="text-xs text-text-tertiary mt-1">
-                Where ChurnGuard reads customer data from. Set in your environment file, not here.
+                Applies immediately and is remembered on this device.
               </p>
             </CardHeader>
-            <div className="max-w-lg space-y-4">
-              <Input
-                label="Backend API base URL"
-                value={import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api'}
-                readOnly
-                hint="The FastAPI + ML backend (backend/) — every prediction, explanation and recommendation is computed there."
+            <div className="max-w-md space-y-3">
+              <Select
+                label="Theme"
+                options={THEME_OPTIONS}
+                value={theme}
+                placeholder=""
+                onChange={(e) => setTheme(e.target.value)}
               />
-              <div className="flex items-start justify-between gap-4 py-2">
-                <div>
-                  <p className="text-sm font-medium text-text-primary">Connected backend</p>
-                  <p className="text-xs text-text-tertiary mt-0.5 max-w-sm leading-relaxed">
-                    ChurnGuard always calls the backend above — customer records, risk scores and explanations are
-                    computed from the dataset you connected, not demo data.
-                  </p>
-                </div>
-                <Badge variant="low" size="sm">LIVE</Badge>
-              </div>
+              <p className="text-xs text-text-secondary leading-relaxed">
+                {theme === 'system'
+                  ? `Following your operating system, which is currently set to ${resolvedTheme}.`
+                  : `ChurnGuard is using the ${theme} theme on this device.`}{' '}
+                The same control sits in the header on every page.
+              </p>
             </div>
           </Card>
         )}
 
-        {activeTab === 'data' && (
-          <Card>
-            <CardHeader><CardTitle>Data Preferences</CardTitle></CardHeader>
-            <div className="max-w-lg space-y-4">
-              <Select label="Default Date Range" options={[{ value: '30d', label: 'Last 30 days' }, { value: '90d', label: 'Last 90 days' }, { value: '1y', label: 'Last year' }]} value="30d" />
-              <Select label="Default Risk Filter" options={[{ value: 'all', label: 'All Risk Levels' }, { value: 'high', label: 'High & Critical Only' }]} value="all" />
-              <Select label="Table Page Size" options={[{ value: '10', label: '10 rows' }, { value: '25', label: '25 rows' }, { value: '50', label: '50 rows' }]} value="10" />
-            </div>
-            <Button icon={Save} onClick={handleSave} className="mt-6">Save Preferences</Button>
-          </Card>
-        )}
       </motion.div>
     </div>
   );

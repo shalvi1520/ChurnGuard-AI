@@ -47,15 +47,41 @@ export function getRiskTier(probability) {
 }
 
 /**
- * Get risk color by tier
+ * Get risk color by tier.
+ *
+ * Charts and inline dots need a real colour value rather than a class, so this
+ * reads the same CSS tokens the rest of the UI uses — otherwise the dark
+ * palette's greens and ambers would be used on a light background, where they
+ * are barely legible. Resolved once per theme (not per call): getComputedStyle
+ * forces a style recalculation, and this runs inside chart render loops.
  */
+const RISK_FALLBACK = {
+  low: '#4ADE80',
+  medium: '#FBBF24',
+  high: '#F97316',
+  critical: '#EF4444',
+};
+
+let riskPaletteCache = { theme: null, colors: RISK_FALLBACK };
+
+function riskPalette() {
+  if (typeof window === 'undefined' || !document?.documentElement) return RISK_FALLBACK;
+  const theme = document.documentElement.getAttribute('data-theme') || 'dark';
+  if (riskPaletteCache.theme === theme) return riskPaletteCache.colors;
+
+  const styles = getComputedStyle(document.documentElement);
+  const colors = Object.fromEntries(
+    Object.keys(RISK_FALLBACK).map((tier) => [
+      tier,
+      styles.getPropertyValue(`--color-risk-${tier}`).trim() || RISK_FALLBACK[tier],
+    ])
+  );
+  riskPaletteCache = { theme, colors };
+  return colors;
+}
+
 export function getRiskColor(tier) {
-  const colors = {
-    low: '#4ADE80',
-    medium: '#FBBF24',
-    high: '#F97316',
-    critical: '#EF4444',
-  };
+  const colors = riskPalette();
   return colors[tier] || colors.low;
 }
 

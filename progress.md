@@ -29,7 +29,12 @@ The primary frontend application has been fully implemented.
 - **Documentation**: Generated comprehensive `README.md`, `ARCHITECTURE.md`, and `DEVELOPMENT.md`.
 - **Testing**: Configured Vitest and React Testing Library, and wrote core unit tests for UI components.
 
-## 🚀 Next Steps / Pending
-The frontend implementation phase is completely finished. Future work could include:
-1. **Backend Integration**: Connecting the `services/api.js` to the actual FastAPI backend (currently relies on `VITE_USE_MOCK_API=true`).
-2. **Refinement**: General UI polishing, accessibility improvements, and performance profiling.
+## ⚠️ This file is out of date
+
+The list above describes the frontend as it stood at session 3 and is kept only
+as a historical record. Several things in it are no longer true — the app no
+longer runs on mock data, `VITE_USE_MOCK_API` no longer exists, and the
+Simulator / Playbooks / AI Assistant *page* were deliberately removed.
+
+**`PROJECT_MEMORY.md` is the canonical, current record of this project.** Read
+that instead; do not add new status notes here.

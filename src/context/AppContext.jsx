@@ -4,6 +4,15 @@
 
 import { createContext, useContext, useReducer, useCallback, useEffect } from 'react';
 import { useAuth } from './AuthContext';
+import {
+  DEFAULT_THEME,
+  applyResolvedTheme,
+  isThemePreference,
+  prefersDarkScheme,
+  readStoredTheme,
+  resolveTheme,
+  writeStoredTheme,
+} from '../utils/theme';
 
 const AppContext = createContext(null);
 
@@ -36,7 +45,6 @@ function writeStoredSetup(record) {
 const initialState = {
   sidebarCollapsed: false,
   presentationMode: false,
-  demoMode: true,
   selectedDateRange: '30d',
   selectedSegment: 'all',
   notifications: [],
@@ -51,6 +59,11 @@ const initialState = {
   // and judging the gate in that gap would bounce a user who has already
   // completed setup straight back into it on every refresh.
   datasetSetupHydrated: false,
+  // Appearance. `theme` is what the user chose ('light' | 'dark' | 'system');
+  // `resolvedTheme` is what is actually rendered. THE one theme state — the
+  // header control and Settings → Appearance both read and write this.
+  theme: DEFAULT_THEME,
+  resolvedTheme: 'dark',
 };
 
 function appReducer(state, action) {
@@ -90,6 +103,8 @@ function appReducer(state, action) {
         activeDataset: action.payload || null,
         datasetSetupHydrated: true,
       };
+    case 'SET_THEME':
+      return { ...state, theme: action.payload.theme, resolvedTheme: action.payload.resolved };
     default:
       return state;
   }
@@ -123,6 +138,41 @@ export function AppProvider({ children }) {
     }
   }, [authLoading, isAuthenticated, userKey]);
 
+  // ---------------------------------------------------------- appearance --
+  //
+  // One setting, one owner. The header control and Settings → Appearance both
+  // call `setTheme` below; nothing else reads or writes the stored preference
+  // (index.html's pre-paint bootstrap is the single documented exception, and
+  // it only reads). The resolved value lands on <html data-theme>, which is
+  // what src/index.css keys the whole palette off.
+  useEffect(() => {
+    const stored = readStoredTheme();
+    const resolved = resolveTheme(stored, prefersDarkScheme());
+    applyResolvedTheme(resolved);
+    dispatch({ type: 'SET_THEME', payload: { theme: stored, resolved } });
+  }, []);
+
+  // "System" has to keep following the OS after the page has loaded.
+  useEffect(() => {
+    if (state.theme !== 'system' || typeof window === 'undefined' || !window.matchMedia) return undefined;
+    const query = window.matchMedia('(prefers-color-scheme: dark)');
+    const sync = (event) => {
+      const resolved = resolveTheme('system', event.matches);
+      applyResolvedTheme(resolved);
+      dispatch({ type: 'SET_THEME', payload: { theme: 'system', resolved } });
+    };
+    query.addEventListener('change', sync);
+    return () => query.removeEventListener('change', sync);
+  }, [state.theme]);
+
+  const setTheme = useCallback((preference) => {
+    const next = isThemePreference(preference) ? preference : DEFAULT_THEME;
+    const resolved = resolveTheme(next, prefersDarkScheme());
+    writeStoredTheme(next);
+    applyResolvedTheme(resolved);
+    dispatch({ type: 'SET_THEME', payload: { theme: next, resolved } });
+  }, []);
+
   const addToast = useCallback((toast) => {
     const id = Date.now();
     dispatch({ type: 'ADD_TOAST', payload: { ...toast, id } });
@@ -143,8 +193,27 @@ export function AppProvider({ children }) {
     dispatch({ type: 'SET_DATASET_SETUP', payload: null });
   }, []);
 
+  // The DEMO badge has to describe the data that is actually connected. It was
+  // hardcoded `true`, so a user who uploaded their own customer export was told
+  // they were looking at demo data — the exact mislabelling DataSourceBadge
+  // exists to prevent, just in the other direction. Derived from the one
+  // source of truth rather than tracked separately.
+  const demoMode = Boolean(
+    state.activeDataset && (state.activeDataset.source?.kind === 'demo' || state.activeDataset.isDemo)
+  );
+
   return (
-    <AppContext.Provider value={{ ...state, dispatch, addToast, completeDatasetSetup, resetDatasetSetup }}>
+    <AppContext.Provider
+      value={{
+        ...state,
+        demoMode,
+        dispatch,
+        addToast,
+        completeDatasetSetup,
+        resetDatasetSetup,
+        setTheme,
+      }}
+    >
       {children}
     </AppContext.Provider>
   );

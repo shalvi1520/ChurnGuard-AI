@@ -26,9 +26,90 @@
   --color-status-active: #4ADE80;
   --color-status-dormant: #9BA3B8;
   --color-status-churned: #EF4444;
+  --color-info: #60A5FA;
+  /* Semantic aliases. These were used by components (PipelineProgress,
+     CompleteStep) long before they were declared, so `text-success` and
+     `bg-danger/5` generated no CSS at all and quietly inherited whatever
+     colour was around them. Declared here so the intent actually renders. */
+  --color-success: #4ADE80;
+  --color-danger: #EF4444;
 
   /* Font */
   --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+}
+
+/* ============================================
+   Appearance (theme)
+   ============================================
+
+   One setting, one place. `utils/theme.js` resolves the user's preference
+   (Light / Dark / System) and writes it to <html data-theme="...">; every
+   colour below is the same token the @theme block above declares, so switching
+   the attribute re-themes the whole app without touching a single component.
+
+   These live in @layer base deliberately: Tailwind v4's layer order is
+   theme → base → components → utilities, so base wins over the @theme
+   defaults. (Putting them outside a layer would work too, but unlayered rules
+   beat *every* utility — the exact trap documented in Known Issues #1.)
+
+   The selector is an attribute selector rather than `:root` so a subtree can
+   pin itself: the marketing landing page sets data-theme="dark" on its own
+   wrapper because its copy is written for a dark background. */
+@layer base {
+  [data-theme='dark'] {
+    --color-bg-primary: #0D0F13;
+    --color-bg-secondary: #141720;
+    --color-bg-tertiary: #1A1E2C;
+    --color-bg-card: #1E2235;
+    --color-bg-elevated: #242840;
+    --color-border: #2A2F42;
+    --color-border-light: #363C52;
+    --color-text-primary: #F1F3F8;
+    --color-text-secondary: #9BA3B8;
+    --color-text-tertiary: #6B7490;
+    --color-accent: #86BC25;
+    --color-accent-dim: #6A9A1E;
+    --color-accent-bg: rgba(134, 188, 37, 0.08);
+    --color-risk-low: #4ADE80;
+    --color-risk-medium: #FBBF24;
+    --color-risk-high: #F97316;
+    --color-risk-critical: #EF4444;
+    --color-status-active: #4ADE80;
+    --color-status-dormant: #9BA3B8;
+    --color-status-churned: #EF4444;
+    --color-info: #60A5FA;
+    --color-success: #4ADE80;
+    --color-danger: #EF4444;
+  }
+
+  /* Light keeps the same green identity, darkened where it has to sit on a
+     pale surface — the dark palette's accent and risk colours do not carry
+     enough contrast against white to be read as text. */
+  [data-theme='light'] {
+    --color-bg-primary: #F5F6F9;
+    --color-bg-secondary: #FFFFFF;
+    --color-bg-tertiary: #ECEFF4;
+    --color-bg-card: #FFFFFF;
+    --color-bg-elevated: #F3F5F9;
+    --color-border: #E1E5ED;
+    --color-border-light: #C6CDDA;
+    --color-text-primary: #101420;
+    --color-text-secondary: #48526A;
+    --color-text-tertiary: #6B7490;
+    --color-accent: #4F7A14;
+    --color-accent-dim: #3E5F0F;
+    --color-accent-bg: rgba(79, 122, 20, 0.09);
+    --color-risk-low: #15803D;
+    --color-risk-medium: #B45309;
+    --color-risk-high: #C2410C;
+    --color-risk-critical: #DC2626;
+    --color-status-active: #15803D;
+    --color-status-dormant: #64748B;
+    --color-status-churned: #DC2626;
+    --color-info: #1D4ED8;
+    --color-success: #15803D;
+    --color-danger: #DC2626;
+  }
 }
 
 /* ============================================

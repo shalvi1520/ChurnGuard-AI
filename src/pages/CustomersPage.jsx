@@ -6,11 +6,36 @@ import { RiskBadge, StatusBadge } from '../components/ui/Badge';
 import Select from '../components/ui/Select';
 import Pagination from '../components/ui/Pagination';
 import EmptyState from '../components/ui/EmptyState';
-import { InfoTip } from '../components/ui/Tooltip';
+import Tooltip, { InfoTip } from '../components/ui/Tooltip';
 import { SkeletonTable } from '../components/ui/Skeleton';
 import { customerService } from '../services/api';
 import { formatCurrency } from '../utils/helpers';
 import { metric } from '../utils/glossary';
+
+/**
+ * The two things you can do with an account from this table, following the
+ * product's PREDICT → EXPLAIN → ACT flow: understand why it is at risk, then
+ * act on it. Both go to pages that already exist and take the customer's real
+ * ID with them.
+ *
+ * Icon-only to keep the table narrow, but never icon-only in meaning: each has
+ * an aria-label naming the account and a tooltip that opens on hover AND on
+ * keyboard focus, so touch and keyboard users get the same explanation.
+ */
+function RowAction({ icon: Icon, label, tooltip, onClick }) {
+  return (
+    <Tooltip content={tooltip}>
+      <button
+        type="button"
+        aria-label={label}
+        onClick={onClick}
+        className="p-1.5 rounded-md text-text-tertiary hover:text-accent hover:bg-bg-tertiary transition-colors cursor-pointer focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-2"
+      >
+        <Icon size={15} aria-hidden="true" />
+      </button>
+    </Tooltip>
+  );
+}
 
 export default function CustomersPage() {
   const [customers, setCustomers] = useState([]);
@@ -238,7 +263,16 @@ export default function CustomersPage() {
                       </span>
                     </th>
                   ))}
-                  <th scope="col" className="px-4 py-2.5 text-left text-xs font-semibold text-text-tertiary uppercase tracking-wider">Actions</th>
+                  <th scope="col" className="px-4 py-2.5 text-left text-xs font-semibold text-text-tertiary uppercase tracking-wider">
+                    <span className="inline-flex items-center gap-1">
+                      Actions
+                      <InfoTip
+                        content="Understand an account, then act on it: the brain icon opens Explainability for this customer, the envelope icon opens Outreach."
+                        label="What the action icons do"
+                        size={12}
+                      />
+                    </span>
+                  </th>
                 </tr>
               </thead>
               <tbody>
@@ -269,21 +303,19 @@ export default function CustomersPage() {
                     <td className="px-4 py-3"><RiskBadge tier={c.riskTier} size="xs" /></td>
                     <td className="px-4 py-3"><StatusBadge status={c.status} size="xs" /></td>
                     <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
-                      <div className="flex items-center gap-0.5">
-                        <button
-                          className="p-1.5 rounded hover:bg-bg-tertiary text-text-tertiary hover:text-text-primary cursor-pointer"
-                          aria-label={`Explain why ${c.id} is at risk`}
+                      <div className="flex items-center gap-1">
+                        <RowAction
+                          icon={Brain}
+                          label={`View explainability for ${c.id}`}
+                          tooltip="View explainability — why this account is scored the way it is"
                           onClick={() => navigate(`/explainability?customer=${c.id}`)}
-                        >
-                          <Brain size={13} aria-hidden="true" />
-                        </button>
-                        <button
-                          className="p-1.5 rounded hover:bg-bg-tertiary text-text-tertiary hover:text-text-primary cursor-pointer"
-                          aria-label={`Draft outreach for ${c.id}`}
+                        />
+                        <RowAction
+                          icon={Mail}
+                          label={`Create outreach for ${c.id}`}
+                          tooltip="Create outreach — draft a retention email for this account"
                           onClick={() => navigate(`/outreach?customer=${c.id}`)}
-                        >
-                          <Mail size={13} aria-hidden="true" />
-                        </button>
+                        />
                       </div>
                     </td>
                   </tr>

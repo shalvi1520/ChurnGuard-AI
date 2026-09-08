@@ -4,7 +4,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   LayoutDashboard, Users, BarChart3, Brain, Lightbulb, Mail,
   Database, Settings, ChevronLeft, Shield, Presentation, LogOut,
-  Search, Bell, Menu, X, Lock, Check
+  Search, Bell, Menu, X, Lock, Check, History
 } from 'lucide-react';
 import { cn } from '../utils/helpers';
 import { requiresDatasetSetup } from '../routes/accessRules';
@@ -16,14 +16,20 @@ import SearchCommand from '../components/SearchCommand';
 import ToastContainer from '../components/ui/Toast';
 import FloatingChatWidget from '../components/ui/FloatingChatWidget';
 import Badge from '../components/ui/Badge';
+import ThemeToggle from '../components/ui/ThemeToggle';
 
 // Grouped to follow the product's actual workflow: connect data, watch the
-// portfolio, then act on individual accounts. Data Setup is first because
-// nothing else works until a dataset is connected (see routes/accessRules.js).
+// portfolio, then act on individual accounts. Data is first because nothing
+// else works until a dataset is connected (see routes/accessRules.js), and
+// History sits beside it because reconnecting a previous dataset is the other
+// half of the same job.
 const navGroups = [
   {
-    label: 'Data Setup',
-    items: [{ to: '/data-management', icon: Database, label: 'Data Management' }],
+    label: 'Data',
+    items: [
+      { to: '/data-management', icon: Database, label: 'Data Management' },
+      { to: '/history', icon: History, label: 'History' },
+    ],
   },
   {
     label: 'Monitor',
@@ -158,10 +164,14 @@ export default function AppLayout({ children }) {
           </div>
           <div className="flex items-center gap-3">
             {demoMode && (
-              <span className="px-2 py-0.5 rounded text-[10px] font-medium bg-accent/10 text-accent border border-accent/20">
-                DEMO
+              <span
+                className="px-2 py-0.5 rounded text-[10px] font-medium bg-accent/10 text-accent border border-accent/20"
+                title="The connected dataset is ChurnGuard's demo data"
+              >
+                DEMO DATA
               </span>
             )}
+            <ThemeToggle className="p-1.5" size={15} />
             <button
               onClick={() => dispatch({ type: 'TOGGLE_PRESENTATION' })}
               className="text-xs text-text-tertiary hover:text-text-primary transition-colors cursor-pointer"
@@ -241,20 +251,35 @@ export default function AppLayout({ children }) {
       {/* Mobile header */}
       <div className="fixed top-0 left-0 right-0 h-14 bg-bg-secondary border-b border-border z-30 lg:hidden flex items-center justify-between px-4">
         <div className="flex items-center gap-3">
-          <button onClick={() => setMobileMenuOpen(true)} className="p-1.5 text-text-secondary cursor-pointer">
-            <Menu size={20} />
+          <button
+            onClick={() => setMobileMenuOpen(true)}
+            aria-label="Open navigation menu"
+            aria-expanded={mobileMenuOpen}
+            className="p-1.5 text-text-secondary cursor-pointer"
+          >
+            <Menu size={20} aria-hidden="true" />
           </button>
           <div className="flex items-center gap-2">
             <Shield size={16} className="text-accent" />
             <span className="text-xs font-bold tracking-wider">CHURNGUARD</span>
           </div>
         </div>
-        <div className="flex items-center gap-2">
-          <button onClick={() => dispatch({ type: 'TOGGLE_SEARCH' })} className="p-1.5 text-text-tertiary cursor-pointer">
-            <Search size={18} />
+        <div className="flex items-center gap-1">
+          <ThemeToggle className="p-1.5" size={18} />
+          <button
+            onClick={() => dispatch({ type: 'TOGGLE_SEARCH' })}
+            aria-label="Search customers"
+            className="p-1.5 text-text-tertiary cursor-pointer"
+          >
+            <Search size={18} aria-hidden="true" />
           </button>
-          <button onClick={() => setNotifOpen(!notifOpen)} className="p-1.5 text-text-tertiary relative cursor-pointer">
-            <Bell size={18} />
+          <button
+            onClick={() => setNotifOpen(!notifOpen)}
+            aria-label={unreadCount > 0 ? `Notifications, ${unreadCount} unread` : 'Notifications'}
+            aria-expanded={notifOpen}
+            className="p-1.5 text-text-tertiary relative cursor-pointer"
+          >
+            <Bell size={18} aria-hidden="true" />
             {unreadCount > 0 && <span className="absolute -top-0.5 -right-0.5 w-4 h-4 rounded-full bg-risk-critical text-[9px] text-white flex items-center justify-center font-bold">{unreadCount}</span>}
           </button>
         </div>
@@ -283,7 +308,13 @@ export default function AppLayout({ children }) {
                   <Shield size={16} className="text-accent" />
                   <span className="text-xs font-bold tracking-wider">CHURNGUARD</span>
                 </div>
-                <button onClick={() => setMobileMenuOpen(false)} className="p-1 text-text-tertiary cursor-pointer"><X size={18} /></button>
+                <button
+                  onClick={() => setMobileMenuOpen(false)}
+                  aria-label="Close navigation menu"
+                  className="p-1 text-text-tertiary cursor-pointer"
+                >
+                  <X size={18} aria-hidden="true" />
+                </button>
               </div>
               <nav className="flex-1 py-1 px-2 overflow-y-auto" aria-label="Main">
                 {navGroups.map((group) => (
@@ -335,10 +366,14 @@ export default function AppLayout({ children }) {
 
             <div className="flex items-center gap-1">
               {demoMode && (
-                <span className="px-2 py-0.5 rounded text-[10px] font-medium bg-accent/10 text-accent border border-accent/20 mr-2">
-                  DEMO
+                <span
+                  className="px-2 py-0.5 rounded text-[10px] font-medium bg-accent/10 text-accent border border-accent/20 mr-2"
+                  title="The connected dataset is ChurnGuard's demo data"
+                >
+                  DEMO DATA
                 </span>
               )}
+              <ThemeToggle />
               <button
                 onClick={() => dispatch({ type: 'TOGGLE_PRESENTATION' })}
                 className="p-2 rounded-lg text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary transition-colors cursor-pointer"
@@ -351,6 +386,8 @@ export default function AppLayout({ children }) {
                   onClick={() => setNotifOpen(!notifOpen)}
                   className="p-2 rounded-lg text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary transition-colors relative cursor-pointer"
                   title="Notifications"
+                  aria-label={unreadCount > 0 ? `Notifications, ${unreadCount} unread` : 'Notifications'}
+                  aria-expanded={notifOpen}
                 >
                   <Bell size={16} />
                   {unreadCount > 0 && (
@@ -364,6 +401,7 @@ export default function AppLayout({ children }) {
               <div className="w-px h-6 bg-border mx-2" />
               <button
                 onClick={() => navigate('/settings')}
+                aria-label={`Account settings for ${user?.name || 'your account'}`}
                 className="flex items-center gap-2.5 px-2 py-1 rounded-lg hover:bg-bg-tertiary transition-colors cursor-pointer"
               >
                 <Avatar name={user?.name} size="sm" />

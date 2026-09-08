@@ -1,13 +1,15 @@
 """
-The real API the frontend calls once VITE_USE_MOCK_API=false: dataset
-upload/validate/map/predict, dashboard aggregates, customers, per-customer
-SHAP explanation, rule-based recommendations, and LLM-drafted outreach.
-Orchestrates backend/generic/{trainer,predictor,explainer,preprocessing}.py
--- no new ML logic lives here.
+The API the frontend runs on: dataset connect/validate/map/predict, dashboard
+aggregates, customers, per-customer SHAP explanation, rule-based
+recommendations, and LLM-drafted outreach.
 
-Response shapes intentionally mirror what services/api.js's mock branch
-already returned, so no frontend contract changes are needed beyond
-pointing at these URLs.
+Orchestrates backend/generic/{trainer,predictor,explainer,preprocessing}.py --
+no new ML logic lives here.
+
+Note the LLM imports are deliberately made inside the two functions that need
+them, not at module scope: outreach drafting and the plain-English explanation
+are optional extras, and a missing langchain install must not stop the whole
+churn pipeline (upload, train, predict, dashboard) from working.
 """
 import math
 import time
@@ -21,18 +23,18 @@ from pydantic import BaseModel
 
 from ..generic import predictor as generic_predictor
 from ..generic import preprocessing as generic_preprocessing
+from ..generic import explainer as generic_explainer
 from ..generic import trainer as generic_trainer
 from ..generic.explainer import explain_customer, explain_high_risk_batch
 from ..generic.io_utils import load_dataset_from_bytes
-from ..llm import explain_generator, outreach_generator
-from . import profiling, recommendations, schema, store
-from .store import DatasetEntry
+from . import ingest, profiling, recommendations, schema, store
+from .store import DatasetEntry, DatasetSource
 
 router = APIRouter(prefix="/api", tags=["churnguard"])
 
 # Kept modest so the synchronous /predict request (Optuna tuning + a stacked
 # ensemble fit + a batch SHAP pass) finishes in a reasonable time for an
-# interactive prototype call rather than the library's full 30-trial default.
+# interactive call rather than the library's full 30-trial default.
 PREDICT_N_TRIALS = 15
 TOP_DRIVERS_SAMPLE_CAP = 60
 TOP_DRIVERS_NSAMPLES = 30
@@ -47,14 +49,20 @@ NUMERIC_FEATURE_KEYS = {"tenure", "monthly_charges", "total_charges"}
 def _current_or_404() -> DatasetEntry:
     entry = store.get_current()
     if entry is None:
-        raise HTTPException(404, "No dataset connected yet. Upload one first.")
+        raise HTTPException(404, "No dataset connected yet. Connect one first.")
+    return entry
+
+
+def _trained_or_409(entry: DatasetEntry) -> DatasetEntry:
+    if not entry.trained:
+        raise HTTPException(409, "This dataset hasn't been processed yet. Finish data setup first.")
     return entry
 
 
 def _dataset_or_404(dataset_id: str) -> DatasetEntry:
     entry = store.get_dataset(dataset_id)
     if entry is None:
-        raise HTTPException(404, "That upload is no longer available. Please select your file again.")
+        raise HTTPException(404, "That dataset is no longer available. Please connect your data again.")
     return entry
 
 
@@ -90,50 +98,91 @@ def _driver_description(feature_key: str, value: Any, shap_value: float) -> str:
     return f"{label} of {value} {direction} this account's churn risk."
 
 
-# ---------------------------------------------------------- upload/validate
+# ------------------------------------------------------------------- status
+
+@router.get("/health")
+def health() -> Dict[str, Any]:
+    """Lets the frontend tell "the backend isn't running" apart from "the
+    backend is fine but nothing is connected yet" -- two very different
+    messages for the user."""
+    entry = store.get_current()
+    return {
+        "status": "ok",
+        "schemaVersion": schema.SCHEMA_VERSION,
+        "dataset": entry.summary() if entry else None,
+    }
+
+
+@router.get("/dataset")
+def current_dataset() -> Dict[str, Any]:
+    return _current_or_404().summary()
+
+
+@router.delete("/dataset")
+def clear_dataset() -> Dict[str, Any]:
+    """"Replace dataset" -- drops the stored data so a trained model can never
+    outlive the dataset it was built from."""
+    store.reset()
+    return {"status": "cleared"}
+
+
+# ---------------------------------------------------------- connect/validate
+
+SUPPORTED_UPLOAD_EXTENSIONS = (".csv", ".xlsx", ".xls")
+
 
 @router.post("/datasets/upload")
 async def upload_dataset(file: UploadFile = File(...)):
+    """Reads the file server-side (pandas) and registers it as the active
+    dataset. Every failure below is phrased for the person who chose the file --
+    a raw pandas message like "No columns to parse from file" tells them
+    nothing about what to do next."""
+    filename = file.filename or "dataset"
+    if not filename.lower().endswith(SUPPORTED_UPLOAD_EXTENSIONS):
+        raise HTTPException(400, "That file type isn't supported. Upload a CSV, XLSX or XLS file.")
+
     contents = await file.read()
+    if not contents.strip():
+        raise HTTPException(
+            400,
+            "That file is empty. Export your customer list again and make sure it has a header row plus at "
+            "least one customer.",
+        )
+
     try:
-        df = load_dataset_from_bytes(file.filename, contents)
-    except ValueError as exc:
-        raise HTTPException(400, str(exc)) from exc
+        df = load_dataset_from_bytes(filename, contents)
+    except pd.errors.EmptyDataError as exc:
+        raise HTTPException(
+            400,
+            "That file has no readable columns. Check that the first row names each column, then upload it again.",
+        ) from exc
+    except Exception as exc:  # noqa: BLE001 -- pandas raises many unrelated types on a corrupt file
+        raise HTTPException(
+            400,
+            "We couldn't read that file. It may be corrupted or saved in a different format than its extension "
+            "suggests. Re-export it as CSV, XLSX or XLS and try again.",
+        ) from exc
 
-    if df.shape[1] == 0:
-        raise HTTPException(400, "That file appears to be empty. Export your customer list again and make sure it has a header row plus at least one customer.")
-    if df.shape[1] < 2:
-        raise HTTPException(400, "We couldn't split that file into columns. Check that the first row names each column, and that a CSV export used commas as the separator.")
-    if df.shape[0] == 0:
-        raise HTTPException(400, "This file has column headers but no customer rows. Check that the export actually included your data, then upload it again.")
+    try:
+        entry = ingest.register_dataframe(
+            df,
+            filename=filename,
+            size=len(contents),
+            source=DatasetSource(kind="upload", label="Uploaded file", detail=filename),
+        )
+    except ingest.IngestError as exc:
+        raise ingest.as_http_error(exc) from exc
 
-    # Stringify for profiling so missing-value detection matches the
-    # token-based rule the frontend used to apply client-side (see
-    # profiling.is_missing_value); the real (typed) df stays in raw_df.
-    profile = profiling.profile_dataframe(df.astype(str).where(df.notna(), ""))
-
-    dataset_id = f"DS-{int(time.time() * 1000)}"
-    entry = DatasetEntry(id=dataset_id, filename=file.filename or "dataset", size=len(contents), raw_df=df, profile=profile)
-    store.create_dataset(entry)
-
-    return {
-        "id": dataset_id,
-        "filename": entry.filename,
-        "rows": profile["rowCount"],
-        "columns": profile["columnCount"],
-        "size": entry.size,
-        "sheetName": None,
-        "sheetCount": None,
-        "uploadDate": datetime.now(timezone.utc).isoformat(),
-        "status": "uploaded",
-    }
+    return ingest.describe_entry(entry)
 
 
 @router.post("/datasets/{dataset_id}/validate")
 def validate_dataset(dataset_id: str):
+    """Profiles the data, runs automatic column matching, and reports what was
+    found. This is the one call the setup flow needs before it can decide
+    whether to process automatically or ask the user something."""
     entry = _dataset_or_404(dataset_id)
-    suggested = schema.suggest_mappings(list(entry.raw_df.columns))
-    return profiling.build_validation_report(dataset_id, entry.profile, suggested)
+    return profiling.build_validation_report(dataset_id, entry.profile)
 
 
 class MapColumnsRequest(BaseModel):
@@ -143,15 +192,132 @@ class MapColumnsRequest(BaseModel):
 @router.post("/datasets/{dataset_id}/map-columns")
 def map_columns(dataset_id: str, body: MapColumnsRequest):
     entry = _dataset_or_404(dataset_id)
+
+    unknown = [c for c in body.mappings if c not in entry.raw_df.columns]
+    if unknown:
+        raise HTTPException(400, f"These columns aren't in the connected data: {', '.join(unknown)}.")
+
     mapped_field_keys = set(body.mappings.values())
     missing = [f for f in schema.REQUIRED_FIELDS if f["key"] not in mapped_field_keys]
     if missing:
-        raise HTTPException(400, f"Still missing a column for {', '.join(f['label'] for f in missing)}.")
+        first = missing[0]
+        raise HTTPException(
+            400,
+            f"{first['label']} still needs a column. {first['whyNeeded']} {first['lookFor']}",
+        )
+
     entry.mappings = dict(body.mappings)
     return {"datasetId": dataset_id, "mappings": entry.mappings, "status": "mapped"}
 
 
 # ------------------------------------------------------------------ predict
+
+def _clean_model_frame(
+    model_df: pd.DataFrame, feature_cols: List[str]
+) -> tuple[pd.DataFrame, List[Dict[str, Any]]]:
+    """Safe, reportable preprocessing. Every entry in the returned list
+    describes something that actually happened to this dataset -- the UI states
+    them verbatim, so nothing may be added here speculatively."""
+    actions: List[Dict[str, Any]] = []
+
+    # 1. Whitespace. " Month-to-month" and "Month-to-month" are one category.
+    text_cols = [c for c in model_df.columns if model_df[c].dtype == object]
+    trimmed = 0
+    for col in text_cols:
+        original = model_df[col]
+        stripped = original.astype(str).str.strip()
+        trimmed += int((stripped != original.astype(str)).sum())
+        model_df[col] = stripped
+    if trimmed:
+        actions.append({
+            "action": "whitespace",
+            "count": trimmed,
+            "detail": f"Trimmed stray spaces from {trimmed:,} values so they group correctly.",
+        })
+
+    # 2. Numbers written as text: "$1,299.50", "45 ", "1 299".
+    for key in NUMERIC_FEATURE_KEYS & set(feature_cols):
+        before = model_df[key].copy()
+        model_df[key] = pd.to_numeric(
+            before.astype(str).str.replace(r"[^0-9.\-]", "", regex=True).replace("", np.nan),
+            errors="coerce",
+        )
+        was_blank = before.astype(str).str.strip().str.lower().isin(profiling.MISSING_TOKENS)
+        unreadable = int((model_df[key].isna() & ~was_blank).sum())
+        if unreadable:
+            actions.append({
+                "action": "numeric",
+                "count": unreadable,
+                "detail": f"{unreadable:,} {schema.pretty_feature_name(key)} value(s) weren't readable as numbers "
+                          "and are treated as missing.",
+            })
+
+    # 3. Rows with no churn outcome can't teach the model anything.
+    churn_missing = model_df["churn"].map(profiling.is_missing_value)
+    if churn_missing.any():
+        count = int(churn_missing.sum())
+        model_df = model_df.loc[~churn_missing]
+        actions.append({
+            "action": "missing-label",
+            "count": count,
+            "detail": f"{count:,} row(s) had no churn outcome recorded and were excluded from training.",
+        })
+
+    # 4. Exact duplicates would count one customer more than once.
+    duplicates = model_df.duplicated()
+    if duplicates.any():
+        count = int(duplicates.sum())
+        model_df = model_df.loc[~duplicates]
+        actions.append({
+            "action": "duplicate-rows",
+            "count": count,
+            "detail": f"{count:,} duplicate row(s) detected and excluded from model training.",
+        })
+
+    # 5. The same customer ID twice: keep the first, so risk scores stay 1:1.
+    repeated_ids = model_df.duplicated(subset=["customer_id"])
+    if repeated_ids.any():
+        count = int(repeated_ids.sum())
+        model_df = model_df.loc[~repeated_ids]
+        actions.append({
+            "action": "duplicate-ids",
+            "count": count,
+            "detail": f"{count:,} row(s) repeated a customer ID; the first record for each was kept.",
+        })
+
+    return model_df, actions
+
+
+def _check_churn_column(model_df: pd.DataFrame, column_name: str) -> None:
+    """Caught here rather than deep inside the trainer, so the message names
+    the user's own column and says what a churn outcome has to look like."""
+    summary = profiling.churn_label_summary(model_df["churn"].tolist())
+    distinct = summary["distinct"]
+
+    if len(distinct) < 2:
+        raise HTTPException(
+            400,
+            f'Every customer has the same value in "{column_name}" '
+            f'({distinct[0] if distinct else "no values at all"}), so there is no churn to learn from. '
+            "Choose a column that records who has already left and who has stayed.",
+        )
+    if len(distinct) > 2:
+        shown = ", ".join(distinct[:5]) + ("…" if len(distinct) > 5 else "")
+        raise HTTPException(
+            400,
+            f'"{column_name}" holds {len(distinct)} different values ({shown}), but a churn outcome needs '
+            "exactly two — such as Yes/No, 1/0 or Churned/Active. Choose a different column, or reduce that "
+            "column to a two-value outcome in your export.",
+        )
+
+    smaller = min(summary["counts"].values())
+    if smaller < 6:
+        raise HTTPException(
+            400,
+            f'Only {smaller} customer(s) in "{column_name}" fall on one side of the outcome. ChurnGuard needs at '
+            "least 6 examples of each so the model has a pattern to learn. Upload a dataset covering more history.",
+        )
+
 
 def _compute_top_drivers(model_df: pd.DataFrame, feature_cols: List[str]) -> List[Dict[str, Any]]:
     try:
@@ -163,19 +329,18 @@ def _compute_top_drivers(model_df: pd.DataFrame, feature_cols: List[str]) -> Lis
         drivers = []
         for col in shap_cols:
             mean_signed = float(result[col].mean())
-            mean_abs = float(result[col].abs().mean())
             drivers.append({
                 "driver": schema.pretty_feature_name(col),
                 "impact": round(mean_signed, 4),
                 "direction": "positive" if mean_signed >= 0 else "negative",
                 "customers": int((result[col] > 0).sum()) if mean_signed >= 0 else int((result[col] < 0).sum()),
-                "_abs": mean_abs,
+                "_abs": float(result[col].abs().mean()),
             })
         drivers.sort(key=lambda d: d["_abs"], reverse=True)
         for d in drivers:
             d.pop("_abs")
         return drivers
-    except Exception:
+    except Exception:  # noqa: BLE001
         # Explainability is a value-add on top of a successful training run --
         # never fail the whole /predict call because the SHAP aggregate
         # (a real but best-effort computation) had trouble.
@@ -189,8 +354,11 @@ def run_prediction(dataset_id: str):
         raise HTTPException(400, "Map your columns before running predictions.")
 
     field_to_col = {field_key: col for col, field_key in entry.mappings.items() if field_key}
-    if "customer_id" not in field_to_col or "churn" not in field_to_col:
-        raise HTTPException(400, "Customer ID and Churn label must both be mapped before predicting.")
+    for required_key in ("customer_id", "churn"):
+        if required_key not in field_to_col:
+            raise HTTPException(
+                400, f"{schema.pretty_feature_name(required_key)} must be mapped before predicting."
+            )
 
     df = entry.raw_df.rename(columns={col: field_key for field_key, col in field_to_col.items()})
 
@@ -198,15 +366,17 @@ def run_prediction(dataset_id: str):
     feature_cols = MODEL_FEATURE_KEYS + present_optional
     missing_features = [f for f in feature_cols if f not in df.columns]
     if missing_features:
-        raise HTTPException(400, f"Missing mapped column(s) in the uploaded file: {missing_features}")
+        labels = ", ".join(schema.pretty_feature_name(f) for f in missing_features)
+        raise HTTPException(400, f"These mapped columns are missing from the connected data: {labels}.")
 
     model_df = df[["customer_id", "churn"] + feature_cols].copy()
-    model_df["customer_id"] = model_df["customer_id"].astype(str)
+    model_df["customer_id"] = model_df["customer_id"].astype(str).str.strip()
 
-    for numeric_key in NUMERIC_FEATURE_KEYS & set(feature_cols):
-        model_df[numeric_key] = pd.to_numeric(
-            model_df[numeric_key].astype(str).str.replace(r"[^0-9.\-]", "", regex=True), errors="coerce"
-        )
+    model_df, cleaning = _clean_model_frame(model_df, feature_cols)
+    if model_df.empty:
+        raise HTTPException(400, "No usable customer rows were left after cleaning. Check the connected data.")
+
+    _check_churn_column(model_df, field_to_col["churn"])
 
     train_df = model_df.drop(columns=["customer_id"])
     try:
@@ -214,9 +384,15 @@ def run_prediction(dataset_id: str):
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
 
-    predict_input = model_df[feature_cols]
+    # Training has just written new artifacts to disk, but predictor/explainer
+    # hold the previously-loaded model in module globals. Without this, a second
+    # dataset in the same server process is scored by the FIRST dataset's model
+    # -- new metrics get reported while every customer keeps the old risk score.
+    generic_predictor.reset_cache()
+    generic_explainer.reset_cache()
+
     try:
-        predictions = generic_predictor.predict(predict_input)
+        predictions = generic_predictor.predict(model_df[feature_cols])
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
 
@@ -234,12 +410,9 @@ def run_prediction(dataset_id: str):
         monthly = _safe_num(model_df.at[idx, "monthly_charges"]) if "monthly_charges" in feature_cols else None
 
         raw_churn_value = model_df.at[idx, "churn"]
-        if profiling.is_missing_value(raw_churn_value):
-            churned = None
-        else:
-            churned = bool(raw_churn_value == positive_label)
-            if churned:
-                labelled_churn_count += 1
+        churned = bool(raw_churn_value == positive_label)
+        if churned:
+            labelled_churn_count += 1
 
         record = {
             "id": cid,
@@ -264,6 +437,7 @@ def run_prediction(dataset_id: str):
     entry.raw_features_by_id = raw_features_by_id
     entry.training_report = report
     entry.trained = True
+    entry.cleaning = cleaning
     entry.raw_drivers = {}
     entry.explanation_base_value = {}
     entry.ai_explanations = {}
@@ -275,8 +449,10 @@ def run_prediction(dataset_id: str):
         "status": "completed",
         "customersProcessed": len(customers),
         "fieldsMapped": len(field_to_col),
+        "mappedFields": sorted(field_to_col),
         "labelledChurnCount": labelled_churn_count,
-        "simulated": False,
+        "cleaning": cleaning,
+        "source": entry.source.as_dict(),
         "trainingMetrics": {
             "accuracy": report["test_metrics"]["accuracy"],
             "precision": report["test_metrics"]["precision"],
@@ -289,9 +465,33 @@ def run_prediction(dataset_id: str):
 
 # ----------------------------------------------------------------- dashboard
 
+def _dataset_context(entry: DatasetEntry) -> Dict[str, Any]:
+    """Tells the UI what this dataset can and can't support, so pages hide what
+    they have no data for instead of showing an invented value (PART 21)."""
+    mapped = entry.mapped_field_keys()
+    return {
+        "source": entry.source.as_dict(),
+        "filename": entry.filename,
+        "rows": entry.profile["rowCount"],
+        "columns": entry.profile["columnCount"],
+        "customers": len(entry.customers),
+        "mappedFields": mapped,
+        "available": {
+            "revenue": "monthly_charges" in mapped,
+            "totalCharges": "total_charges" in mapped,
+            "serviceTier": "service_tier" in mapped,
+            "paymentMethod": "payment_method" in mapped,
+            "churnLabel": "churn" in mapped,
+            # A single connected dataset is one snapshot: there is no history
+            # to build a trend from, and we say so rather than inventing one.
+            "history": False,
+        },
+    }
+
+
 @router.get("/dashboard")
 def get_dashboard():
-    entry = _current_or_404()
+    entry = _trained_or_409(_current_or_404())
     customers = entry.customers
     total = len(customers)
     at_risk = [c for c in customers if c["riskTier"] in ("high", "critical")]
@@ -299,7 +499,9 @@ def get_dashboard():
     revenue_at_risk = round(sum(c["revenueAtRisk"] for c in at_risk), 2)
 
     labelled = [c for c in customers if c["churned"] is not None]
-    retention_rate = round(100 - (sum(1 for c in labelled if c["churned"]) / len(labelled) * 100), 1) if labelled else None
+    retention_rate = (
+        round(100 - (sum(1 for c in labelled if c["churned"]) / len(labelled) * 100), 1) if labelled else None
+    )
 
     kpis = {
         "totalCustomers": {"value": total},
@@ -310,12 +512,12 @@ def get_dashboard():
     if retention_rate is not None:
         kpis["retentionRate"] = {"value": retention_rate}
 
-    return {"kpis": kpis, "sparklines": {}}
+    return {"kpis": kpis, "sparklines": {}, "dataset": _dataset_context(entry)}
 
 
 @router.get("/dashboard/risk-distribution")
 def get_risk_distribution():
-    entry = _current_or_404()
+    entry = _trained_or_409(_current_or_404())
     colors = {"low": "#4ADE80", "medium": "#FBBF24", "high": "#F97316", "critical": "#EF4444"}
     labels = {"low": "Low Risk", "medium": "Medium Risk", "high": "High Risk", "critical": "Critical"}
     counts = {"low": 0, "medium": 0, "high": 0, "critical": 0}
@@ -326,22 +528,41 @@ def get_risk_distribution():
 
 @router.get("/dashboard/churn-trend")
 def get_churn_trend():
-    # A single uploaded dataset is a snapshot, not a time series -- there is
+    # A single connected dataset is a snapshot, not a time series -- there is
     # no real month-by-month history to report. See PROJECT_MEMORY.md.
-    _current_or_404()
+    _trained_or_409(_current_or_404())
     return []
 
 
 @router.get("/dashboard/revenue-at-risk")
 def get_revenue_at_risk_trend():
-    _current_or_404()
+    _trained_or_409(_current_or_404())
     return []
 
 
 @router.get("/dashboard/top-drivers")
 def get_top_drivers():
-    entry = _current_or_404()
+    entry = _trained_or_409(_current_or_404())
     return entry.top_drivers or []
+
+
+@router.get("/dashboard/risk-by-value")
+def get_risk_by_value():
+    """Churn risk against what each account is worth per month -- the view that
+    answers "which at-risk accounts actually matter". Computed from the real
+    records, and only meaningful because monthly charges is a required field."""
+    entry = _trained_or_409(_current_or_404())
+    return [
+        {
+            "id": c["id"],
+            "monthlyCharges": c["monthlyCharges"],
+            "churnProbability": c["churnProbability"],
+            "riskTier": c["riskTier"],
+            "revenueAtRisk": c["revenueAtRisk"],
+        }
+        for c in entry.customers
+        if c["monthlyCharges"] is not None
+    ]
 
 
 def _tenure_bucket(months: Optional[float]) -> Optional[str]:
@@ -360,16 +581,16 @@ def _tenure_bucket(months: Optional[float]) -> Optional[str]:
 
 @router.get("/dashboard/segmentation")
 def get_segmentation():
-    entry = _current_or_404()
+    entry = _trained_or_409(_current_or_404())
     customers = entry.customers
 
     def _group(key_fn, order: Optional[List[str]] = None):
         buckets: Dict[str, List[Dict]] = {}
         for c in customers:
             key = key_fn(c)
-            if key is None:
+            if key is None or str(key).strip() == "":
                 continue
-            buckets.setdefault(key, []).append(c)
+            buckets.setdefault(str(key), []).append(c)
         keys = order or list(buckets.keys())
         out = []
         for key in keys:
@@ -378,14 +599,26 @@ def get_segmentation():
                 continue
             at_risk = sum(1 for c in group if c["riskTier"] in ("high", "critical"))
             avg_risk = round(sum(c["churnProbability"] for c in group) / len(group), 1)
-            out.append({"segment": key, "total": len(group), "atRisk": at_risk, "avgRisk": avg_risk})
+            churned = [c for c in group if c["churned"] is not None]
+            out.append({
+                "segment": key,
+                "total": len(group),
+                "atRisk": at_risk,
+                "avgRisk": avg_risk,
+                "churnedRate": round(sum(1 for c in churned if c["churned"]) / len(churned) * 100, 1)
+                if churned else None,
+            })
         return out
 
-    by_contract = _group(lambda c: c["contractType"])
-    by_tenure = _group(lambda c: _tenure_bucket(c["tenure"]), order=["0-6 months", "6-12 months", "1-2 years", "2-3 years", "3+ years"])
-    by_service_tier = _group(lambda c: c["serviceTier"])
-
-    return {"byPlan": by_contract, "byTenure": by_tenure, "byServiceTier": by_service_tier}
+    return {
+        "byPlan": _group(lambda c: c["contractType"]),
+        "byTenure": _group(
+            lambda c: _tenure_bucket(c["tenure"]),
+            order=["0-6 months", "6-12 months", "1-2 years", "2-3 years", "3+ years"],
+        ),
+        "byServiceTier": _group(lambda c: c["serviceTier"]),
+        "byPaymentMethod": _group(lambda c: c["paymentMethod"]),
+    }
 
 
 # ----------------------------------------------------------------- customers
@@ -400,7 +633,7 @@ def list_customers(
     page: int = 1,
     limit: int = 10,
 ):
-    entry = _current_or_404()
+    entry = _trained_or_409(_current_or_404())
     filtered = entry.customers
 
     if search:
@@ -434,7 +667,7 @@ def list_customers(
 
 @router.get("/customers/{customer_id}")
 def get_customer(customer_id: str):
-    entry = _current_or_404()
+    entry = _trained_or_409(_current_or_404())
     customer = entry.customers_by_id.get(customer_id)
     if customer is None:
         raise HTTPException(404, "Customer not found")
@@ -451,19 +684,21 @@ def _ensure_drivers(entry: DatasetEntry, customer_id: str) -> List[Dict[str, Any
     if raw_features is None:
         raise HTTPException(404, "Customer not found")
     if entry.training_report is None:
-        raise HTTPException(503, "Dataset has not been processed yet.")
+        raise HTTPException(409, "This dataset hasn't been processed yet.")
 
     raw_df = pd.DataFrame([raw_features])
     try:
         scaled = generic_predictor.preprocess(raw_df)
         explanation = explain_customer(scaled)
     except FileNotFoundError as exc:
-        raise HTTPException(503, "Model not trained yet.") from exc
+        raise HTTPException(503, "The trained model is no longer available. Re-run data setup.") from exc
 
     metadata = entry.training_report
     human_df = generic_preprocessing.select_and_order_features(raw_df, list(explanation.feature_names))
     human_df = generic_preprocessing.impute_numeric(human_df, metadata["numeric_medians"])
-    human_df = generic_preprocessing.impute_categorical(human_df, metadata["categorical_cols"], metadata["categorical_placeholder"])
+    human_df = generic_preprocessing.impute_categorical(
+        human_df, metadata["categorical_cols"], metadata["categorical_placeholder"]
+    )
     human_row = human_df.iloc[0]
 
     drivers = sorted(
@@ -481,7 +716,7 @@ def _ensure_drivers(entry: DatasetEntry, customer_id: str) -> List[Dict[str, Any
 
 @router.get("/customers/{customer_id}/explanation")
 def get_explanation(customer_id: str):
-    entry = _current_or_404()
+    entry = _trained_or_409(_current_or_404())
     customer = entry.customers_by_id.get(customer_id)
     if customer is None:
         raise HTTPException(404, "Customer not found")
@@ -501,11 +736,21 @@ def get_explanation(customer_id: str):
 
     if customer_id not in entry.ai_explanations:
         try:
-            pretty_drivers = [{"feature": f["feature"], "value": f["value"], "contribution": f["contribution"]} for f in features_out]
-            result = explain_generator.generate_explanation_summary(customer_id, customer["churnProbability"], pretty_drivers)
+            from ..llm import explain_generator  # optional extra -- see module docstring
+
+            pretty = [
+                {"feature": f["feature"], "value": f["value"], "contribution": f["contribution"]}
+                for f in features_out
+            ]
+            result = explain_generator.generate_explanation_summary(
+                customer_id, customer["churnProbability"], pretty
+            )
             entry.ai_explanations[customer_id] = result["summary"]
-        except RuntimeError:
-            pass  # no LLM provider configured -- frontend renders without it
+        except (ImportError, RuntimeError):
+            # No LLM provider configured, or langchain isn't installed. The
+            # SHAP breakdown above is the real explanation either way; the
+            # written summary is a convenience on top of it.
+            pass
 
     return {
         "customerId": customer_id,
@@ -518,7 +763,7 @@ def get_explanation(customer_id: str):
 
 @router.get("/customers/{customer_id}/recommendations")
 def get_recommendations(customer_id: str):
-    entry = _current_or_404()
+    entry = _trained_or_409(_current_or_404())
     if entry.customers_by_id.get(customer_id) is None:
         raise HTTPException(404, "Customer not found")
     drivers = _ensure_drivers(entry, customer_id)
@@ -532,8 +777,7 @@ class UpdateRecommendationStatus(BaseModel):
 @router.put("/recommendations/{rec_id}")
 def update_recommendation_status(rec_id: str, body: UpdateRecommendationStatus):
     # Recommendations are derived on the fly, not persisted server-side --
-    # accepting the status change here just acknowledges it for the UI,
-    # matching the mock layer's behaviour.
+    # accepting the status change here acknowledges it for the UI.
     return {"id": rec_id, "status": body.status}
 
 
@@ -541,13 +785,13 @@ def update_recommendation_status(rec_id: str, body: UpdateRecommendationStatus):
 
 @router.get("/outreach")
 def list_outreach():
-    entry = _current_or_404()
+    entry = _trained_or_409(_current_or_404())
     return entry.outreach_drafts
 
 
 @router.post("/customers/{customer_id}/outreach/generate")
 def generate_outreach(customer_id: str):
-    entry = _current_or_404()
+    entry = _trained_or_409(_current_or_404())
     customer = entry.customers_by_id.get(customer_id)
     if customer is None:
         raise HTTPException(404, "Customer not found")
@@ -557,6 +801,15 @@ def generate_outreach(customer_id: str):
         {"feature": schema.pretty_feature_name(d["feature"]), "value": d["value"], "shap_value": d["shap_value"]}
         for d in drivers[:5]
     ]
+
+    try:
+        from ..llm import outreach_generator  # optional extra -- see module docstring
+    except ImportError as exc:
+        raise HTTPException(
+            503,
+            "Outreach drafting needs the optional LLM packages, which aren't installed on this server. "
+            "Install backend/requirements.txt to enable it.",
+        ) from exc
 
     try:
         result = outreach_generator.generate_outreach_message(
@@ -572,13 +825,23 @@ def generate_outreach(customer_id: str):
         "customerName": customer_id,
         "contactName": None,
         "contactEmail": None,
-        "subject": f"A quick check-in about your account",
+        "subject": "A quick check-in about your account",
         "body": result["message"],
         "status": "draft",
         "tone": "professional",
         "createdAt": now,
         "updatedAt": now,
-        "auditTrail": [{"action": f"AI generated draft ({result['provider']})", "user": "System", "timestamp": now}],
+        # What the draft was actually written from, so the review screen can
+        # show it rather than asking the user to take the draft on trust.
+        "basedOn": {
+            "churnProbability": customer["churnProbability"],
+            "drivers": [
+                {"feature": d["feature"], "value": str(d["value"])} for d in pretty_drivers[:3]
+            ],
+        },
+        "auditTrail": [
+            {"action": f"AI generated draft ({result['provider']})", "user": "System", "timestamp": now}
+        ],
     }
     entry.outreach_drafts.insert(0, draft)
     return draft
@@ -607,6 +870,9 @@ def update_outreach(email_id: str, body: UpdateOutreachRequest):
         draft["body"] = body.body
     draft["status"] = "reviewed"
     draft["updatedAt"] = datetime.now(timezone.utc).isoformat()
+    draft["auditTrail"].append(
+        {"action": "Edited", "user": "You", "timestamp": draft["updatedAt"]}
+    )
     return draft
 
 
@@ -615,14 +881,20 @@ def approve_outreach(email_id: str):
     entry = _current_or_404()
     draft = _find_draft(entry, email_id)
     draft["status"] = "approved"
-    draft["auditTrail"].append({"action": "Approved", "user": "You", "timestamp": datetime.now(timezone.utc).isoformat()})
+    draft["auditTrail"].append(
+        {"action": "Approved", "user": "You", "timestamp": datetime.now(timezone.utc).isoformat()}
+    )
     return {"id": email_id, "status": "approved"}
 
 
 @router.post("/outreach/{email_id}/send")
 def send_outreach(email_id: str):
+    """ChurnGuard has no email delivery integration: this records that *you*
+    sent it from your own tools. It never contacts a customer."""
     entry = _current_or_404()
     draft = _find_draft(entry, email_id)
     draft["status"] = "sent"
-    draft["auditTrail"].append({"action": "Marked as sent", "user": "You", "timestamp": datetime.now(timezone.utc).isoformat()})
+    draft["auditTrail"].append(
+        {"action": "Marked as sent", "user": "You", "timestamp": datetime.now(timezone.utc).isoformat()}
+    )
     return {"id": email_id, "status": "sent"}

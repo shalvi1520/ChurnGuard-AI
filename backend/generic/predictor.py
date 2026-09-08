@@ -27,6 +27,21 @@ def _ensure_loaded() -> None:
         _metadata = artifacts.load_metadata()
 
 
+def reset_cache() -> None:
+    """Drops the in-process model cache so the next predict() re-reads the
+    artifacts from disk.
+
+    This MUST be called after training writes new artifacts. The cache is
+    keyed on nothing but "have we loaded yet", so in a long-running server a
+    second training run would otherwise keep scoring with the *first* model:
+    the user connects a new dataset, a new model is genuinely trained and its
+    metrics reported, but every customer is scored by the previous dataset's
+    model. That produces a dashboard that silently doesn't match the data.
+    """
+    global _model, _scaler, _encoders, _metadata
+    _model = _scaler = _encoders = _metadata = None
+
+
 def preprocess(raw_df: pd.DataFrame) -> pd.DataFrame:
     _ensure_loaded()
     data = raw_df.copy()

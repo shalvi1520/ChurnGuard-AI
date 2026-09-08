@@ -1,13 +1,30 @@
 // ============================================
-// ChurnGuard – Mock Notifications Data
+// ChurnGuard – Sample notifications (local only)
 // ============================================
+//
+// There is NO notification backend. These are sample entries so the panel has
+// something to show, and the panel labels them as samples — nothing here is
+// presented as real activity in the user's workspace.
+//
+// Two rules they must keep following (both were broken until session 10, when
+// they still described a 20-account SaaS mock that session 7 deleted):
+//   1. **No invented customers, companies, contacts or figures.** The old
+//      entries named "Acme Technologies", "DataSphere Solutions" and
+//      "Dr. Ahmed Hassan", and quoted "7,043 rows" and "342 high risk" —
+//      none of which exist in whatever dataset a user actually connects.
+//   2. **Every `link` must be a route that exists.** Two of them pointed at
+//      `/customers/CUST-1001` and `/customers/CUST-1005`, which land on the
+//      "customer not found" state, because those IDs went away with the mock.
+//
+// So these describe *what the product does*, and link to the page that shows
+// the user's own real numbers.
 
 export const mockNotifications = [
   {
     id: 'NOTIF-001',
     type: 'risk',
-    title: '12 customers moved to High Risk',
-    message: '12 customers have transitioned from Medium to High Risk tier in the past 7 days.',
+    title: 'Review your highest-risk accounts',
+    message: 'Customers scored High or Critical are the ones worth acting on first.',
     timestamp: '2026-08-30T08:00:00Z',
     read: false,
     priority: 'high',
@@ -15,19 +32,19 @@ export const mockNotifications = [
   },
   {
     id: 'NOTIF-002',
-    type: 'risk',
-    title: 'Acme Technologies reached 82% churn probability',
-    message: 'Critical risk alert: Acme Technologies (CUST-1001) churn probability increased to 82.4%.',
-    timestamp: '2026-08-28T10:30:00Z',
+    type: 'prediction',
+    title: 'Scores come from your own data',
+    message: 'Every score is produced by a model trained on the data you connected, not a benchmark.',
+    timestamp: '2026-08-29T09:00:00Z',
     read: false,
-    priority: 'critical',
-    link: '/customers/CUST-1001',
+    priority: 'medium',
+    link: '/analytics',
   },
   {
     id: 'NOTIF-003',
     type: 'outreach',
-    title: 'AI outreach draft awaiting approval',
-    message: 'Retention email for Zenith Healthcare has been reviewed and is ready for approval.',
+    title: 'Drafts wait for your approval',
+    message: 'ChurnGuard writes a starting point from an account’s risk factors. Nothing sends until you say so.',
     timestamp: '2026-08-28T09:00:00Z',
     read: false,
     priority: 'medium',
@@ -36,77 +53,60 @@ export const mockNotifications = [
   {
     id: 'NOTIF-004',
     type: 'data',
-    title: 'Dataset processing completed',
-    message: 'Customer churn dataset (7,043 rows) has been processed and predictions are ready.',
+    title: 'Reuse a dataset instead of uploading it again',
+    message: 'Datasets you connect are saved in this browser so you can reconnect them from History.',
     timestamp: '2026-08-27T14:30:00Z',
     read: true,
     priority: 'low',
-    link: '/data-management',
+    link: '/history',
   },
   {
     id: 'NOTIF-005',
-    type: 'prediction',
-    title: 'Model prediction completed',
-    message: 'Churn prediction model has finished processing. 342 customers identified as high risk.',
-    timestamp: '2026-08-27T14:00:00Z',
-    read: true,
-    priority: 'medium',
-    link: '/analytics',
-  },
-  {
-    id: 'NOTIF-006',
-    type: 'risk',
-    title: 'DataSphere churn probability at 88%',
-    message: 'DataSphere Solutions (CUST-1005) has the highest churn probability in your portfolio.',
-    timestamp: '2026-08-27T08:00:00Z',
-    read: true,
-    priority: 'critical',
-    link: '/customers/CUST-1005',
-  },
-  {
-    id: 'NOTIF-007',
-    type: 'outreach',
-    title: 'Email sent to Zenith Healthcare',
-    message: 'Retention email has been successfully sent to Dr. Ahmed Hassan.',
-    timestamp: '2026-08-26T15:00:00Z',
-    read: true,
-    priority: 'low',
-    link: '/outreach',
-  },
-  {
-    id: 'NOTIF-008',
     type: 'recommendation',
-    title: '4 new AI recommendations generated',
-    message: 'AI has generated new retention recommendations for Acme Technologies, Nova Systems, Pulse Media, and EduCore.',
+    title: 'Recommendations follow the risk factors',
+    message: 'Each suggested action is tied to what actually moved an account’s score.',
     timestamp: '2026-08-26T09:00:00Z',
     read: true,
-    priority: 'medium',
+    priority: 'low',
     link: '/recommendations',
   },
 ];
 
+// The assistant widget's canned replies (used whenever the live Grok proxy is
+// off, which is the default). Same rules as the notifications above: it must
+// not name customers that don't exist, must not quote numbers it can't know,
+// and every link must go somewhere real.
+//
+// Until session 10 these quoted "DataSphere Solutions — 88.1%", drivers like
+// "Login Frequency Drop" (not a field in the current schema at all) and linked
+// to /customers/CUST-1005, which 404s into the not-found state. The assistant
+// now points at the page that holds the user's own real answer instead of
+// inventing one — the same correction session 6 made to the summary reply.
 export const mockChatResponses = {
   'Which customers are at highest risk?': {
-    message: 'Based on the latest predictions, here are the customers with the highest churn probability:\n\n1. **DataSphere Solutions** — 88.1% (Critical)\n2. **Zenith Healthcare** — 84.6% (Critical)\n3. **Acme Technologies** — 82.4% (Critical)\n4. **Pulse Media** — 79.8% (High)\n5. **EduCore** — 73.5% (High)\n\nI recommend prioritizing DataSphere and Zenith Healthcare for immediate outreach, as both have critical risk scores with multiple compounding factors.',
+    message:
+      "I can't read your customer list from here, so I won't guess at names or scores.\n\nCustomers, filtered to Critical, ranks every account by the churn probability the model gave it — that's the real answer for your dataset.",
     actions: [
-      { label: 'View DataSphere', link: '/customers/CUST-1005' },
-      { label: 'View Zenith Healthcare', link: '/customers/CUST-1019' },
+      { label: 'Critical risk customers', link: '/customers?risk=critical' },
+      { label: 'All customers', link: '/customers' },
     ],
   },
   'Why is this customer likely to churn?': {
-    message: 'The top churn drivers across your portfolio are:\n\n1. **Feature Usage Decline** (31% impact) — Customers reducing product usage\n2. **Login Frequency Drop** (24% impact) — Decreasing login activity\n3. **Support Ticket Volume** (18% impact) — Rising support complaints\n4. **Engagement Score Drop** (13% impact) — Overall engagement declining\n\nFor a specific customer analysis, please navigate to their profile and I can provide personalized SHAP-based explanations.',
-    actions: [
-      { label: 'View Explainability', link: '/explainability' },
-    ],
+    message:
+      'Explainability breaks a single account down into the factors that pushed its score up or down, using the model\'s real SHAP values for that customer.\n\nPick the account there and you\'ll see what actually drove it, not a generic list.',
+    actions: [{ label: 'Open Explainability', link: '/explainability' }],
   },
   'What are the biggest churn drivers?': {
-    message: 'The most impactful churn drivers across your customer base are:\n\n| Driver | Impact | Affected Customers |\n|--------|--------|--------------------|\n| Feature Usage Decline | +0.31 | 842 |\n| Login Frequency Drop | +0.24 | 721 |\n| Support Complaints | +0.18 | 534 |\n| Engagement Score Drop | +0.13 | 456 |\n| Short Tenure | +0.09 | 389 |\n\nConversely, **High NPS Score** (-0.12), **Long Tenure** (-0.08), and **Annual Contracts** (-0.06) are the strongest retention factors.',
+    message:
+      'Risk Analytics shows the drivers averaged across your whole customer base, computed from the model trained on your data — which fields matter, and whether each one raises or lowers risk.\n\nFor one specific account, Explainability is the place to look.',
     actions: [
-      { label: 'View Analytics', link: '/analytics' },
+      { label: 'Open Risk Analytics', link: '/analytics' },
+      { label: 'Open Explainability', link: '/explainability' },
     ],
   },
   'default': {
-    message: 'I can help you with customer retention insights. Here are some things you can ask me:\n\n• "Which customers are at highest risk?"\n• "Why is [customer] likely to churn?"\n• "What are the biggest churn drivers?"\n• "How many high-risk customers do we have?"\n• "Summarize today\'s retention risks"\n• "Draft an outreach email for [customer]"\n\nFeel free to ask any question about your customer data!',
+    message:
+      'I can point you to the right part of ChurnGuard. Try:\n\n• "Which customers are at highest risk?"\n• "Why is this customer likely to churn?"\n• "What are the biggest churn drivers?"\n• "Draft an outreach email"\n\nI answer from the app\'s structure, not from your data — the pages themselves hold the real numbers.',
     actions: [],
   },
 };

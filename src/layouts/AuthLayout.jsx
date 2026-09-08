@@ -40,7 +40,7 @@ export default function AuthLayout() {
         </div>
 
         <p className="text-xs text-text-tertiary">
-          © 2026 ChurnGuard. Deloitte Capstone Project.
+          © 2026 ChurnGuard. AI-powered customer retention intelligence.
         </p>
 
         {/* Decorative elements */}

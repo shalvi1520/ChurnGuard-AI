@@ -5,9 +5,10 @@ import {
 } from 'lucide-react';
 import {
   PieChart, Pie, Cell, ResponsiveContainer, LineChart, Line, XAxis, YAxis,
-  CartesianGrid, Tooltip, AreaChart, Area, BarChart, Bar,
+  CartesianGrid, Tooltip, AreaChart, Area, BarChart, Bar, ReferenceLine,
 } from 'recharts';
 import MetricCard from '../components/ui/MetricCard';
+import DataSourceBadge from '../components/data-setup/DataSourceBadge';
 import Card, { CardTitle } from '../components/ui/Card';
 import ChartCard from '../components/ui/ChartCard';
 import { InfoTip } from '../components/ui/Tooltip';
@@ -107,6 +108,12 @@ export default function DashboardPage() {
 
   const riskTotal = riskDistribution.reduce((sum, d) => sum + d.value, 0);
 
+  // Show the strongest drivers in BOTH directions. Filtering to positive-only
+  // silently emptied this chart whenever the sampled customers skewed toward
+  // staying (every mean SHAP value negative) -- the card rendered blank while
+  // `isEmpty` was false, so not even the empty state appeared.
+  const topDriversShown = topDrivers.slice(0, 6);
+
   if (loading) {
     return (
       <div className="space-y-6">
@@ -146,6 +153,13 @@ export default function DashboardPage() {
           Where your customer base stands right now, based on the model trained on your connected dataset: how many
           accounts are at risk, what it's worth, and which ones need attention first.
         </p>
+        {/* Which data these numbers come from -- reported by the backend, so a
+            real upload is never labelled as demo data or vice versa. */}
+        {metrics?.dataset && (
+          <div className="mt-3">
+            <DataSourceBadge source={metrics.dataset.source} filename={metrics.dataset.filename} />
+          </div>
+        )}
       </header>
 
       {/* KPIs */}
@@ -246,21 +260,32 @@ export default function DashboardPage() {
         <ChartCard metricKey="topDrivers" isEmpty={topDrivers.length === 0}>
           <div className="h-56">
             <ResponsiveContainer width="100%" height="100%">
-              <BarChart
-                data={topDrivers.filter((d) => d.direction === 'positive').slice(0, 6)}
-                layout="vertical"
-                margin={{ top: 4, right: 12, left: 0, bottom: 0 }}
-              >
+              <BarChart data={topDriversShown} layout="vertical" margin={{ top: 4, right: 12, left: 0, bottom: 0 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#2A2F42" horizontal={false} />
-                <XAxis type="number" tick={{ fontSize: 11, fill: '#6B7490' }} axisLine={false} tickLine={false} />
+                <XAxis
+                  type="number"
+                  tick={{ fontSize: 11, fill: '#6B7490' }}
+                  axisLine={false}
+                  tickLine={false}
+                  /* Keep zero on the axis, otherwise an all-negative set of
+                     drivers is drawn as full-width bars and reads as "large
+                     positive effect" -- the opposite of what it means. */
+                  domain={[(min) => Math.min(0, min), (max) => Math.max(0, max)]}
+                />
                 <YAxis type="category" dataKey="driver" tick={{ fontSize: 10, fill: '#9BA3B8' }} width={132} axisLine={false} tickLine={false} />
-                <Tooltip content={<ChartTooltip valueFormatter={(v) => `${v.toFixed(2)} effect on risk`} />} />
-                <Bar dataKey="impact" name="Effect on churn risk" fill="#F97316" radius={[0, 4, 4, 0]} barSize={16} animationDuration={500} />
+                <ReferenceLine x={0} stroke="#3A4056" />
+                <Tooltip content={<ChartTooltip valueFormatter={(v) => `${v > 0 ? '+' : ''}${v.toFixed(2)} effect on risk`} />} />
+                <Bar dataKey="impact" name="Effect on churn risk" radius={[0, 4, 4, 0]} barSize={16} animationDuration={500}>
+                  {topDriversShown.map((entry) => (
+                    <Cell key={entry.driver} fill={entry.direction === 'positive' ? '#F97316' : '#4ADE80'} />
+                  ))}
+                </Bar>
               </BarChart>
             </ResponsiveContainer>
           </div>
           <p className="text-[11px] text-text-tertiary mt-3">
-            Longer bar = stronger push toward churn, averaged over a sample of your customers.
+            Bars to the right (orange) push churn risk up; bars to the left (green) hold it down.
+            Averaged over a sample of your customers.
           </p>
         </ChartCard>
       </div>

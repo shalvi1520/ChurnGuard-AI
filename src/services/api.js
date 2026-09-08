@@ -201,20 +201,73 @@ export class DatasetError extends Error {
 
 const GENERIC_HINT = 'Please try again — if it keeps happening, use a different file or the demo dataset.';
 
+/** How to start the API, shown whenever it can't be reached. Worth being
+ * specific: "something went wrong" sends people hunting through their file
+ * when the real problem is that nothing is listening. */
+export const BACKEND_START_HINT =
+  `Start it from the project folder with: python -m uvicorn backend.api.main:app --reload --port 8000 — ` +
+  `it should then answer at ${BASE_URL}.`;
+
+/** True when the request never got a response: the server isn't running, the
+ * URL is wrong, or CORS/DNS failed. `err.response` is undefined in all of
+ * those, which is exactly what separates them from a real 4xx/5xx. */
+function isUnreachable(err) {
+  return !err.response || [502, 503, 504].includes(err.response.status);
+}
+
 /** Wraps a backend call so a 4xx/5xx surfaces as a DatasetError with the
  * server's real explanation, instead of a generic axios error the UI can't
- * show meaningfully. */
+ * show meaningfully.
+ *
+ * A connection failure is reported as its own thing rather than as a problem
+ * with the user's data — telling someone to "try a different file" when the
+ * backend simply isn't running sends them in entirely the wrong direction. */
 async function callDatasetApi(promise) {
   try {
     return await promise;
   } catch (err) {
     if (err instanceof DatasetError) throw err;
+
+    if (err.code === 'ECONNABORTED') {
+      throw new DatasetError(
+        'The ChurnGuard backend took too long to respond.',
+        'Training a model on a large dataset can take a few minutes. If it keeps timing out, check the backend logs.'
+      );
+    }
+    if (isUnreachable(err)) {
+      throw new DatasetError("Can't reach the ChurnGuard backend.", BACKEND_START_HINT);
+    }
+
     const detail = err.response?.data?.detail;
     throw new DatasetError(
       typeof detail === 'string' ? detail : 'Something went wrong while handling your dataset.',
       GENERIC_HINT
     );
   }
+}
+
+// The health answer is reused for a few seconds. Data Management mounts the
+// notice on every visit (and twice per mount under React's StrictMode in dev),
+// and re-asking an unreachable server on each of those is pure waste. Short
+// enough that a backend started in another terminal is picked up on the next
+// navigation; "Check again" passes `force` so the user never waits on it.
+const HEALTH_CACHE_MS = 30000;
+let healthCache = { checkedAt: 0, value: null };
+
+/** Is the API up? Used to warn before the user picks a file, rather than
+ * after. Returns the backend's health payload, or null if it can't be reached. */
+export async function checkBackendHealth({ force = false } = {}) {
+  if (!force && healthCache.checkedAt && Date.now() - healthCache.checkedAt < HEALTH_CACHE_MS) {
+    return healthCache.value;
+  }
+  let value = null;
+  try {
+    value = await apiClient.get('/health', { timeout: 5000 });
+  } catch {
+    value = null;
+  }
+  healthCache = { checkedAt: Date.now(), value };
+  return value;
 }
 
 export const datasetService = {
@@ -243,6 +296,68 @@ export const datasetService = {
     // ensemble + a batch SHAP pass) -- it can genuinely take a couple of
     // minutes for a larger dataset, well past a typical API timeout.
     return callDatasetApi(apiClient.post(`/datasets/${datasetId}/predict`, null, { timeout: 300000 }));
+  },
+
+  /** The dataset the backend currently holds, or null if there is none.
+   * Lets the app tell "backend down" apart from "nothing connected yet". */
+  async getCurrent() {
+    try {
+      return await apiClient.get('/dataset');
+    } catch (err) {
+      if (err.response?.status === 404) return null;
+      throw err;
+    }
+  },
+
+  /** "Replace dataset" -- drops the stored data server-side so a trained
+   * model can never outlive the dataset it was built from. */
+  async clearDataset() {
+    return callDatasetApi(apiClient.delete('/dataset'));
+  },
+};
+
+// ============================================
+// CRM / API Connector Services
+// ============================================
+//
+// Every call here is server-side (backend/api/connector_routes.py). Provider
+// credentials are POSTed to our own backend, used for that one request and
+// dropped -- they are never persisted, never logged, never written to
+// localStorage, and never placed in a VITE_-prefixed variable, which would
+// ship them in the browser bundle.
+//
+// A successful import lands in exactly the same place an uploaded file does:
+// one dataset on the backend, ready for the same validate -> map -> predict
+// path. There is deliberately no separate CRM pipeline.
+
+export const connectorService = {
+  /** Providers and their connect-form fields. `status` is honest: 'available'
+   * really connects, 'coming_soon' will refuse rather than fake a session. */
+  async listConnectors() {
+    return callDatasetApi(apiClient.get('/connectors'));
+  },
+
+  async testConnection(providerId, credentials) {
+    return callDatasetApi(apiClient.post(`/connectors/${providerId}/test`, { credentials }));
+  },
+
+  /** The selectable record collections inside the provider (a CRM object,
+   * a report, an endpoint). */
+  async listSources(providerId, credentials) {
+    return callDatasetApi(apiClient.post(`/connectors/${providerId}/sources`, { credentials }));
+  },
+
+  /** Pulls records and registers them as the active dataset. Returns the same
+   * shape `uploadDataset` does. Network round-trips to a third-party API can
+   * be slow, so this gets a longer timeout than the default. */
+  async importRecords(providerId, { credentials, sourceId, limit }) {
+    return callDatasetApi(
+      apiClient.post(
+        `/connectors/${providerId}/import`,
+        { credentials, sourceId, limit },
+        { timeout: 120000 }
+      )
+    );
   },
 };
 

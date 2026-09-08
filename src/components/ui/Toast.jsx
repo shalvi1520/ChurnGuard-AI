@@ -20,7 +20,13 @@ export default function ToastContainer() {
   const { toasts, dispatch } = useApp();
 
   return (
-    <div className="fixed bottom-4 right-4 z-[100] flex flex-col gap-2 max-w-sm">
+    // Sits above the floating assistant launcher (bottom-6, 48px tall) instead
+    // of on top of it, and never wider than the viewport on a phone.
+    <div
+      className="fixed bottom-24 right-4 z-[100] flex flex-col gap-2 max-w-[calc(100vw-2rem)] sm:max-w-sm"
+      role="status"
+      aria-live="polite"
+    >
       <AnimatePresence>
         {toasts.map((toast) => {
           const Icon = icons[toast.type] || icons.info;

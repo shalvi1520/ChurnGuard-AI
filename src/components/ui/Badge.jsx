@@ -1,5 +1,5 @@
 import React from 'react';
-import { cn, getRiskColor, getRiskLabel } from '../../utils/helpers';
+import { cn, getRiskLabel } from '../../utils/helpers';
 
 export default function Badge({ children, variant = 'default', size = 'sm', className }) {
   const variants = {
@@ -12,10 +12,12 @@ export default function Badge({ children, variant = 'default', size = 'sm', clas
     active: 'bg-status-active/10 text-status-active border-status-active/20',
     dormant: 'bg-status-dormant/10 text-status-dormant border-status-dormant/20',
     churned: 'bg-status-churned/10 text-status-churned border-status-churned/20',
-    draft: 'bg-blue-500/10 text-blue-400 border-blue-500/20',
-    reviewed: 'bg-yellow-500/10 text-yellow-400 border-yellow-500/20',
-    approved: 'bg-green-500/10 text-green-400 border-green-500/20',
-    sent: 'bg-purple-500/10 text-purple-400 border-purple-500/20',
+    // Outreach draft states. These use the app's own tokens rather than fixed
+    // palette colours so they stay readable in both light and dark themes.
+    draft: 'bg-info/10 text-info border-info/20',
+    reviewed: 'bg-risk-medium/10 text-risk-medium border-risk-medium/20',
+    approved: 'bg-success/10 text-success border-success/20',
+    sent: 'bg-accent-bg text-accent border-accent/20',
   };
 
   const sizes = {
@@ -41,11 +43,10 @@ export default function Badge({ children, variant = 'default', size = 'sm', clas
 export function RiskBadge({ tier, size = 'sm', showDot = true }) {
   return (
     <Badge variant={tier} size={size}>
+      {/* `currentColor` keeps the dot in step with the badge's own text colour,
+          which is themed — a fixed hex would sit wrongly on a light surface. */}
       {showDot && (
-        <span
-          className="w-1.5 h-1.5 rounded-full mr-1.5"
-          style={{ backgroundColor: getRiskColor(tier) }}
-        />
+        <span className="w-1.5 h-1.5 rounded-full mr-1.5 bg-current" aria-hidden="true" />
       )}
       {getRiskLabel(tier)}
     </Badge>

@@ -8,6 +8,29 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
+    <script>
+      // Appearance bootstrap — runs before first paint so a light-theme user
+      // never sees a dark flash while the React bundle loads. The preference
+      // itself is owned by AppContext (via src/utils/theme.js); this only
+      // reads it. Keep the key in step with THEME_STORAGE_KEY there.
+      (function () {
+        try {
+          var stored = localStorage.getItem('churnguard_theme') || 'dark';
+          var resolved =
+            stored === 'system'
+              ? window.matchMedia('(prefers-color-scheme: dark)').matches
+                ? 'dark'
+                : 'light'
+              : stored === 'light'
+                ? 'light'
+                : 'dark';
+          document.documentElement.setAttribute('data-theme', resolved);
+          document.documentElement.style.colorScheme = resolved;
+        } catch (e) {
+          document.documentElement.setAttribute('data-theme', 'dark');
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

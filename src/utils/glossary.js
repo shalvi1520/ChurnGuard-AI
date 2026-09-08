@@ -109,8 +109,8 @@ export const METRICS = {
   },
   topDrivers: {
     label: 'Top Churn Drivers',
-    description: 'Behaviours pushing risk up across the whole customer base',
-    help: 'Averaged SHAP effect over a sample of your customers. A higher bar means that factor moves churn risk more. Per-customer drivers live on the Explainability page.',
+    description: 'The factors moving churn risk most across the whole customer base',
+    help: 'Averaged SHAP effect over a sample of your customers. Orange factors raise churn risk, green ones lower it, and a longer bar means a bigger effect either way. Drivers for one specific account live on the Explainability page.',
   },
   shapContribution: {
     label: 'Feature Contributions',

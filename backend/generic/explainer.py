@@ -31,6 +31,15 @@ def _ensure_loaded() -> None:
         _kernel_explainer = shap.KernelExplainer(_stack_predict_proba_class1, _background_kmeans)
 
 
+def reset_cache() -> None:
+    """Drops the cached explainer so it is rebuilt from the current artifacts.
+    Must be called whenever a new model is trained -- see the matching note in
+    predictor.reset_cache(); a stale KernelExplainer would attribute risk using
+    the previous dataset's model."""
+    global _model, _background_kmeans, _feature_columns, _kernel_explainer
+    _model = _background_kmeans = _feature_columns = _kernel_explainer = None
+
+
 def explain_customer(
     customer_row: pd.DataFrame, nsamples: int = config.SHAP_NSAMPLES_DEFAULT, seed: int = config.SHAP_SEED_DEFAULT
 ) -> shap.Explanation:
