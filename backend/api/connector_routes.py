@@ -100,7 +100,7 @@ def import_records(provider_id: str, body: ImportRequest) -> Dict[str, Any]:
         notes.append("Recognised " + ", ".join(renamed) + " from the provider's own schema.")
 
     try:
-        entry = ingest.register_dataframe(
+        entry, ingest_notes = ingest.register_dataframe(
             frame,
             filename=result.source_label,
             size=int(frame.memory_usage(deep=True).sum()),
@@ -114,4 +114,5 @@ def import_records(provider_id: str, body: ImportRequest) -> Dict[str, Any]:
     except ingest.IngestError as exc:
         raise ingest.as_http_error(exc) from exc
 
+    notes.extend(ingest_notes)
     return ingest.describe_entry(entry, notes)

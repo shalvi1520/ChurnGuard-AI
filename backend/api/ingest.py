@@ -7,7 +7,7 @@ training -> prediction -> dashboard. Nothing downstream can tell how the data
 arrived, which is exactly the point (see backend/connectors/base.py).
 """
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 from fastapi import HTTPException
@@ -66,14 +66,55 @@ def apply_provider_field_map(df: pd.DataFrame, field_map: Dict[str, str]) -> Lis
     return [f"{src} → {dst}" for src, dst in renames.items()]
 
 
+def _has_usable_id_column(df: pd.DataFrame) -> bool:
+    """True when at least one column is unique per row -- the same 'value
+    evidence' signal mapping.py's own customer_id matcher relies on. Checked
+    independently here, before any mapping analysis exists yet, so ingest.py
+    can decide whether a file needs a synthetic ID without depending on --
+    or duplicating -- mapping.py's full scoring logic."""
+    if len(df) == 0:
+        return False
+    return any(df[col].nunique(dropna=True) == len(df) for col in df.columns)
+
+
+def _add_synthetic_customer_id(df: pd.DataFrame) -> pd.DataFrame:
+    """Some real exports (e.g. certain e-commerce churn datasets) have no
+    identifier column at all -- every column is a genuine feature, none is
+    unique per row. Rather than hard-blocking a file that is otherwise
+    perfectly usable, a sequential per-row ID is generated and named exactly
+    'customer_id' so mapping.py's own exact-name match picks it up with high
+    confidence, same as if the file had shipped with one. This never
+    fabricates customer data -- it's a row handle, not a claim about the
+    business -- but the resulting IDs are positional and won't line up with
+    the same customers if this file is re-uploaded later; that limitation is
+    surfaced as a note, not hidden."""
+    out = df.copy()
+    out.insert(0, "customer_id", [f"ROW-{i + 1:06d}" for i in range(len(out))])
+    return out
+
+
 def register_dataframe(
     df: pd.DataFrame,
     filename: str,
     size: int,
     source: DatasetSource,
-) -> DatasetEntry:
-    """Profiles the table and stores it as the active dataset."""
+) -> Tuple[DatasetEntry, List[str]]:
+    """Profiles the table and stores it as the active dataset. Returns the
+    entry plus any notes worth surfacing to the user (e.g. a synthesized ID
+    column) -- distinct from IngestError, since these are informational, not
+    reasons the file was rejected."""
     check_shape(df)
+
+    notes: List[str] = []
+    if not _has_usable_id_column(df):
+        df = _add_synthetic_customer_id(df)
+        notes.append(
+            "This file has no identifier column, so ChurnGuard generated one "
+            "(customer_id) from each row's position. Predictions are still "
+            "per-customer, but re-uploading this data later will not "
+            "reconnect the same IDs -- add a real ID column in your export "
+            "if you need that."
+        )
 
     # Profiled as strings so missing-value detection follows one consistent
     # token rule ("", "n/a", "null", ...); the typed frame stays in raw_df.
@@ -88,7 +129,7 @@ def register_dataframe(
         source=source,
     )
     create_dataset(entry)
-    return entry
+    return entry, notes
 
 
 def describe_entry(entry: DatasetEntry, notes: Optional[List[str]] = None) -> Dict[str, Any]:

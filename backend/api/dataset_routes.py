@@ -11,6 +11,7 @@ them, not at module scope: outreach drafting and the plain-English explanation
 are optional extras, and a missing langchain install must not stop the whole
 churn pipeline (upload, train, predict, dashboard) from working.
 """
+import logging
 import math
 import time
 from datetime import datetime, timezone
@@ -37,6 +38,7 @@ from . import derive_label, ingest, mapping, profiling, recommendations, schema,
 from .store import DatasetEntry, DatasetSource
 
 router = APIRouter(prefix="/api", tags=["churnguard"])
+logger = logging.getLogger(__name__)
 
 # The database is an optional extra (see main.py's _auth_router): a server
 # with no DATABASE_URL/JWT_SECRET configured still runs the full churn
@@ -136,6 +138,31 @@ def _to_native(value: Any) -> Any:
     return value
 
 
+def _json_safe(obj: Any) -> Any:
+    """Recursively converts numpy scalars/arrays to native Python types.
+
+    Real root cause of a bug where dataset/prediction history silently never
+    persisted: train_generic_model()'s report dict carries positive_label /
+    negative_label straight from pandas' Series.unique(), which returns raw
+    numpy.int64 (or similar) rather than a native int for an integer-coded
+    churn column. SQLAlchemy's JSON column type has no numpy-aware encoder,
+    so the INSERT raised TypeError -- and _persist_training()'s best-effort
+    except-and-continue swallowed it completely, so training kept
+    succeeding while history quietly stayed empty. Applied once, here, at
+    the DB-write boundary, rather than chasing every place a numpy type
+    could leak into a report dict upstream.
+    """
+    if isinstance(obj, dict):
+        return {k: _json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_json_safe(v) for v in obj]
+    if isinstance(obj, np.ndarray):
+        return _json_safe(obj.tolist())
+    if isinstance(obj, np.generic):
+        return obj.item()
+    return obj
+
+
 def _safe_num(value: Any) -> Optional[float]:
     try:
         v = float(value)
@@ -216,7 +243,7 @@ async def upload_dataset(file: UploadFile = File(...)):
         ) from exc
 
     try:
-        entry = ingest.register_dataframe(
+        entry, notes = ingest.register_dataframe(
             df,
             filename=filename,
             size=len(contents),
@@ -225,7 +252,7 @@ async def upload_dataset(file: UploadFile = File(...)):
     except ingest.IngestError as exc:
         raise ingest.as_http_error(exc) from exc
 
-    return ingest.describe_entry(entry)
+    return ingest.describe_entry(entry, notes=notes)
 
 
 def _eligibility_for_report(entry: DatasetEntry, report: Dict[str, Any]) -> Dict[str, Any]:
@@ -885,7 +912,10 @@ def _persist_training(current_user, entry: DatasetEntry, fingerprint: str, repor
     """Records this upload + training result for the signed-in user's
     history, and so a future upload of the identical data can skip training
     (see _load_cached_training). Best-effort: a DB write failure here must
-    never fail an otherwise-successful /predict call."""
+    never fail an otherwise-successful /predict call -- but it is now
+    logged, not silently discarded, after a real bug (numpy.int64 in
+    `report` breaking JSON serialization) went unnoticed for a while because
+    the previous bare except-and-continue gave no trace of it anywhere."""
     db = SessionLocal()
     try:
         dataset_row = DatasetRow(
@@ -905,11 +935,47 @@ def _persist_training(current_user, entry: DatasetEntry, fingerprint: str, repor
                 dataset_id=dataset_row.id,
                 fingerprint=fingerprint,
                 artifact_dir=generic_artifacts.artifact_dir(fingerprint),
-                report=report,
+                report=_json_safe(report),
             )
         )
         db.commit()
     except Exception:  # noqa: BLE001 -- best-effort persistence, see docstring
+        logger.warning("Failed to persist training history for fingerprint %s", fingerprint, exc_info=True)
+        db.rollback()
+    finally:
+        db.close()
+
+
+def _persist_predictions(current_user, fingerprint: str, customers: List[Dict[str, Any]]) -> None:
+    """Stores this run's per-customer scores against the TrainedModel row
+    for `fingerprint`, so a signed-in user's dataset history shows real past
+    predictions, not just the aggregate metrics _persist_training() already
+    recorded. Best-effort and logged on failure, same pattern as
+    _persist_training() -- see its docstring for why silent failure here
+    would be worse than useless."""
+    if current_user is None:
+        return
+    db = SessionLocal()
+    try:
+        row = (
+            db.query(TrainedModel)
+            .join(DatasetRow, TrainedModel.dataset_id == DatasetRow.id)
+            .filter(DatasetRow.user_id == current_user.id, TrainedModel.fingerprint == fingerprint)
+            .order_by(TrainedModel.trained_at.desc())
+            .first()
+        )
+        if row is None:
+            # No TrainedModel row exists for this fingerprint yet -- e.g. a
+            # cache hit reusing artifacts trained under a different user, or
+            # persistence genuinely never ran. Nothing to attach scores to.
+            return
+        row.predictions = _json_safe([
+            {"id": c["id"], "churnProbability": c["churnProbability"], "riskTier": c["riskTier"], "churned": c["churned"]}
+            for c in customers
+        ])
+        db.commit()
+    except Exception:  # noqa: BLE001 -- best-effort persistence, see docstring
+        logger.warning("Failed to persist predictions for fingerprint %s", fingerprint, exc_info=True)
         db.rollback()
     finally:
         db.close()
@@ -1242,6 +1308,9 @@ def run_prediction(
     entry.outreach_drafts = []
     entry.top_drivers = _compute_top_drivers(model_df, all_feature_cols, fingerprint)
 
+    if DB_AVAILABLE:
+        _persist_predictions(current_user, fingerprint, customers)
+
     # Eligible customers (see business_rules.MIN_RISK_TIER_FOR_AUTO_OUTREACH)
     # get outreach drafted automatically, in the background, so the queue is
     # already populated by the time anyone opens Outreach -- not triggered by
@@ -1332,8 +1401,51 @@ def dataset_history(current_user=Depends(get_current_user)):
                     if latest_model
                     else None
                 ),
+                # Whether GET /datasets/history/{id}/predictions has anything
+                # to return -- lets the frontend show/hide a "view
+                # predictions" action per row without a second round trip.
+                "predictionsAvailable": bool(latest_model and latest_model.predictions),
+                "customersProcessed": len(latest_model.predictions) if latest_model and latest_model.predictions else None,
             })
         return {"datasets": out}
+    finally:
+        db.close()
+
+
+@router.get("/datasets/history/{dataset_row_id}/predictions")
+def dataset_history_predictions(dataset_row_id: str, current_user=Depends(get_current_user)):
+    """The detail view behind one row of dataset_history(): every
+    customer-level score from that dataset's most recent training run.
+    Ownership is checked via the Dataset row's user_id -- knowing a row's id
+    is never sufficient on its own to read another user's data."""
+    if not DB_AVAILABLE:
+        raise HTTPException(503, "Dataset history needs a database, which isn't configured on this server.")
+
+    db = SessionLocal()
+    try:
+        dataset_row = (
+            db.query(DatasetRow)
+            .filter(DatasetRow.id == dataset_row_id, DatasetRow.user_id == current_user.id)
+            .first()
+        )
+        if dataset_row is None:
+            raise HTTPException(404, "That dataset history entry doesn't exist, or isn't yours.")
+
+        latest_model = (
+            db.query(TrainedModel)
+            .filter(TrainedModel.dataset_id == dataset_row.id)
+            .order_by(TrainedModel.trained_at.desc())
+            .first()
+        )
+        if latest_model is None or not latest_model.predictions:
+            raise HTTPException(404, "No stored predictions for this dataset yet.")
+
+        return {
+            "datasetId": dataset_row.id,
+            "filename": dataset_row.filename,
+            "trainedAt": latest_model.trained_at.isoformat(),
+            "customers": latest_model.predictions,
+        }
     finally:
         db.close()
 
