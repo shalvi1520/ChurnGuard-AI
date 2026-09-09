@@ -70,11 +70,21 @@ class TrainedModel(Base):
     fingerprint: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     artifact_dir: Mapped[str] = mapped_column(String(500), nullable=False)
     report: Mapped[dict] = mapped_column(JSON, nullable=False)
-    # Per-customer scores from this run -- id/probability/tier/churned only,
-    # never the raw feature values a customer was scored on. Nullable so
-    # existing rows from before this column existed don't need a backfill;
-    # a history entry with no predictions still shows its training metrics.
+    # Per-customer scores from this run -- full records (id, probability,
+    # tier, churned, plus the same feature-column fields the frontend's
+    # customer list/dashboard already display). Nullable so existing rows
+    # from before this column existed don't need a backfill; a history entry
+    # with no predictions still shows its training metrics.
     predictions: Mapped[list] = mapped_column(JSON, nullable=True)
+    # Everything else a full /predict response needs that isn't `report` or
+    # `predictions`: top_drivers, cleaning actions, extra-column usage, and
+    # each customer's raw (pre-encoding) feature values -- the last of these
+    # is what lets a later per-customer SHAP explain click work on a fully
+    # cache-hit connect without ever having called generic_predictor.predict()
+    # or recomputed SHAP for this run. Nullable for the same reason as
+    # `predictions`: older rows simply don't support a full-result cache hit
+    # and fall back to the narrower training-only cache instead.
+    full_result_extra: Mapped[dict] = mapped_column(JSON, nullable=True)
     trained_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=datetime.datetime.utcnow)
 
     dataset: Mapped["Dataset"] = relationship(back_populates="trained_models")

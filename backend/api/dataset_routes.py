@@ -139,7 +139,8 @@ def _to_native(value: Any) -> Any:
 
 
 def _json_safe(obj: Any) -> Any:
-    """Recursively converts numpy scalars/arrays to native Python types.
+    """Recursively converts numpy scalars/arrays to native Python types, and
+    NaN/Infinity floats to None.
 
     Real root cause of a bug where dataset/prediction history silently never
     persisted: train_generic_model()'s report dict carries positive_label /
@@ -151,6 +152,16 @@ def _json_safe(obj: Any) -> Any:
     succeeding while history quietly stayed empty. Applied once, here, at
     the DB-write boundary, rather than chasing every place a numpy type
     could leak into a report dict upstream.
+
+    NaN/Infinity get the same treatment for the same reason: Python's
+    json.dumps happily emits the literal tokens NaN/Infinity by default
+    (allow_nan=True), but those aren't valid JSON per spec, and Postgres's
+    JSON column type rejects them outright at INSERT/UPDATE time. This bit
+    specifically raw_features_by_id, which -- unlike the customer records in
+    `predictions`, which already go through _safe_num()'s NaN-to-None
+    conversion -- copies dataframe cell values directly and can carry a raw
+    NaN for any column with missing values (e.g. TotalCharges with an empty
+    cell for a brand-new customer).
     """
     if isinstance(obj, dict):
         return {k: _json_safe(v) for k, v in obj.items()}
@@ -159,7 +170,9 @@ def _json_safe(obj: Any) -> Any:
     if isinstance(obj, np.ndarray):
         return _json_safe(obj.tolist())
     if isinstance(obj, np.generic):
-        return obj.item()
+        obj = obj.item()
+    if isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
+        return None
     return obj
 
 
@@ -946,13 +959,23 @@ def _persist_training(current_user, entry: DatasetEntry, fingerprint: str, repor
         db.close()
 
 
-def _persist_predictions(current_user, fingerprint: str, customers: List[Dict[str, Any]]) -> None:
-    """Stores this run's per-customer scores against the TrainedModel row
-    for `fingerprint`, so a signed-in user's dataset history shows real past
-    predictions, not just the aggregate metrics _persist_training() already
-    recorded. Best-effort and logged on failure, same pattern as
-    _persist_training() -- see its docstring for why silent failure here
-    would be worse than useless."""
+def _persist_predictions(
+    current_user,
+    fingerprint: str,
+    customers: List[Dict[str, Any]],
+    raw_features_by_id: Dict[str, Dict[str, Any]],
+    top_drivers: List[Dict[str, Any]],
+    cleaning: List[Dict[str, Any]],
+    extra_columns_used: List[str],
+    extra_columns_skipped: List[Dict[str, str]],
+) -> None:
+    """Stores this run's full results against the TrainedModel row for
+    `fingerprint`, so a signed-in user's dataset history shows real past
+    predictions, AND so a later re-upload of the identical data can skip
+    inference and SHAP entirely, not just the Optuna/StackingClassifier
+    training step _load_cached_training() already skips (see
+    _load_cached_full_result()). Best-effort and logged on failure, same
+    pattern as _persist_training()."""
     if current_user is None:
         return
     db = SessionLocal()
@@ -969,14 +992,50 @@ def _persist_predictions(current_user, fingerprint: str, customers: List[Dict[st
             # cache hit reusing artifacts trained under a different user, or
             # persistence genuinely never ran. Nothing to attach scores to.
             return
-        row.predictions = _json_safe([
-            {"id": c["id"], "churnProbability": c["churnProbability"], "riskTier": c["riskTier"], "churned": c["churned"]}
-            for c in customers
-        ])
+        row.predictions = _json_safe(customers)
+        row.full_result_extra = _json_safe({
+            "rawFeaturesById": raw_features_by_id,
+            "topDrivers": top_drivers,
+            "cleaning": cleaning,
+            "extraColumnsUsed": extra_columns_used,
+            "extraColumnsSkipped": extra_columns_skipped,
+        })
         db.commit()
     except Exception:  # noqa: BLE001 -- best-effort persistence, see docstring
         logger.warning("Failed to persist predictions for fingerprint %s", fingerprint, exc_info=True)
         db.rollback()
+    finally:
+        db.close()
+
+
+def _load_cached_full_result(current_user, fingerprint: str) -> Optional[Dict[str, Any]]:
+    """A previous full /predict result for this exact data -- or None if
+    there isn't one, the caller isn't signed in, or an earlier run only got
+    as far as _persist_training() (no `predictions`/`full_result_extra` yet,
+    e.g. rows from before this feature existed). Returning None here just
+    means run_prediction() falls back to the narrower training-only cache
+    (or a full retrain) exactly as if this function didn't exist -- never a
+    correctness issue, only a speed one."""
+    if current_user is None:
+        return None
+    db = SessionLocal()
+    try:
+        row = (
+            db.query(TrainedModel)
+            .join(DatasetRow, TrainedModel.dataset_id == DatasetRow.id)
+            .filter(DatasetRow.user_id == current_user.id, TrainedModel.fingerprint == fingerprint)
+            .order_by(TrainedModel.trained_at.desc())
+            .first()
+        )
+        if row is None or not row.predictions or not row.full_result_extra:
+            return None
+        return {
+            "report": dict(row.report),
+            "customers": row.predictions,
+            "extra": dict(row.full_result_extra),
+        }
+    except Exception:  # noqa: BLE001 -- a DB hiccup means "compute normally", never a broken /predict
+        return None
     finally:
         db.close()
 
@@ -1189,7 +1248,84 @@ def run_prediction(
     fingerprint = fingerprint_util.compute_fingerprint(train_df)
     entry.fingerprint = fingerprint
 
+    logger.warning(
+        "CACHE-DEBUG /predict: fingerprint=%s signed_in=%s user_email=%s DB_AVAILABLE=%s",
+        fingerprint,
+        current_user is not None,
+        current_user.email if current_user else None,
+        DB_AVAILABLE,
+    )
+
+    # Full-result cache: this exact data was already trained, scored AND
+    # explained for this account (see _persist_predictions()). Skips not
+    # just the Optuna/StackingClassifier retrain (_load_cached_training()
+    # already handled that), but also the inference pass and the SHAP
+    # top-drivers computation -- the two remaining costs that used to make
+    # even a "cached" re-upload take several seconds. Correctness is
+    # unaffected: a later per-customer explain click still works, since
+    # generic_predictor/generic_explainer lazily reload their artifacts by
+    # fingerprint from disk on demand (see predictor.py's _ensure_loaded()),
+    # independent of whether predict() ran during this request.
+    cached_full = _load_cached_full_result(current_user, fingerprint) if DB_AVAILABLE else None
+    logger.warning("CACHE-DEBUG /predict: full_result_cache_hit=%s", cached_full is not None)
+    if cached_full is not None:
+        report = cached_full["report"]
+        customers = cached_full["customers"]
+        extra = cached_full["extra"]
+
+        entry.customers = customers
+        entry.customers_by_id = {c["id"]: c for c in customers}
+        entry.raw_features_by_id = extra["rawFeaturesById"]
+        entry.training_report = report
+        entry.trained = True
+        entry.cleaning = extra["cleaning"]
+        entry.raw_drivers = {}
+        entry.explanation_base_value = {}
+        entry.ai_explanations = {}
+        entry.outreach_drafts = []
+        entry.top_drivers = extra["topDrivers"]
+
+        # Deliberately NOT re-queuing _run_auto_outreach here, unlike the
+        # full-training path below. That loop recomputes a fresh SHAP
+        # explanation from scratch for every high/critical-risk customer
+        # (entry.raw_drivers is reset above, never carried over) before even
+        # attempting to draft a message -- by far the most expensive
+        # remaining step, and one a full cache hit has no way to skip
+        # per-customer the way it skips training/inference/top-drivers in
+        # bulk. Since this exact data was already fully processed before,
+        # redoing that work here would only reproduce drafts equivalent to
+        # ones already generated on the original run -- cost with no benefit.
+        eligible_count = sum(1 for c in customers if c["riskTier"] in ("high", "critical"))
+        entry.auto_outreach_state = "done"
+        entry.auto_outreach_done = 0
+        entry.auto_outreach_total = 0
+        entry.auto_outreach_queued = 0
+        entry.auto_outreach_skipped = eligible_count
+
+        return {
+            "datasetId": dataset_id,
+            "status": "completed",
+            "customersProcessed": len(customers),
+            "fieldsMapped": len(field_to_col),
+            "mappedFields": sorted(field_to_col),
+            "labelledChurnCount": sum(1 for c in customers if c["churned"]),
+            "cleaning": extra["cleaning"],
+            "extraColumnsUsed": extra["extraColumnsUsed"],
+            "extraColumnsSkipped": extra["extraColumnsSkipped"],
+            "source": entry.source.as_dict(),
+            "trainingMetrics": {
+                "accuracy": report["test_metrics"]["accuracy"],
+                "precision": report["test_metrics"]["precision"],
+                "recall": report["test_metrics"]["recall"],
+                "f1": report["test_metrics"]["f1"],
+                "rocAuc": report["test_metrics"]["roc_auc"],
+            },
+            "autoOutreach": entry.auto_outreach_status(),
+            "trainingSource": "cached",
+        }
+
     cached_report = _load_cached_training(current_user, fingerprint) if DB_AVAILABLE else None
+    logger.warning("CACHE-DEBUG /predict: training_only_cache_hit=%s", cached_report is not None)
     if cached_report is not None:
         report = cached_report
     else:
@@ -1309,22 +1445,42 @@ def run_prediction(
     entry.top_drivers = _compute_top_drivers(model_df, all_feature_cols, fingerprint)
 
     if DB_AVAILABLE:
-        _persist_predictions(current_user, fingerprint, customers)
+        _persist_predictions(
+            current_user, fingerprint, customers, raw_features_by_id,
+            entry.top_drivers, cleaning, extra_columns_used, extra_columns_skipped,
+        )
 
     # Eligible customers (see business_rules.MIN_RISK_TIER_FOR_AUTO_OUTREACH)
     # get outreach drafted automatically, in the background, so the queue is
     # already populated by the time anyone opens Outreach -- not triggered by
     # a click. Runs after the response is sent; never blocks /predict itself.
+    #
+    # Gated on cached_report is None (a genuinely fresh training run), not
+    # just "did we reach this code path" -- this bottom-of-function path is
+    # also where a training-only cache hit (cached_report is not None, see
+    # above) lands, since that cache only skips the Optuna/StackingClassifier
+    # fit, not inference/SHAP/outreach. Without this guard, a training-only
+    # cache hit would still recompute a full SHAP explanation for every
+    # high/critical-risk customer and re-draft outreach for all of them --
+    # the same expensive, pointless-for-unchanged-data work the full-result
+    # cache path above already skips, just reached by a different route.
     eligible_count = sum(
         1 for c in customers if c["riskTier"] in ("high", "critical")
     )
-    entry.auto_outreach_state = "running" if eligible_count else "done"
-    entry.auto_outreach_done = 0
-    entry.auto_outreach_total = min(eligible_count, business_rules.MAX_AUTO_DRAFTS_PER_RUN)
-    entry.auto_outreach_queued = 0
-    entry.auto_outreach_skipped = 0
-    if eligible_count:
-        background_tasks.add_task(_run_auto_outreach, entry)
+    if cached_report is None:
+        entry.auto_outreach_state = "running" if eligible_count else "done"
+        entry.auto_outreach_done = 0
+        entry.auto_outreach_total = min(eligible_count, business_rules.MAX_AUTO_DRAFTS_PER_RUN)
+        entry.auto_outreach_queued = 0
+        entry.auto_outreach_skipped = 0
+        if eligible_count:
+            background_tasks.add_task(_run_auto_outreach, entry)
+    else:
+        entry.auto_outreach_state = "done"
+        entry.auto_outreach_done = 0
+        entry.auto_outreach_total = 0
+        entry.auto_outreach_queued = 0
+        entry.auto_outreach_skipped = eligible_count
 
     return {
         "datasetId": dataset_id,
