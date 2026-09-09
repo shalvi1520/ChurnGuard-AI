@@ -177,17 +177,27 @@ def build_validation_report(dataset_id: str, profile: Dict[str, Any]) -> Dict[st
 
     # Required fields that could not be matched at all, and ones matched to a
     # column that can't actually do the job (e.g. a churn column with 5 values).
+    # `field` tags which ChurnGuard field each issue is about -- purely
+    # additive (existing frontend code doesn't read it), added so a missing
+    # churn column can be told apart from any other missing-field issue
+    # without string-matching on the (user-facing, copy-editable) title. See
+    # dataset_routes.py's validate_dataset(): when a missing churn column
+    # turns out not to be a dead end (resolve_training_eligibility() finds a
+    # reusable model or a derivable proxy label), that specific issue is
+    # removed from the response rather than left contradicting `eligibility`.
     for field in analysis["fields"]:
         if not field["required"]:
             continue
         if field["column"] is None:
             issues.append({
+                "field": field["key"],
                 "title": f"{field['label']} was not detected in this file.",
                 "why": field["whyNeeded"],
                 "action": f"Choose the column that holds it. {field['lookFor']}",
             })
         elif field["blocker"]:
             issues.append({
+                "field": field["key"],
                 "title": f"{field['label']}: {field['blocker']}",
                 "why": field["whyNeeded"],
                 "action": f"Pick a different column for {field['label']}. {field['lookFor']}",
@@ -252,6 +262,10 @@ def build_validation_report(dataset_id: str, profile: Dict[str, Any]) -> Dict[st
         "additionalColumns": analysis["unmappedColumns"],
         "needsReview": analysis["needsReview"],
         "canAutoProcess": status != "blocked" and not analysis["needsReview"],
+        # Superseded by dataset_routes.py's validate_dataset(), which attaches
+        # an `eligibility` field (REUSE_MODEL/DERIVE_LABEL/BLOCKED, see
+        # resolve_training_eligibility()) whenever churn is genuinely missing
+        # -- a strict superset of what a bare recency-column guess covered.
     }
 
 

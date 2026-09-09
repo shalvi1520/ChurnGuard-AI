@@ -4,7 +4,6 @@
 
 import axios from 'axios';
 import { mockNotifications, mockChatResponses } from '../mock/notifications';
-import { demoCredentials, mockUsers } from '../mock/users';
 import { delay } from '../utils/helpers';
 
 // ChurnGuard runs on a real FastAPI + ML backend (backend/) -- every
@@ -55,29 +54,55 @@ apiClient.interceptors.response.use(
 // Auth Services
 // ============================================
 //
-// No backend user-account system exists (see PROJECT_MEMORY.md) -- building
-// one is a separate, much larger feature than connecting the ML pipeline.
-// This stays a local/prototype session: any email/password is accepted and
-// a session token is kept in localStorage. Known limitation, not an oversight.
+// Real accounts, backed by backend/api/auth_routes.py: signup/login are
+// hashed-password + JWT against a Postgres `users` table, not a local mock.
+// If the server has no database configured, these calls fail with a real
+// 503 rather than silently accepting any credentials -- see BackendNotice
+// for how the app surfaces that.
+
+/** FastAPI's error body is `{ detail: ... }` (a string, or a list of
+ * pydantic validation errors); AuthContext reads `err.response.data.message`,
+ * so this normalizes the two without AuthContext needing to know FastAPI's
+ * error shape. Errors with no response (network down) are left as-is --
+ * AuthContext's own fallback message covers those. */
+function withAuthMessage(err) {
+  const detail = err.response?.data?.detail;
+  let message = null;
+  if (typeof detail === 'string') {
+    message = detail;
+  } else if (Array.isArray(detail) && detail[0]?.msg) {
+    message = String(detail[0].msg).replace(/^Value error,\s*/, '');
+  }
+  if (message && err.response?.data) {
+    err.response.data.message = message;
+  }
+  return err;
+}
 
 export const authService = {
   async login(email, password) {
-    await delay(400);
-    if (email === demoCredentials.email && password === demoCredentials.password) {
-      return { token: 'churnguard-local-session', user: demoCredentials.user };
+    try {
+      return await apiClient.post('/auth/login', { email, password });
+    } catch (err) {
+      throw withAuthMessage(err);
     }
-    const user = { ...mockUsers[0], email, name: email.split('@')[0].replace(/[._]/g, ' ').replace(/\b\w/g, c => c.toUpperCase()) };
-    return { token: 'churnguard-local-session', user };
   },
 
   async signup(data) {
-    await delay(500);
-    return { token: 'churnguard-local-session', user: { ...mockUsers[0], name: data.name, email: data.email, company: data.company } };
+    try {
+      return await apiClient.post('/auth/signup', data);
+    } catch (err) {
+      throw withAuthMessage(err);
+    }
   },
 
   async forgotPassword() {
+    // No backend password-reset flow exists yet (a real one needs an email
+    // sender, a reset-token table and a reset-confirmation page -- out of
+    // scope here). Kept as a stub so the form doesn't error out, but the
+    // copy stays honest about not actually sending anything.
     await delay(400);
-    return { message: 'Password reset email sent' };
+    return { message: 'Password reset isn’t available yet. Contact support to regain access.' };
   },
 
   async logout() {
@@ -168,6 +193,13 @@ export const outreachService = {
   },
   async sendEmail(emailId) {
     return apiClient.post(`/outreach/${emailId}/send`);
+  },
+  /** Progress of the automatic post-training outreach pipeline (drafts
+   * high/critical-risk accounts in the background, right after training --
+   * see backend/agents/outreach_workflow.py). `state` is 'idle' | 'running'
+   * | 'done'. Safe to poll: cheap, in-memory read on the backend. */
+  async getAutoStatus() {
+    return apiClient.get('/outreach/auto-status');
   },
 };
 
@@ -296,6 +328,45 @@ export const datasetService = {
     // ensemble + a batch SHAP pass) -- it can genuinely take a couple of
     // minutes for a larger dataset, well past a typical API timeout.
     return callDatasetApi(apiClient.post(`/datasets/${datasetId}/predict`, null, { timeout: 300000 }));
+  },
+
+  /** The whole point of the setup flow: no manual mapping screen. Runs the
+   * deterministic matcher, then an LLM second opinion for every required
+   * field it couldn't confidently resolve alone, in one call. Either every
+   * required field ends up resolved (`resolved: true`, `mappings` ready for
+   * mapColumns) or it reports plainly which fields it still couldn't place
+   * and why — the caller shows that as an honest "can't process this yet"
+   * screen, never a form asking the user to pick columns. */
+  async autoMapColumns(datasetId) {
+    return callDatasetApi(apiClient.post(`/datasets/${datasetId}/auto-map`, null, { timeout: 45000 }));
+  },
+
+  /** Only offered when validation reports `eligibility.state === 'DERIVE_LABEL'`:
+   * no column looks like a churn outcome at all, but ChurnGuard found a
+   * plausible proxy -- a status column, a cancellation-date column, or a
+   * last-activity date (`rule`, matching eligibility.suggestion.rule).
+   * `column` and, depending on `rule`, `inactivityDays` (last_activity) or
+   * `churnValues` (status_column) come from what the user confirmed. Returns
+   * the same `{resolved, mappings, ...}` shape as autoMapColumns, so the
+   * caller can hand it straight to the same completion path. */
+  async deriveChurn(datasetId, { rule, column, inactivityDays, churnValues }) {
+    return callDatasetApi(
+      apiClient.post(`/datasets/${datasetId}/derive-churn`, {
+        rule,
+        column,
+        inactivity_days: inactivityDays,
+        churn_values: churnValues,
+      })
+    );
+  },
+
+  /** Every dataset this signed-in account has trained before, persisted
+   * server-side (backend/db) -- distinct from datasetHistory.js's browser-
+   * only IndexedDB list, which remembers the file for a quick reconnect but
+   * nothing across devices. Requires sign-in; 503s if the server has no
+   * database configured. */
+  async getHistory() {
+    return callDatasetApi(apiClient.get('/datasets/history'));
   },
 
   /** The dataset the backend currently holds, or null if there is none.

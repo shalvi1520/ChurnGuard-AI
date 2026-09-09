@@ -70,6 +70,51 @@ _FIELD_NEGATIVE_TOKENS = {
 }
 
 
+# Collapsed (normalize_column_name) forms of common "when did we last see this
+# customer" column names. Used only when no column looks like a churn outcome
+# at all -- see find_recency_candidate().
+_LAST_ACTIVITY_ALIASES = {
+    "lastlogin", "lastlogindate", "lastlogintime", "lastactive", "lastactivedate",
+    "lastactivity", "lastactivitydate", "lastseen", "lastsession", "lastvisit",
+    "lastvisitdate", "lastused", "lastusedate", "lastpurchase", "lastpurchasedate",
+    "lastorder", "lastorderdate", "lastaccess", "lastaccessdate", "lastengagement",
+    "lastinteraction", "lastlogon", "lastlogontime", "lastusage", "lastactiondate",
+}
+
+
+def find_recency_candidate(profile: Dict[str, Any]) -> Optional[str]:
+    """When no column looks like a churn outcome at all (not even weakly), a
+    last-activity date -- last login, last session, last purchase -- is a
+    common substitute on data with no explicit cancellation event, e.g. a
+    streaming or app dataset. This only flags a plausibly-named column; the
+    caller (dataset_routes.py's POST /derive-churn) does the actual date
+    parsing and lets the user choose the inactivity threshold. Nothing here
+    derives a label on its own."""
+    for column in profile["columns"]:
+        if schema.normalize_column_name(column["name"]) in _LAST_ACTIVITY_ALIASES:
+            return column["name"]
+    return None
+
+
+def churn_leakage_tokens() -> set:
+    """A deliberately narrow, high-precision word set for dataset_routes.py's
+    training-time leakage guard: a column whose name contains one of these is
+    excluded from the "extra" features passed to the trainer, since it likely
+    duplicates or derives from the churn outcome itself (a "Churn Score" or
+    "Churn Reason" alongside the real churn column, for example) -- exactly
+    the kind of semantic leakage the generic trainer's own dtype/cardinality
+    heuristics can't catch on their own.
+
+    Deliberately NOT `_FIELD_NEGATIVE_TOKENS["churn"]`: that list exists to
+    down-weight a column's candidacy for *being* the churn field itself, and
+    includes generic words ("score", "risk", "date", "comment", "flag") that
+    are common, legitimate names for unrelated business columns (a bank's
+    "CreditScore", a lending vertical's "RiskTier") -- using it here excluded
+    real features with no relationship to churn. This list only contains
+    words unambiguous enough that a false positive is very unlikely."""
+    return {"churn", "churned", "attrition", "attrited", "unsubscribed", "cancellation"}
+
+
 def _build_token_weights() -> Dict[str, float]:
     """A word shared by several fields is weaker evidence than one that belongs
     to a single field: "charges" appears in two vocabularies, "monthly" in one."""

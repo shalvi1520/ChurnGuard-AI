@@ -59,7 +59,12 @@ OPTIONAL_ROUTERS_SKIPPED = {}
 def _mount_optional(name: str, loader) -> None:
     try:
         app.include_router(loader())
-    except ImportError as exc:
+    except (ImportError, RuntimeError) as exc:
+        # ImportError: an optional package isn't installed. RuntimeError: the
+        # auth router's database.py/security.py raise this when configured
+        # but missing required env vars (DATABASE_URL, JWT_SECRET) -- both are
+        # "this optional feature isn't available", never a reason to stop the
+        # core churn pipeline from starting.
         OPTIONAL_ROUTERS_SKIPPED[name] = str(exc)
         logger.warning("Optional router %r not mounted: %s", name, exc)
 
@@ -74,8 +79,49 @@ def _orchestration_router():
     return router
 
 
+def _seed_demo_account() -> None:
+    """The landing page's "Explore Demo" link and LoginPage's prefilled form
+    (src/pages/auth/LoginPage.jsx) both assume demo@churnguard.ai / demo2026
+    just works -- true under the old mock authService, which accepted any
+    password. With real accounts that login would 401 unless this account
+    genuinely exists, so it's seeded once here rather than special-casing
+    "any password works for this one email" (a real backdoor, not a fix)."""
+    from ..db import security
+    from ..db.database import SessionLocal
+    from ..db.models import User
+
+    db = SessionLocal()
+    try:
+        if not db.query(User).filter(User.email == "demo@churnguard.ai").first():
+            db.add(User(
+                email="demo@churnguard.ai",
+                password_hash=security.hash_password("demo2026"),
+                name="Demo User",
+                company="ChurnGuard Demo",
+            ))
+            db.commit()
+    finally:
+        db.close()
+
+
+def _auth_router():
+    # Requires DATABASE_URL + JWT_SECRET (backend/.env) and the sqlalchemy/
+    # psycopg2/bcrypt/pyjwt extras -- optional so a server with no database
+    # configured still serves the core churn pipeline, just without accounts,
+    # persisted dataset history, or retrain-skipping.
+    from .auth_routes import router
+
+    from ..db.database import Base, engine
+    from ..db import models  # noqa: F401 -- import registers the tables on Base
+
+    Base.metadata.create_all(bind=engine)
+    _seed_demo_account()
+    return router
+
+
 _mount_optional("generic", _generic_router)
 _mount_optional("orchestration", _orchestration_router)
+_mount_optional("auth", _auth_router)
 
 
 @app.get("/")

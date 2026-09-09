@@ -36,9 +36,12 @@ import { formatDate, formatNumber, formatRelativeDate } from '../utils/helpers';
  * the original file, never customer records, scores or dashboards — those
  * belong to the active dataset and would be stale copies here.
  *
- * The honest part: reconnecting genuinely re-registers the file and retrains,
- * because a previous session's model does not survive a backend restart. The
- * page says so rather than implying the old model is still sitting there.
+ * The honest part: reconnecting genuinely re-registers the file, because a
+ * previous session's *in-memory* dataset does not survive a backend restart.
+ * Training itself is skipped when signed in and this exact data (same
+ * columns, same values) was already trained on this account — see
+ * backend/api/dataset_routes.py's fingerprint cache — otherwise it retrains
+ * for real. The page says so rather than promising either behaviour blindly.
  */
 
 const SOURCE_META = {
@@ -281,8 +284,9 @@ export default function HistoryPage() {
         <h1 className="text-xl font-bold text-text-primary tracking-tight">Dataset history</h1>
         <p className="text-sm text-text-secondary mt-1.5 leading-relaxed">
           Reconnect to previously used datasets without uploading them again. ChurnGuard keeps a
-          copy in this browser, hands it back to the same setup pipeline, and retrains on it — so
-          the numbers you get are current, not remembered.
+          copy in this browser and hands it back to the same setup pipeline — retraining for real,
+          unless you're signed in and this exact data was already trained on your account, in which
+          case the existing model is reused instead of retrained.
         </p>
       </header>
 

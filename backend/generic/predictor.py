@@ -16,34 +16,56 @@ _model = None
 _scaler = None
 _encoders = None
 _metadata = None
+_loaded_fingerprint = "__unset__"  # distinct from None, which is a legitimate fingerprint value
 
 
-def _ensure_loaded() -> None:
-    global _model, _scaler, _encoders, _metadata
-    if _model is None:
-        _model = artifacts.load_model()
-        _scaler = artifacts.load_scaler()
-        _encoders = artifacts.load_encoders()
-        _metadata = artifacts.load_metadata()
+def _ensure_loaded(fingerprint: str = None) -> None:
+    global _model, _scaler, _encoders, _metadata, _loaded_fingerprint
+    if _model is None or _loaded_fingerprint != fingerprint:
+        _model = artifacts.load_model(fingerprint)
+        _scaler = artifacts.load_scaler(fingerprint)
+        _encoders = artifacts.load_encoders(fingerprint)
+        _metadata = artifacts.load_metadata(fingerprint)
+        _loaded_fingerprint = fingerprint
+
+
+def load_from(entry) -> None:
+    """Populates the cache directly from an already-resolved
+    artifact_registry.RegistryEntry instead of the fingerprint-keyed file
+    lookup -- used for REUSE_MODEL scoring (dataset_routes.py's
+    resolve_training_eligibility()), where the model being served was
+    trained on a *different*, earlier connect's data, not this one.
+
+    Sets the cache's fingerprint to a value that can never collide with a
+    real content fingerprint (fingerprint.py's are hex sha256 digests, this
+    is prefixed and not one), so a later fingerprint-keyed predict()/
+    preprocess() call correctly detects the mismatch and reloads instead of
+    silently reusing a REUSE_MODEL registry entry it wasn't asked for."""
+    global _model, _scaler, _encoders, _metadata, _loaded_fingerprint
+    _model = entry.load_model()
+    _scaler = entry.load_scaler()
+    _encoders = entry.load_encoders()
+    _metadata = entry.load_metadata()
+    _loaded_fingerprint = entry.cache_key
 
 
 def reset_cache() -> None:
     """Drops the in-process model cache so the next predict() re-reads the
     artifacts from disk.
 
-    This MUST be called after training writes new artifacts. The cache is
-    keyed on nothing but "have we loaded yet", so in a long-running server a
-    second training run would otherwise keep scoring with the *first* model:
-    the user connects a new dataset, a new model is genuinely trained and its
-    metrics reported, but every customer is scored by the previous dataset's
-    model. That produces a dashboard that silently doesn't match the data.
+    Still needed even with fingerprint-aware loading below: two different
+    datasets can share a fingerprint's *absence* (both None, the flat-path/
+    no-fingerprint case), or a caller may reuse the same fingerprint value
+    while the underlying artifacts on disk changed. Call this whenever you
+    can't be sure the cached fingerprint still matches what's on disk.
     """
-    global _model, _scaler, _encoders, _metadata
+    global _model, _scaler, _encoders, _metadata, _loaded_fingerprint
     _model = _scaler = _encoders = _metadata = None
+    _loaded_fingerprint = "__unset__"
 
 
-def preprocess(raw_df: pd.DataFrame) -> pd.DataFrame:
-    _ensure_loaded()
+def preprocess(raw_df: pd.DataFrame, fingerprint: str = None) -> pd.DataFrame:
+    _ensure_loaded(fingerprint)
     data = raw_df.copy()
 
     target_col = _metadata["target_col"]
@@ -63,9 +85,9 @@ def preprocess(raw_df: pd.DataFrame) -> pd.DataFrame:
     return scaled
 
 
-def predict(raw_df: pd.DataFrame) -> pd.DataFrame:
-    _ensure_loaded()
-    scaled = preprocess(raw_df)
+def predict(raw_df: pd.DataFrame, fingerprint: str = None) -> pd.DataFrame:
+    _ensure_loaded(fingerprint)
+    scaled = preprocess(raw_df, fingerprint)
     proba = _model.predict_proba(scaled)[:, 1]
     threshold = _metadata["threshold"]
     prediction = (proba >= threshold).astype(int)

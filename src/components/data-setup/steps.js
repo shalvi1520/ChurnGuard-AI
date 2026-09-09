@@ -31,13 +31,18 @@ export const PIPELINE_STAGES = [
   },
   {
     key: 'preparing',
-    label: 'Preparing the model',
-    detail: 'Cleaning the mapped columns and training on your customers.',
+    label: 'Preparing your columns',
+    detail: 'Applying the matched fields and cleaning the data ChurnGuard will train on.',
   },
   {
     key: 'predicting',
-    label: 'Generating predictions',
-    detail: 'Scoring every customer for churn risk.',
+    label: 'Training your model',
+    // This is genuinely the slow step (a real LightGBM + CatBoost ensemble is
+    // tuned and trained here, not a canned demo) — said plainly, so a minute
+    // of no visible change reads as "working" rather than "stuck".
+    detail:
+      'Tuning and training a churn model on your customers, then scoring every one. This is the ' +
+      'slowest step — it can take a minute or two for a full dataset. Keep this tab open.',
   },
   {
     key: 'insights',

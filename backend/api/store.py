@@ -38,6 +38,19 @@ class DatasetEntry:
     source: DatasetSource = field(default_factory=DatasetSource)
     uploaded_at: float = field(default_factory=time.time)
     mappings: Optional[Dict[str, str]] = None  # { yourColumnName: churnguardFieldKey }
+    # Set only when POST /derive-churn built the churn label from a
+    # last-activity column -- that source column is excluded from training
+    # features, since it deterministically encodes the label itself.
+    derived_churn_source: Optional[str] = None
+    # The derived label's own column name, reused (overwritten) on a repeat
+    # call so retrying with a different threshold can't leave a stale, near-
+    # duplicate label column sitting in the data as a leakage risk.
+    derived_churn_column: Optional[str] = None
+    # Content fingerprint of the data actually handed to the trainer (see
+    # generic/fingerprint.py), set once training succeeds. None until then --
+    # predictor.py/explainer.py treat None as a legitimate "unscoped" value,
+    # so this is passed through as-is, not defaulted to something else.
+    fingerprint: Optional[str] = None
     trained: bool = False
     training_report: Optional[Dict[str, Any]] = None
     # What preprocessing actually did to the data, so the UI can say so
@@ -60,6 +73,25 @@ class DatasetEntry:
     top_drivers: Optional[List[Dict[str, Any]]] = None
 
     outreach_drafts: List[Dict[str, Any]] = field(default_factory=list)
+
+    # Progress of the automatic post-training outreach pipeline
+    # (backend/agents/outreach_workflow.py), which runs in a FastAPI
+    # BackgroundTask right after /predict returns -- these let the frontend
+    # show real progress instead of a guess. `state` is 'idle' | 'running' | 'done'.
+    auto_outreach_state: str = "idle"
+    auto_outreach_done: int = 0
+    auto_outreach_total: int = 0
+    auto_outreach_queued: int = 0
+    auto_outreach_skipped: int = 0
+
+    def auto_outreach_status(self) -> Dict[str, Any]:
+        return {
+            "state": self.auto_outreach_state,
+            "done": self.auto_outreach_done,
+            "total": self.auto_outreach_total,
+            "queued": self.auto_outreach_queued,
+            "skipped": self.auto_outreach_skipped,
+        }
 
     def mapped_field_keys(self) -> List[str]:
         return sorted({v for v in (self.mappings or {}).values() if v})

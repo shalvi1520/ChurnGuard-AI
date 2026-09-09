@@ -77,6 +77,7 @@ def train_generic_model(
     positive_label: Any = None,
     n_trials: int = config.DEFAULT_N_TRIALS,
     imbalance_strategy: str = config.DEFAULT_IMBALANCE_STRATEGY,
+    fingerprint: Optional[str] = None,
 ) -> dict:
     warnings: list = [config.LEAKAGE_LIMITATION_WARNING]
 
@@ -313,7 +314,7 @@ def train_generic_model(
         "warnings": warnings,
     }
 
-    artifacts.save_artifacts(model, scaler, encoders, background_kmeans, metadata)
+    artifacts.save_artifacts(model, scaler, encoders, background_kmeans, metadata, fingerprint=fingerprint)
 
     report = dict(metadata)
     report["n_rows_used"] = len(cleaned)

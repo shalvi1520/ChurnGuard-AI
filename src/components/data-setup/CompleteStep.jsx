@@ -1,4 +1,4 @@
-import { ArrowRight, CheckCircle2, Users, Wand2 } from 'lucide-react';
+import { ArrowRight, CheckCircle2, Clock, Sparkles, Users, Wand2, Zap } from 'lucide-react';
 import Card from '../ui/Card';
 import Button from '../ui/Button';
 import Badge from '../ui/Badge';
@@ -99,10 +99,22 @@ function CleaningSummary({ cleaning }) {
  * "what did it do with my file?" — and the reason the setup flow can get away
  * with asking nothing: it shows its work instead.
  */
-function ColumnUsage({ mappedColumns, additionalColumns, additionalColumnNames, optionalDetected, optionalTotal }) {
+function ColumnUsage({
+  mappedColumns,
+  additionalColumns,
+  additionalColumnNames,
+  optionalDetected,
+  optionalTotal,
+  extraColumnsUsed,
+  extraColumnsSkipped,
+  churnDerivation,
+}) {
   if (!mappedColumns?.length) return null;
   const required = mappedColumns.filter((c) => c.required);
   const optional = mappedColumns.filter((c) => !c.required);
+
+  const anyAiMatched = mappedColumns.some((c) => c.matchedBy === 'ai');
+  const anyDerived = mappedColumns.some((c) => c.matchedBy === 'derived');
 
   const Row = ({ column }) => (
     <li className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 py-1.5 border-b border-border/50 last:border-0">
@@ -113,6 +125,18 @@ function ColumnUsage({ mappedColumns, additionalColumns, additionalColumnNames, 
       <span className="text-xs text-text-secondary font-mono truncate max-w-full">
         {column.column}
       </span>
+      {column.matchedBy === 'ai' && (
+        <Badge variant="accent" size="xs" className="inline-flex items-center gap-1">
+          <Sparkles size={10} aria-hidden="true" />
+          AI-matched
+        </Badge>
+      )}
+      {column.matchedBy === 'derived' && (
+        <Badge variant="accent" size="xs" className="inline-flex items-center gap-1">
+          <Clock size={10} aria-hidden="true" />
+          Derived
+        </Badge>
+      )}
       <Badge variant="default" size="xs" className="ml-auto">
         {column.required ? 'Required' : 'Optional'}
       </Badge>
@@ -121,12 +145,26 @@ function ColumnUsage({ mappedColumns, additionalColumns, additionalColumnNames, 
 
   return (
     <div className="mt-5 pt-5 border-t border-border">
-      <SectionTitle help="ChurnGuard matched your column names and values against the fields its model needs. You never had to rename anything.">
+      <SectionTitle help="ChurnGuard matched your column names and values against the fields its model needs automatically — there is no mapping screen to fill in. Most matches come from names and values alone; when that wasn't confident enough, an AI made the call instead.">
         What ChurnGuard is using
       </SectionTitle>
       <p className="text-xs text-text-secondary mt-1.5 leading-relaxed">
         Your columns on the right, the ChurnGuard field each one filled on the left.
+        {anyAiMatched && ' Fields marked "AI-matched" needed a second opinion beyond names and values alone.'}
+        {anyDerived && ' The field marked "Derived" was calculated, not read directly from your data — see below.'}
       </p>
+
+      {churnDerivation?.sourceColumn && (
+        <div className="mt-3 rounded-lg border border-accent/25 bg-accent/[0.04] p-3 flex items-start gap-2">
+          <Clock size={13} className="text-accent mt-0.5 shrink-0" />
+          <p className="text-xs text-text-secondary leading-relaxed">
+            Your data had no churn/cancellation column, so churn was estimated from{' '}
+            <span className="font-mono text-text-primary">{churnDerivation.sourceColumn}</span>
+            {churnDerivation.note ? `: ${churnDerivation.note}` : ''}. This is an estimate, not a
+            recorded outcome — treat predictions built on it accordingly.
+          </p>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8 mt-3">
         <ul>
@@ -148,18 +186,48 @@ function ColumnUsage({ mappedColumns, additionalColumns, additionalColumnNames, 
             optional fields don&apos;t stop anything — they just add detail when present.
           </p>
         ) : null}
-        {additionalColumns > 0 && (
-          <p className="text-[11px] text-text-tertiary leading-relaxed">
-            {formatNumber(additionalColumns)}{' '}
-            {additionalColumns === 1 ? 'column was' : 'columns were'} left alone — kept in your
-            file, not used for scoring
-            {additionalColumnNames?.length
-              ? `: ${additionalColumnNames.slice(0, 8).join(', ')}${
-                  additionalColumns > additionalColumnNames.slice(0, 8).length ? ' and more' : ''
-                }`
-              : ''}
-            .
-          </p>
+        {/* Which of the "additional" columns genuinely made it into the model,
+            versus which ChurnGuard looked at and set aside, and why — the
+            fields the /predict response actually returns. Falls back to the
+            older, more general line for a dataset connected before this
+            distinction existed (its stored summary won't have these two
+            fields at all). */}
+        {extraColumnsUsed || extraColumnsSkipped ? (
+          <>
+            {extraColumnsUsed?.length > 0 && (
+              <p className="text-[11px] text-text-tertiary leading-relaxed">
+                ChurnGuard also found real signal in {formatNumber(extraColumnsUsed.length)}{' '}
+                other {extraColumnsUsed.length === 1 ? 'column' : 'columns'} and used{' '}
+                {extraColumnsUsed.length === 1 ? 'it' : 'them'} too: {extraColumnsUsed.join(', ')}.
+              </p>
+            )}
+            {extraColumnsSkipped?.length > 0 && (
+              <p className="text-[11px] text-text-tertiary leading-relaxed">
+                {formatNumber(extraColumnsSkipped.length)}{' '}
+                {extraColumnsSkipped.length === 1 ? 'column wasn\'t' : 'columns weren\'t'} a good
+                fit for training and {extraColumnsSkipped.length === 1 ? 'was' : 'were'} left out:{' '}
+                {extraColumnsSkipped
+                  .slice(0, 6)
+                  .map((c) => `${c.column} (${c.reason})`)
+                  .join('; ')}
+                {extraColumnsSkipped.length > 6 && '; and more'}.
+              </p>
+            )}
+          </>
+        ) : (
+          additionalColumns > 0 && (
+            <p className="text-[11px] text-text-tertiary leading-relaxed">
+              {formatNumber(additionalColumns)}{' '}
+              {additionalColumns === 1 ? 'column was' : 'columns were'} left alone — kept in your
+              file, not used for scoring
+              {additionalColumnNames?.length
+                ? `: ${additionalColumnNames.slice(0, 8).join(', ')}${
+                    additionalColumns > additionalColumnNames.slice(0, 8).length ? ' and more' : ''
+                  }`
+                : ''}
+              .
+            </p>
+          )
         )}
       </div>
     </div>
@@ -184,6 +252,10 @@ export default function CompleteStep({ summary, onViewOverview, onViewCustomers 
     labelledChurnCount,
     trainingMetrics,
     cleaning,
+    extraColumnsUsed,
+    extraColumnsSkipped,
+    churnDerivation,
+    reusedModel,
     source,
     completedAt,
   } = summary || {};
@@ -219,6 +291,25 @@ export default function CompleteStep({ summary, onViewOverview, onViewCustomers 
           <div className="mt-3">
             <DataSourceBadge source={source} filename={filename} />
           </div>
+
+          {reusedModel && (
+            <div className="mt-4 rounded-lg border border-accent/25 bg-accent/[0.04] p-3 flex items-start gap-2.5">
+              <Zap size={14} className="text-accent mt-0.5 shrink-0" aria-hidden="true" />
+              <div>
+                <p className="text-xs font-medium text-text-primary">
+                  Scored against your existing model — no retraining needed
+                </p>
+                <p className="text-xs text-text-secondary mt-1 leading-relaxed">
+                  This data had no churn column, so ChurnGuard reused a model it already trained on
+                  data shaped the same way{reusedModel.trainedAt ? ` (${formatDate(reusedModel.trainedAt)})` : ''}.
+                  {reusedModel.driftState === 'moderate' &&
+                    ' This data looks somewhat different from what that model was trained on — treat these scores with a bit more caution.'}
+                  {reusedModel.driftState === 'high' &&
+                    ' This data looks quite different from what that model was trained on, so these scores may not be reliable. Connecting a churn column would let ChurnGuard train fresh on this data instead.'}
+                </p>
+              </div>
+            </div>
+          )}
 
           {/* ---------- Measured facts ---------- */}
           <div className="mt-5 pt-5 border-t border-border">
@@ -274,9 +365,13 @@ export default function CompleteStep({ summary, onViewOverview, onViewCustomers 
               )}
               {typeof labelledChurnCount === 'number' && (
                 <Stat
-                  label="Past churn examples"
+                  label={churnDerivation ? 'Estimated churn examples' : 'Past churn examples'}
                   value={formatNumber(labelledChurnCount)}
-                  help="Customers in your data with a recorded churn outcome. These are what the model learned the pattern from."
+                  help={
+                    churnDerivation
+                      ? `Customers estimated as churned from inactivity (${churnDerivation.inactivityDays}+ days since ${churnDerivation.sourceColumn}), not a recorded cancellation. These are what the model learned the pattern from.`
+                      : "Customers in your data with a recorded churn outcome. These are what the model learned the pattern from."
+                  }
                 />
               )}
               {typeof rows === 'number' && (
@@ -295,6 +390,9 @@ export default function CompleteStep({ summary, onViewOverview, onViewCustomers 
             additionalColumnNames={additionalColumnNames}
             optionalDetected={optionalDetected}
             optionalTotal={optionalTotal}
+            extraColumnsUsed={extraColumnsUsed}
+            extraColumnsSkipped={extraColumnsSkipped}
+            churnDerivation={churnDerivation}
           />
 
           <CleaningSummary cleaning={cleaning} />

@@ -1,6 +1,6 @@
 {
   "_comment": "THE canonical ChurnGuard field definition. Read directly by the frontend (src/mock/datasetSchema.js) and the backend (backend/api/schema.py) so the two can never drift. Do not create a second copy of this list anywhere.",
-  "version": 2,
+  "version": 4,
   "fields": [
     {
       "key": "customer_id",
@@ -122,8 +122,8 @@
       "label": "Monthly charges",
       "description": "What the customer is billed each month.",
       "example": "56.95",
-      "required": true,
-      "whyNeeded": "Recurring revenue is what makes an at-risk account expensive to lose — it is what Revenue at Risk is calculated from.",
+      "required": false,
+      "whyNeeded": "Recurring revenue is what makes an at-risk account expensive to lose — it is what Revenue at Risk is calculated from. Not every business bills per customer (a free/subscription-tier product may have no such column), so ChurnGuard trains without it when it's genuinely absent rather than blocking on it.",
       "lookFor": "A money amount charged every month: monthly fee, recurring charge, MRR, monthly spend.",
       "aliases": [
         "monthlycharges",
@@ -183,8 +183,8 @@
       "label": "Contract type",
       "description": "The plan or commitment length, e.g. month-to-month or annual.",
       "example": "One year",
-      "required": true,
-      "whyNeeded": "Commitment length changes churn behaviour more than almost any other field — a month-to-month account can leave at any time.",
+      "required": false,
+      "whyNeeded": "Commitment length changes churn behaviour more than almost any other field — a month-to-month account can leave at any time. Not every business has a contract/plan-length concept (e.g. e-commerce, or a product with no formal commitment), so ChurnGuard trains without it when it's genuinely absent rather than blocking on it.",
       "lookFor": "A short list of repeating labels: month-to-month, one year, annual, monthly, 12-month.",
       "aliases": [
         "contract",
