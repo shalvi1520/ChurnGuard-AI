@@ -70,6 +70,11 @@ class TrainedModel(Base):
     fingerprint: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     artifact_dir: Mapped[str] = mapped_column(String(500), nullable=False)
     report: Mapped[dict] = mapped_column(JSON, nullable=False)
+    # Per-customer scores from this run -- id/probability/tier/churned only,
+    # never the raw feature values a customer was scored on. Nullable so
+    # existing rows from before this column existed don't need a backfill;
+    # a history entry with no predictions still shows its training metrics.
+    predictions: Mapped[list] = mapped_column(JSON, nullable=True)
     trained_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=datetime.datetime.utcnow)
 
     dataset: Mapped["Dataset"] = relationship(back_populates="trained_models")

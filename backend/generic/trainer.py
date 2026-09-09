@@ -65,6 +65,15 @@ def choose_positive_label(y_raw: pd.Series, positive_label: Any = None) -> tuple
 
     counts = y_raw.value_counts()
     positive = counts.idxmin()
+    # .idxmin() returns the raw dtype of the Series index (e.g. np.int64 for
+    # an integer-coded label column), unlike .tolist() above which already
+    # converts to native Python types. Left as-is, this silently breaks any
+    # JSON serialization of the report downstream (e.g. persisting it to the
+    # database) with "Object of type int64 is not JSON serializable" --
+    # normalized here, once, rather than requiring every consumer of
+    # positive_label to know to guard against it.
+    if isinstance(positive, np.generic):
+        positive = positive.item()
     other = [v for v in observed if v != positive][0]
     return positive, other
 
