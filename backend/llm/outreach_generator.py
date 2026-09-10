@@ -17,7 +17,7 @@ from . import prompts, providers
 
 DEFAULT_SUBJECT = "A quick check-in about your account"
 GREETING = "Hi there,"
-SIGNATURE = "Best regards,\nThe Customer Success Team"
+DEFAULT_SIGNATURE = "Best regards,\nThe Customer Success Team"
 
 _RESPONSE_PATTERN = re.compile(r"SUBJECT:\s*(.*?)\s*\n+BODY:\s*(.*)", re.DOTALL | re.IGNORECASE)
 
@@ -34,9 +34,54 @@ def _parse_response(text: str) -> Tuple[str, str]:
     return (subject or DEFAULT_SUBJECT), (body or text.strip())
 
 
-def generate_outreach_message(customer_id: str, risk_score: float, drivers: List[dict]) -> dict:
+def _build_template_message(risk_score: float, drivers: List[dict]) -> Tuple[str, str]:
+    """Deterministic fallback used only when every configured LLM provider
+    fails (rate limit, quota exhaustion, no key configured, network down).
+    References only the real SHAP-derived drivers actually passed in --
+    same honesty constraint the LLM prompt itself follows -- so a template
+    draft never claims a reason the model didn't actually find. This is
+    what keeps the Outreach queue from silently going empty whenever a
+    third-party provider is unavailable, which is a real, recurring
+    failure mode for a free-tier API key, not an edge case."""
+    top = [d for d in drivers if d.get("shap_value", 0) > 0][:2]
+    if top:
+        factors_text = " and ".join(f"{d['feature'].lower()} ({d['value']})" for d in top)
+        body = (
+            f"We wanted to check in about your account. We've noticed some recent activity "
+            f"around {factors_text} that suggested now might be a good time to reconnect. "
+            f"We'd love to hear how things are going and see if there's anything we can do "
+            f"to make your experience better."
+        )
+    else:
+        body = (
+            "We wanted to check in and see how things are going with your account. "
+            "If there's anything we can do to improve your experience, we'd love to hear from you."
+        )
+    return "Checking in on your account", body
+
+
+def generate_outreach_message(
+    customer_id: str, risk_score: float, drivers: List[dict], organization_name: str = None
+) -> dict:
+    """`organization_name` signs the email as that organization (the signed-in
+    user's account, see db.models.User.company) when one is known. Falls back
+    to a generic signature for a CRM import or an anonymous/no-account
+    session, where there's no real organization name to sign with rather
+    than inventing one.
+
+    If every configured LLM provider fails, falls back to a deterministic
+    template (see _build_template_message) rather than raising -- a
+    third-party provider being rate-limited or unconfigured should degrade
+    the outreach queue's quality, not silently empty it out. The returned
+    `provider` is "template" in that case, so callers can label the draft
+    honestly instead of implying it was AI-written."""
     messages = prompts.build_messages(customer_id, risk_score, drivers)
-    text, provider = providers.invoke_with_fallback(messages)
-    subject, body_core = _parse_response(text)
-    body = f"{GREETING}\n\n{body_core}\n\n{SIGNATURE}"
+    try:
+        text, provider = providers.invoke_with_fallback(messages)
+        subject, body_core = _parse_response(text)
+    except RuntimeError:
+        subject, body_core = _build_template_message(risk_score, drivers)
+        provider = "template"
+    signature = f"Best regards,\n{organization_name}" if organization_name else DEFAULT_SIGNATURE
+    body = f"{GREETING}\n\n{body_core}\n\n{signature}"
     return {"customer_id": customer_id, "subject": subject, "message": body, "provider": provider}

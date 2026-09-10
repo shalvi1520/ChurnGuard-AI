@@ -8,7 +8,7 @@ import Pagination from '../components/ui/Pagination';
 import EmptyState from '../components/ui/EmptyState';
 import Tooltip, { InfoTip } from '../components/ui/Tooltip';
 import { SkeletonTable } from '../components/ui/Skeleton';
-import { customerService } from '../services/api';
+import { customerService, dashboardService } from '../services/api';
 import { formatCurrency } from '../utils/helpers';
 import { metric } from '../utils/glossary';
 
@@ -51,7 +51,21 @@ export default function CustomersPage() {
   const [selected, setSelected] = useState([]);
   const [error, setError] = useState(false);
   const [debouncedSearch, setDebouncedSearch] = useState('');
+  // null until loaded -- columns default to showing while unknown, rather
+  // than flicker-hiding then reappearing. Only ever used to hide a column
+  // whose backing field genuinely wasn't part of this dataset (see
+  // backend's _dataset_context()'s `available` flags), never to hide one
+  // that simply hasn't loaded yet.
+  const [available, setAvailable] = useState(null);
   const navigate = useNavigate();
+
+  useEffect(() => {
+    let cancelled = false;
+    dashboardService.getMetrics()
+      .then((data) => { if (!cancelled) setAvailable(data?.dataset?.available ?? null); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
 
   // Typing shouldn't fire a request per keystroke; the debounced value is what
   // the fetch effect below actually depends on.
@@ -114,10 +128,14 @@ export default function CustomersPage() {
     return sortDir === 'asc' ? <ChevronUp size={12} /> : <ChevronDown size={12} />;
   };
 
+  const showMonthlyCharges = available === null || available.revenue !== false;
+
   const columns = [
     { key: 'id', label: 'Customer ID', sortable: true },
     { key: 'tenure', label: 'Tenure', sortable: true, help: metric('tenure').help },
-    { key: 'monthlyCharges', label: 'Monthly Charges', sortable: true, help: metric('monthlyCharges').help },
+    ...(showMonthlyCharges
+      ? [{ key: 'monthlyCharges', label: 'Monthly Charges', sortable: true, help: metric('monthlyCharges').help }]
+      : []),
     { key: 'contractType', label: 'Contract', sortable: true, help: metric('contractType').help },
     { key: 'churnProbability', label: 'Churn Risk', sortable: true, help: metric('churnProbability').help },
     { key: 'riskTier', label: 'Risk Tier', sortable: false, help: metric('riskTier').help },
@@ -297,7 +315,9 @@ export default function CustomersPage() {
                     <td className="px-4 py-3 text-text-secondary text-xs tabular-nums">
                       {c.tenure !== null && c.tenure !== undefined ? `${c.tenure} mo` : '—'}
                     </td>
-                    <td className="px-4 py-3 text-text-primary tabular-nums">{formatCurrency(c.monthlyCharges)}</td>
+                    {showMonthlyCharges && (
+                      <td className="px-4 py-3 text-text-primary tabular-nums">{formatCurrency(c.monthlyCharges)}</td>
+                    )}
                     <td className="px-4 py-3 text-text-secondary text-xs">{c.contractType || '—'}</td>
                     <td className="px-4 py-3 text-text-primary font-semibold tabular-nums">{c.churnProbability}%</td>
                     <td className="px-4 py-3"><RiskBadge tier={c.riskTier} size="xs" /></td>

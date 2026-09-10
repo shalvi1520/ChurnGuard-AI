@@ -43,28 +43,40 @@ function SectionTitle({ children, help }) {
   );
 }
 
-/** Model quality, straight from the training run's held-out test split. */
-function ModelPerformance({ metrics }) {
-  const pct = (v) => (typeof v === 'number' ? `${(v * 100).toFixed(1)}%` : '—');
-  const rows = [
-    ['Accuracy', metrics.accuracy, "How often the model's churn call was correct overall."],
-    ['Precision', metrics.precision, 'Of the customers it flagged as churning, how many actually did.'],
-    ['Recall', metrics.recall, 'Of the customers who actually churned, how many it caught.'],
-    ['ROC-AUC', metrics.rocAuc, 'How well it separates churners from non-churners. 50% is a coin flip.'],
-  ];
+/** The probability ranges ChurnGuard uses to label a customer's risk level
+ *  -- must match backend/api/dataset_routes.py's _risk_tier() exactly, since
+ *  this is describing that function's actual behavior, not a suggestion. */
+const RISK_THRESHOLDS = [
+  { key: 'critical', label: 'Critical', range: '80% and above', desc: 'Needs immediate attention' },
+  { key: 'high', label: 'High', range: '60% – 79%', desc: 'Should be prioritized for outreach' },
+  { key: 'medium', label: 'Medium', range: '35% – 59%', desc: 'Worth keeping an eye on' },
+  { key: 'low', label: 'Low', range: 'Below 35%', desc: 'Currently stable' },
+];
 
+/** Business-facing framing of what the trained model actually does: which
+ *  churn-probability ranges get labeled which way across the rest of the
+ *  app. Deliberately shows only this, not the underlying ML metrics
+ *  (accuracy/precision/recall/ROC-AUC) -- those describe the model in terms
+ *  meaningful to a data scientist, not the person using this app. */
+function RiskConfiguration() {
   return (
-    <dl className="mt-3 space-y-2">
-      {rows.map(([label, value, help]) => (
-        <div key={label} className="flex items-baseline justify-between gap-3">
-          <dt className="text-xs text-text-secondary flex items-center gap-1">
-            {label}
-            <InfoTip content={help} label={`About ${label}`} size={11} />
-          </dt>
-          <dd className="text-sm font-semibold text-text-primary tabular-nums">{pct(value)}</dd>
-        </div>
+    <ul className="space-y-2">
+      {RISK_THRESHOLDS.map((tier) => (
+        <li key={tier.key} className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2 min-w-0">
+            <span
+              className={`w-2 h-2 rounded-full shrink-0 bg-risk-${tier.key}`}
+              aria-hidden="true"
+            />
+            <span className="text-xs font-semibold text-text-primary">{tier.label}</span>
+            <span className="text-xs text-text-tertiary truncate">{tier.desc}</span>
+          </div>
+          <span className="text-xs font-semibold text-text-primary tabular-nums shrink-0">
+            {tier.range}
+          </span>
+        </li>
       ))}
-    </dl>
+    </ul>
   );
 }
 
@@ -250,7 +262,6 @@ export default function CompleteStep({ summary, onViewOverview, onViewCustomers 
     missingCells,
     duplicateRows,
     labelledChurnCount,
-    trainingMetrics,
     cleaning,
     extraColumnsUsed,
     extraColumnsSkipped,
@@ -410,20 +421,14 @@ export default function CompleteStep({ summary, onViewOverview, onViewCustomers 
             </div>
           </div>
 
-          {trainingMetrics ? (
-            <>
-              <div className="mt-4 pt-4 border-t border-border">
-                <SectionTitle help="Model training metrics from a held-out portion of your data. They describe the model, not your customer base.">
-                  Training metrics
-                </SectionTitle>
-                <ModelPerformance metrics={trainingMetrics} />
-              </div>
-            </>
-          ) : (
-            <p className="text-xs text-text-tertiary mt-4 pt-4 border-t border-border leading-relaxed">
-              Training metrics were not returned for this dataset.
-            </p>
-          )}
+          <div className="mt-4 pt-4 border-t border-border">
+            <SectionTitle help="These are the churn-probability ranges ChurnGuard uses to label a customer's risk level everywhere in the app.">
+              Risk level configuration
+            </SectionTitle>
+            <div className="mt-3">
+              <RiskConfiguration />
+            </div>
+          </div>
 
           <div className="mt-5 pt-5 border-t border-border">
             <SectionTitle>Where to go next</SectionTitle>

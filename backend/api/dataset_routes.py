@@ -1282,7 +1282,6 @@ def run_prediction(
         entry.raw_drivers = {}
         entry.explanation_base_value = {}
         entry.ai_explanations = {}
-        entry.outreach_drafts = []
         entry.top_drivers = extra["topDrivers"]
 
         # Deliberately NOT re-queuing _run_auto_outreach here, unlike the
@@ -1292,15 +1291,36 @@ def run_prediction(
         # attempting to draft a message -- by far the most expensive
         # remaining step, and one a full cache hit has no way to skip
         # per-customer the way it skips training/inference/top-drivers in
-        # bulk. Since this exact data was already fully processed before,
-        # redoing that work here would only reproduce drafts equivalent to
-        # ones already generated on the original run -- cost with no benefit.
+        # bulk. Instead, any drafts a previous run already generated and
+        # persisted for this exact fingerprint (see _persist_outreach_drafts)
+        # are restored directly -- no redundant SHAP/LLM work either way.
         eligible_count = sum(1 for c in customers if c["riskTier"] in ("high", "critical"))
-        entry.auto_outreach_state = "done"
-        entry.auto_outreach_done = 0
-        entry.auto_outreach_total = 0
-        entry.auto_outreach_queued = 0
-        entry.auto_outreach_skipped = eligible_count
+        restored = _load_cached_outreach_drafts(current_user, fingerprint)
+        if restored is not None:
+            entry.outreach_drafts = restored
+            entry.auto_outreach_state = "done"
+            entry.auto_outreach_done = 0
+            entry.auto_outreach_total = 0
+            entry.auto_outreach_queued = len(restored)
+            entry.auto_outreach_skipped = max(0, eligible_count - len(restored))
+        else:
+            # Nothing was ever successfully drafted for this data before
+            # (e.g. every attempt previously failed -- a rate-limited LLM
+            # key, none configured yet at the time). Retrying is safe and
+            # worthwhile now: generate_outreach_message() always succeeds,
+            # falling back to a template draft rather than failing, so this
+            # will no longer come back empty the way a pure LLM-only
+            # attempt could.
+            entry.outreach_drafts = []
+            entry.auto_outreach_state = "running" if eligible_count else "done"
+            entry.auto_outreach_done = 0
+            entry.auto_outreach_total = min(eligible_count, business_rules.MAX_AUTO_DRAFTS_PER_RUN)
+            entry.auto_outreach_queued = 0
+            entry.auto_outreach_skipped = 0
+            if eligible_count:
+                background_tasks.add_task(
+                    _run_auto_outreach, entry, current_user, fingerprint
+                )
 
         return {
             "datasetId": dataset_id,
@@ -1474,13 +1494,35 @@ def run_prediction(
         entry.auto_outreach_queued = 0
         entry.auto_outreach_skipped = 0
         if eligible_count:
-            background_tasks.add_task(_run_auto_outreach, entry)
+            background_tasks.add_task(_run_auto_outreach, entry, current_user, fingerprint)
     else:
-        entry.auto_outreach_state = "done"
-        entry.auto_outreach_done = 0
-        entry.auto_outreach_total = 0
-        entry.auto_outreach_queued = 0
-        entry.auto_outreach_skipped = eligible_count
+        # Training-only cache hit: restore previously auto-drafted outreach
+        # for this exact data if any exists, rather than either leaving the
+        # page empty or paying to redraft it. A miss here (None) just means
+        # no prior run ever finished persisting drafts for this fingerprint
+        # -- reported as "skipped", identical to the pre-existing behaviour.
+        restored = _load_cached_outreach_drafts(current_user, fingerprint) if DB_AVAILABLE else None
+        if restored is not None:
+            entry.outreach_drafts = restored
+            entry.auto_outreach_state = "done"
+            entry.auto_outreach_done = 0
+            entry.auto_outreach_total = 0
+            entry.auto_outreach_queued = len(restored)
+            entry.auto_outreach_skipped = max(0, eligible_count - len(restored))
+        else:
+            # Nothing was ever successfully drafted for this data before --
+            # retry fresh rather than permanently giving up. Safe now that
+            # generate_outreach_message() always succeeds (template
+            # fallback), so this won't come back empty again.
+            entry.auto_outreach_state = "running" if eligible_count else "done"
+            entry.auto_outreach_done = 0
+            entry.auto_outreach_total = min(eligible_count, business_rules.MAX_AUTO_DRAFTS_PER_RUN)
+            entry.auto_outreach_queued = 0
+            entry.auto_outreach_skipped = 0
+            if eligible_count:
+                background_tasks.add_task(
+                    _run_auto_outreach, entry, current_user, fingerprint
+                )
 
     return {
         "datasetId": dataset_id,
@@ -1877,7 +1919,66 @@ def _compute_pretty_drivers(entry: DatasetEntry, customer_id: str) -> List[Dict[
     ]
 
 
-def _run_auto_outreach(entry: DatasetEntry) -> None:
+def _persist_outreach_drafts(current_user, fingerprint: str, drafts: List[Dict[str, Any]]) -> None:
+    """Stores this run's auto-drafted outreach messages against the
+    TrainedModel row for `fingerprint`, once _run_auto_outreach() finishes --
+    so a later cache hit on this exact data (see _load_cached_outreach_drafts)
+    can restore them instead of leaving Outreach empty, or worse, re-running
+    the same expensive per-customer SHAP + LLM drafting loop a cache hit is
+    specifically meant to skip. Best-effort and logged on failure, same
+    pattern as _persist_predictions()."""
+    if current_user is None:
+        return
+    db = SessionLocal()
+    try:
+        row = (
+            db.query(TrainedModel)
+            .join(DatasetRow, TrainedModel.dataset_id == DatasetRow.id)
+            .filter(DatasetRow.user_id == current_user.id, TrainedModel.fingerprint == fingerprint)
+            .order_by(TrainedModel.trained_at.desc())
+            .first()
+        )
+        if row is None:
+            return
+        row.outreach_drafts = _json_safe(drafts)
+        db.commit()
+    except Exception:  # noqa: BLE001 -- best-effort persistence, see docstring
+        logger.warning("Failed to persist outreach drafts for fingerprint %s", fingerprint, exc_info=True)
+        db.rollback()
+    finally:
+        db.close()
+
+
+def _load_cached_outreach_drafts(current_user, fingerprint: str) -> Optional[List[Dict[str, Any]]]:
+    """Previously auto-drafted outreach for this exact data -- or None if
+    there isn't any yet (no eligible customers last time, an older row from
+    before this column existed, or the background run never finished/was
+    never persisted). None here means "nothing to restore", not an error --
+    the caller falls back to the pre-existing "skipped" reporting exactly as
+    if this function didn't exist."""
+    if current_user is None:
+        return None
+    db = SessionLocal()
+    try:
+        row = (
+            db.query(TrainedModel)
+            .join(DatasetRow, TrainedModel.dataset_id == DatasetRow.id)
+            .filter(DatasetRow.user_id == current_user.id, TrainedModel.fingerprint == fingerprint)
+            .order_by(TrainedModel.trained_at.desc())
+            .first()
+        )
+        if row is None or row.outreach_drafts is None:
+            return None
+        return list(row.outreach_drafts)
+    except Exception:  # noqa: BLE001 -- a DB hiccup means "no cached drafts", never a broken /predict
+        return None
+    finally:
+        db.close()
+
+
+def _run_auto_outreach(
+    entry: DatasetEntry, current_user=None, fingerprint: Optional[str] = None
+) -> None:
     """The automatic post-training outreach pipeline's entry point, run as a
     FastAPI BackgroundTask (see run_prediction()) so it executes after the
     /predict response has already been sent -- drafting outreach for a
@@ -1885,7 +1986,13 @@ def _run_auto_outreach(entry: DatasetEntry) -> None:
     the user wait on it. Delegates the actual decision-making to
     backend/agents/outreach_workflow.py's LangGraph pipeline, one customer at
     a time. Never raises: a failure here must not corrupt entry state or take
-    down the background worker."""
+    down the background worker.
+
+    `current_user`/`fingerprint` are optional and only used to persist the
+    finished drafts (see _persist_outreach_drafts) so a later cache hit on
+    this exact data can restore them instead of leaving Outreach empty or
+    re-running this same expensive loop -- passed through by run_prediction()
+    only on a genuine fresh-training call, never on a cache hit itself."""
     try:
         from ..agents import outreach_workflow  # optional extra -- pulls in langgraph
     except ImportError:
@@ -1904,8 +2011,12 @@ def _run_auto_outreach(entry: DatasetEntry) -> None:
                 customer,
                 compute_drivers=lambda cid: _compute_pretty_drivers(entry, cid),
                 already_drafted_ids=already_drafted_ids,
+                organization_name=current_user.company if current_user else None,
             )
         except Exception:  # noqa: BLE001 -- one customer's failure must not stop the run
+            logger.warning(
+                "Auto-outreach failed for customer %s", customer.get("id"), exc_info=True
+            )
             result = {"status": "failed"}
 
         entry.auto_outreach_done += 1
@@ -1933,7 +2044,11 @@ def _run_auto_outreach(entry: DatasetEntry) -> None:
                     ],
                 },
                 "auditTrail": [{
-                    "action": f"AI generated draft automatically after training ({result['draft']['provider']})",
+                    "action": (
+                        f"Template-drafted automatically after training (no LLM provider available)"
+                        if result["draft"]["provider"] == "template"
+                        else f"AI generated draft automatically after training ({result['draft']['provider']})"
+                    ),
                     "user": "System",
                     "timestamp": now,
                 }],
@@ -1942,9 +2057,16 @@ def _run_auto_outreach(entry: DatasetEntry) -> None:
             already_drafted_ids.add(customer["id"])
             entry.auto_outreach_queued += 1
         else:
+            logger.warning(
+                "Auto-outreach skipped for customer %s: status=%s reason=%s",
+                customer.get("id"), result.get("status"), result.get("reason"),
+            )
             entry.auto_outreach_skipped += 1
 
     entry.auto_outreach_state = "done"
+
+    if current_user is not None and fingerprint is not None:
+        _persist_outreach_drafts(current_user, fingerprint, entry.outreach_drafts)
 
 
 @router.get("/outreach/auto-status")
@@ -2032,7 +2154,7 @@ def list_outreach():
 
 
 @router.post("/customers/{customer_id}/outreach/generate")
-def generate_outreach(customer_id: str):
+def generate_outreach(customer_id: str, current_user=Depends(get_current_user_optional)):
     entry = _trained_or_409(_current_or_404())
     customer = entry.customers_by_id.get(customer_id)
     if customer is None:
@@ -2051,7 +2173,8 @@ def generate_outreach(customer_id: str):
 
     try:
         result = outreach_generator.generate_outreach_message(
-            customer_id, customer["churnProbability"] / 100, pretty_drivers
+            customer_id, customer["churnProbability"] / 100, pretty_drivers,
+            organization_name=current_user.company if current_user else None,
         )
     except RuntimeError as exc:
         raise HTTPException(503, str(exc)) from exc
@@ -2079,10 +2202,20 @@ def generate_outreach(customer_id: str):
             ],
         },
         "auditTrail": [
-            {"action": f"AI generated draft ({result['provider']})", "user": "System", "timestamp": now}
+            {
+                "action": (
+                    "Template-drafted (no LLM provider available)"
+                    if result["provider"] == "template"
+                    else f"AI generated draft ({result['provider']})"
+                ),
+                "user": "System",
+                "timestamp": now,
+            }
         ],
     }
     entry.outreach_drafts.insert(0, draft)
+    if DB_AVAILABLE:
+        _persist_outreach_drafts(current_user, entry.fingerprint, entry.outreach_drafts)
     return draft
 
 
@@ -2100,7 +2233,7 @@ def _find_draft(entry: DatasetEntry, email_id: str) -> Dict[str, Any]:
 
 
 @router.put("/outreach/{email_id}")
-def update_outreach(email_id: str, body: UpdateOutreachRequest):
+def update_outreach(email_id: str, body: UpdateOutreachRequest, current_user=Depends(get_current_user_optional)):
     entry = _current_or_404()
     draft = _find_draft(entry, email_id)
     if body.subject is not None:
@@ -2112,22 +2245,26 @@ def update_outreach(email_id: str, body: UpdateOutreachRequest):
     draft["auditTrail"].append(
         {"action": "Edited", "user": "You", "timestamp": draft["updatedAt"]}
     )
+    if DB_AVAILABLE:
+        _persist_outreach_drafts(current_user, entry.fingerprint, entry.outreach_drafts)
     return draft
 
 
 @router.post("/outreach/{email_id}/approve")
-def approve_outreach(email_id: str):
+def approve_outreach(email_id: str, current_user=Depends(get_current_user_optional)):
     entry = _current_or_404()
     draft = _find_draft(entry, email_id)
     draft["status"] = "approved"
     draft["auditTrail"].append(
         {"action": "Approved", "user": "You", "timestamp": datetime.now(timezone.utc).isoformat()}
     )
+    if DB_AVAILABLE:
+        _persist_outreach_drafts(current_user, entry.fingerprint, entry.outreach_drafts)
     return {"id": email_id, "status": "approved"}
 
 
 @router.post("/outreach/{email_id}/send")
-def send_outreach(email_id: str):
+def send_outreach(email_id: str, current_user=Depends(get_current_user_optional)):
     """ChurnGuard has no email delivery integration: this records that *you*
     sent it from your own tools. It never contacts a customer."""
     entry = _current_or_404()
@@ -2136,4 +2273,6 @@ def send_outreach(email_id: str):
     draft["auditTrail"].append(
         {"action": "Marked as sent", "user": "You", "timestamp": datetime.now(timezone.utc).isoformat()}
     )
+    if DB_AVAILABLE:
+        _persist_outreach_drafts(current_user, entry.fingerprint, entry.outreach_drafts)
     return {"id": email_id, "status": "sent"}

@@ -37,6 +37,12 @@ export default function ExecutiveOverviewPage() {
   // The backend omits a KPI it has no data for (e.g. retention rate when no
   // customer carries a churn outcome), so each one is read defensively and
   // simply left out rather than rendered as a crash or an invented number.
+  // The KPI cards below already filter defensively on metrics.kpis; this
+  // table needs its own check since it's a fixed set of columns, not a
+  // filtered list -- the same `available` flags the backend computes in
+  // _dataset_context() drive both, just applied differently.
+  const showRevenue = metrics.dataset?.available?.revenue !== false;
+
   const kpis = [
     { key: 'totalCustomers', label: 'Total Customers', format: formatNumber, icon: Users, color: '#86BC25' },
     { key: 'customersAtRisk', label: 'Customers at Risk', format: formatNumber, icon: AlertTriangle, color: '#EF4444' },
@@ -161,7 +167,7 @@ export default function ExecutiveOverviewPage() {
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-border">
-                {['Account', 'Risk Score', 'Revenue at Risk', 'Contract'].map(h => (
+                {(showRevenue ? ['Account', 'Risk Score', 'Revenue at Risk', 'Contract'] : ['Account', 'Risk Score', 'Contract']).map(h => (
                   <th key={h} className="px-4 py-2.5 text-left text-xs font-semibold text-text-tertiary uppercase tracking-wider">{h}</th>
                 ))}
               </tr>
@@ -169,7 +175,7 @@ export default function ExecutiveOverviewPage() {
             <tbody>
               {topAtRisk.length === 0 ? (
                 <tr>
-                  <td colSpan={4} className="px-4 py-6 text-center text-sm text-text-tertiary">
+                  <td colSpan={showRevenue ? 4 : 3} className="px-4 py-6 text-center text-sm text-text-tertiary">
                     No critical-risk accounts right now.
                   </td>
                 </tr>
@@ -181,7 +187,9 @@ export default function ExecutiveOverviewPage() {
                   <td className="px-4 py-3">
                     <span className="text-lg font-bold tabular-nums" style={{ color: getRiskColor(c.riskTier) }}>{c.churnProbability}%</span>
                   </td>
-                  <td className="px-4 py-3 font-semibold text-text-primary tabular-nums">{formatCurrency(c.revenueAtRisk)}</td>
+                  {showRevenue && (
+                    <td className="px-4 py-3 font-semibold text-text-primary tabular-nums">{formatCurrency(c.revenueAtRisk)}</td>
+                  )}
                   <td className="px-4 py-3 text-text-secondary text-xs">{c.contractType || '—'}</td>
                 </tr>
               ))}

@@ -36,6 +36,7 @@ class OutreachState(TypedDict, total=False):
     customer: Dict[str, Any]
     compute_drivers: Callable[[str], List[Dict[str, Any]]]
     already_drafted_ids: Set[str]
+    organization_name: Optional[str]
     eligible: bool
     drivers: List[Dict[str, Any]]
     provider_hint: str
@@ -97,7 +98,8 @@ def _generate_email_node(state: OutreachState) -> dict:
     ]
     try:
         result = outreach_generator.generate_outreach_message(
-            customer["id"], customer["churnProbability"] / 100, pretty_drivers
+            customer["id"], customer["churnProbability"] / 100, pretty_drivers,
+            organization_name=state.get("organization_name"),
         )
     except (RuntimeError, ImportError) as exc:
         return {"draft": None, "status": "failed", "reason": str(exc)}
@@ -174,14 +176,18 @@ def run_for_customer(
     customer: Dict[str, Any],
     compute_drivers: Callable[[str], List[Dict[str, Any]]],
     already_drafted_ids: Set[str],
+    organization_name: Optional[str] = None,
 ) -> OutreachState:
     """Runs the graph for one customer and returns the final state --
     `status` is 'queued', 'skipped' or 'failed', with `reason` set for the
-    latter two, `draft` set for the first."""
+    latter two, `draft` set for the first. `organization_name` signs any
+    drafted email as that organization (see db.models.User.company) rather
+    than a generic signature."""
     graph = _get_graph()
     initial: OutreachState = {
         "customer": customer,
         "compute_drivers": compute_drivers,
         "already_drafted_ids": already_drafted_ids,
+        "organization_name": organization_name,
     }
     return graph.invoke(initial)
