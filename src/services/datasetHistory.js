@@ -90,6 +90,13 @@ export function buildHistoryRecord(input, now = Date.now()) {
     requiredFieldCount = null,
     requiredTotal = null,
     mappedFields = [],
+    // The exact { fieldKey: yourColumnName } resolution used last time,
+    // straight from process()'s own fieldToColumn argument. This is what
+    // lets a restore skip re-asking the LLM to work out column matches it
+    // already solved for this exact file (see DataManagementPage's analyse()
+    // and the restore effect) -- null for anything saved before this existed,
+    // which just means that restore falls back to the normal, slower path.
+    fieldToColumn = null,
     file = null,
   } = input;
 
@@ -108,6 +115,7 @@ export function buildHistoryRecord(input, now = Date.now()) {
     requiredFieldCount,
     requiredTotal,
     mappedFields: [...mappedFields],
+    fieldToColumn: fieldToColumn ? { ...fieldToColumn } : null,
     createdAt: timestamp,
     lastUsedAt: timestamp,
     status: storable ? HISTORY_STATUS.restorable : HISTORY_STATUS.metadataOnly,

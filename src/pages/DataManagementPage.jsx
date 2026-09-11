@@ -220,6 +220,13 @@ export default function DataManagementPage() {
             requiredFieldCount: requiredMapped,
             requiredTotal,
             mappedFields: result.mappedFields ?? [],
+            // The resolved { fieldKey: yourColumnName } mapping this run used
+            // -- whether it came from the deterministic matcher or the LLM
+            // fallback below. Reusing it on restore is what lets a previously
+            // ambiguous file (one that needed autoMapColumns()) skip that LLM
+            // round trip entirely next time, instead of paying for it again
+            // on every reconnect of the exact same file.
+            fieldToColumn: { ...fieldToColumn },
             file: connectedFile.current,
           });
           historyId = saved.id;
@@ -292,7 +299,7 @@ export default function DataManagementPage() {
    * user interaction unless the data forces one.
    */
   const analyse = useCallback(
-    async (connected) => {
+    async (connected, knownFieldToColumn = null) => {
       connectedDataset.current = connected;
       setPhase(PHASE.RUNNING);
       setRunError(null);
@@ -310,6 +317,22 @@ export default function DataManagementPage() {
         // says it isn't actually a dead end (see validate_dataset()).
         if (report.issues?.length > 0) {
           setPhase(PHASE.BLOCKED);
+          return;
+        }
+
+        // Restoring a dataset History already resolved before: we know
+        // exactly which column holds which field from last time (see
+        // datasetHistory's fieldToColumn), so there is nothing to detect.
+        // This is what skips autoMapColumns()'s LLM round trip on a
+        // reconnect — the single slowest step for any file whose columns
+        // aren't standard enough for the deterministic matcher alone.
+        // Still runs validateDataset() above first: that's what registers
+        // this connect server-side and re-checks for hard blockers (row
+        // count, unreadable file) — a known mapping only ever skips
+        // *resolving* columns, never data-quality validation itself.
+        if (knownFieldToColumn) {
+          setStage({ understanding: 'done' });
+          await process(report, knownFieldToColumn);
           return;
         }
 
@@ -427,7 +450,7 @@ export default function DataManagementPage() {
   // ----------------------------------------------------------------- upload --
 
   const runUpload = useCallback(
-    async (selectedFile) => {
+    async (selectedFile, knownFieldToColumn = null) => {
       connectedFile.current = selectedFile;
       setUploading(true);
       setUploadError(null);
@@ -435,7 +458,7 @@ export default function DataManagementPage() {
       try {
         const uploaded = await datasetService.uploadDataset(selectedFile, setProgress);
         setUploading(false);
-        await analyse(uploaded);
+        await analyse(uploaded, knownFieldToColumn);
       } catch (err) {
         setUploading(false);
         setUploadError(asUserError(err));
@@ -510,7 +533,12 @@ export default function DataManagementPage() {
         await datasetHistory.touch(record.id).catch(() => {});
         setRestoring(false);
         addToast({ type: 'info', message: `Reconnecting ${record.name}` });
-        await runUpload(restored);
+        // A known mapping (saved the last time this exact file was
+        // processed) skips column auto-detection entirely on reconnect —
+        // see analyse()'s knownFieldToColumn branch. Records saved before
+        // this existed have fieldToColumn: null and just take the normal,
+        // slower path once, saving a fresh mapping for next time.
+        await runUpload(restored, record.fieldToColumn || null);
       } catch {
         setRestoring(false);
         setRestoreError({

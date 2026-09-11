@@ -40,6 +40,18 @@ from .store import DatasetEntry, DatasetSource
 router = APIRouter(prefix="/api", tags=["churnguard"])
 logger = logging.getLogger(__name__)
 
+# Which fingerprints currently have a _run_auto_outreach() background loop in
+# flight. Restoring the same dataset from History before that loop finishes
+# used to queue a second, fully independent loop on top of the first -- and a
+# third, and a fourth, each one clicked "Use dataset" again while waiting.
+# Every extra loop shares the same global explainer state in generic/
+# explainer.py, so overlapping loops don't just waste CPU serially -- they
+# actively corrupt each other's SHAP computations (see _run_auto_outreach's
+# docstring). A plain set is enough here: CPython's GIL makes add()/discard()
+# effectively atomic for this single-process dev server, and nothing here
+# needs to survive a restart.
+_outreach_fingerprints_in_progress: set = set()
+
 # The database is an optional extra (see main.py's _auth_router): a server
 # with no DATABASE_URL/JWT_SECRET configured still runs the full churn
 # pipeline, just without accounts, persisted dataset history, or skipping a
@@ -1999,74 +2011,96 @@ def _run_auto_outreach(
         entry.auto_outreach_state = "done"
         return
 
-    already_drafted_ids = {d["customerId"] for d in entry.outreach_drafts}
-    eligible = [c for c in entry.customers if c["riskTier"] in ("high", "critical")]
-    # Worst risk first: if there are more eligible accounts than the cap,
-    # the ones that matter most still get drafted.
-    eligible.sort(key=lambda c: c["churnProbability"], reverse=True)
-
-    for customer in eligible[: business_rules.MAX_AUTO_DRAFTS_PER_RUN]:
-        try:
-            result = outreach_workflow.run_for_customer(
-                customer,
-                compute_drivers=lambda cid: _compute_pretty_drivers(entry, cid),
-                already_drafted_ids=already_drafted_ids,
-                organization_name=current_user.company if current_user else None,
-            )
-        except Exception:  # noqa: BLE001 -- one customer's failure must not stop the run
+    # Refuse to stack a second loop on top of one still running for this same
+    # data. Without this, restoring the same dataset from History again
+    # before the first loop finished used to queue an independent second
+    # loop (and a third, a fourth...), each one sharing -- and corrupting --
+    # the same global explainer state (see generic/explainer.py). No
+    # fingerprint (the REUSE_MODEL caller at line ~1150) means no way to
+    # de-duplicate, so that path is left ungated as before.
+    if fingerprint is not None:
+        if fingerprint in _outreach_fingerprints_in_progress:
             logger.warning(
-                "Auto-outreach failed for customer %s", customer.get("id"), exc_info=True
+                "Auto-outreach already running for fingerprint %s -- skipping duplicate loop", fingerprint
             )
-            result = {"status": "failed"}
+            return
+        _outreach_fingerprints_in_progress.add(fingerprint)
 
-        entry.auto_outreach_done += 1
+    try:
+        already_drafted_ids = {d["customerId"] for d in entry.outreach_drafts}
+        eligible = [c for c in entry.customers if c["riskTier"] in ("high", "critical")]
+        # Worst risk first: if there are more eligible accounts than the cap,
+        # the ones that matter most still get drafted.
+        eligible.sort(key=lambda c: c["churnProbability"], reverse=True)
 
-        if result.get("status") == "queued":
-            now = datetime.now(timezone.utc).isoformat()
-            drivers_used = _compute_pretty_drivers(entry, customer["id"])  # cached, not recomputed
-            draft = {
-                "id": f"OUT-{int(time.time() * 1000)}-{customer['id']}",
-                "customerId": customer["id"],
-                "customerName": customer["id"],
-                "contactName": None,
-                "contactEmail": None,
-                "subject": result["draft"]["subject"],
-                "body": result["draft"]["body"],
-                "status": "draft",
-                "tone": "professional",
-                "auto": True,  # drafted by the pipeline, not a click -- see CompleteStep-style badges
-                "createdAt": now,
-                "updatedAt": now,
-                "basedOn": {
-                    "churnProbability": customer["churnProbability"],
-                    "drivers": [
-                        {"feature": d["feature"], "value": str(d["value"])} for d in drivers_used[:3]
-                    ],
-                },
-                "auditTrail": [{
-                    "action": (
-                        f"Template-drafted automatically after training (no LLM provider available)"
-                        if result["draft"]["provider"] == "template"
-                        else f"AI generated draft automatically after training ({result['draft']['provider']})"
-                    ),
-                    "user": "System",
-                    "timestamp": now,
-                }],
-            }
-            entry.outreach_drafts.append(draft)
-            already_drafted_ids.add(customer["id"])
-            entry.auto_outreach_queued += 1
-        else:
-            logger.warning(
-                "Auto-outreach skipped for customer %s: status=%s reason=%s",
-                customer.get("id"), result.get("status"), result.get("reason"),
-            )
-            entry.auto_outreach_skipped += 1
+        for customer in eligible[: business_rules.MAX_AUTO_DRAFTS_PER_RUN]:
+            try:
+                result = outreach_workflow.run_for_customer(
+                    customer,
+                    compute_drivers=lambda cid: _compute_pretty_drivers(entry, cid),
+                    already_drafted_ids=already_drafted_ids,
+                    organization_name=current_user.company if current_user else None,
+                )
+            except Exception:  # noqa: BLE001 -- one customer's failure must not stop the run
+                logger.warning(
+                    "Auto-outreach failed for customer %s", customer.get("id"), exc_info=True
+                )
+                result = {"status": "failed"}
 
-    entry.auto_outreach_state = "done"
+            entry.auto_outreach_done += 1
 
-    if current_user is not None and fingerprint is not None:
-        _persist_outreach_drafts(current_user, fingerprint, entry.outreach_drafts)
+            if result.get("status") == "queued":
+                now = datetime.now(timezone.utc).isoformat()
+                drivers_used = _compute_pretty_drivers(entry, customer["id"])  # cached, not recomputed
+                draft = {
+                    "id": f"OUT-{int(time.time() * 1000)}-{customer['id']}",
+                    "customerId": customer["id"],
+                    "customerName": customer["id"],
+                    "contactName": None,
+                    "contactEmail": None,
+                    "subject": result["draft"]["subject"],
+                    "body": result["draft"]["body"],
+                    "status": "draft",
+                    "tone": "professional",
+                    "auto": True,  # drafted by the pipeline, not a click -- see CompleteStep-style badges
+                    "createdAt": now,
+                    "updatedAt": now,
+                    "basedOn": {
+                        "churnProbability": customer["churnProbability"],
+                        "drivers": [
+                            {"feature": d["feature"], "value": str(d["value"])} for d in drivers_used[:3]
+                        ],
+                    },
+                    "auditTrail": [{
+                        "action": (
+                            f"Template-drafted automatically after training (no LLM provider available)"
+                            if result["draft"]["provider"] == "template"
+                            else f"AI generated draft automatically after training ({result['draft']['provider']})"
+                        ),
+                        "user": "System",
+                        "timestamp": now,
+                    }],
+                }
+                entry.outreach_drafts.append(draft)
+                already_drafted_ids.add(customer["id"])
+                entry.auto_outreach_queued += 1
+            else:
+                logger.warning(
+                    "Auto-outreach skipped for customer %s: status=%s reason=%s",
+                    customer.get("id"), result.get("status"), result.get("reason"),
+                )
+                entry.auto_outreach_skipped += 1
+
+        entry.auto_outreach_state = "done"
+
+        if current_user is not None and fingerprint is not None:
+            _persist_outreach_drafts(current_user, fingerprint, entry.outreach_drafts)
+    finally:
+        # Always release the marker, success or failure, so a genuine later
+        # attempt (e.g. after fixing whatever made every customer fail) is
+        # never permanently locked out by one bad run.
+        if fingerprint is not None:
+            _outreach_fingerprints_in_progress.discard(fingerprint)
 
 
 @router.get("/outreach/auto-status")
