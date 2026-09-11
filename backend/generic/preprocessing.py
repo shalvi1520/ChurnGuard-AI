@@ -14,8 +14,20 @@ from . import config
 
 
 def split_column_types(df: pd.DataFrame, exclude: Optional[list] = None):
-    """dtype-based bucketing: datetime64 -> its own bucket; object/category
-    -> categorical; everything else (bool/int/float) -> numeric."""
+    """dtype-based bucketing: datetime64 -> its own bucket; bool/int/float
+    -> numeric; everything else -> categorical.
+
+    Classified by exclusion (numeric vs not) rather than by enumerating
+    string-like dtypes (object/category), because that enumeration is not
+    future-proof: pandas 3.x introduced a native 'str' dtype as the default
+    for plain text columns, which is neither object dtype nor a
+    CategoricalDtype, and pd.api.types.is_object_dtype() doesn't recognise
+    it. Enumerating "is_numeric_dtype" instead is the stable check --
+    whatever pandas calls its text dtype next, it still won't be numeric.
+    Previously, this silently classified every string column as numeric on
+    pandas >= 3.0, and the pipeline crashed trying to compute a median on
+    values like 'France'/'Germany'/'Spain'.
+    """
     exclude_set = set(exclude or [])
     numeric_cols, categorical_cols, datetime_cols = [], [], []
     for col in df.columns:
@@ -24,14 +36,10 @@ def split_column_types(df: pd.DataFrame, exclude: Optional[list] = None):
         dtype = df[col].dtype
         if pd.api.types.is_datetime64_any_dtype(dtype):
             datetime_cols.append(col)
-        elif (
-            pd.api.types.is_object_dtype(dtype)
-            or pd.api.types.is_string_dtype(dtype)
-            or isinstance(dtype, pd.CategoricalDtype)
-        ):
-            categorical_cols.append(col)
-        else:
+        elif pd.api.types.is_numeric_dtype(dtype):
             numeric_cols.append(col)
+        else:
+            categorical_cols.append(col)
     return numeric_cols, categorical_cols, datetime_cols
 
 
@@ -65,13 +73,21 @@ def find_constant_columns(df: pd.DataFrame, exclude: Optional[list] = None) -> l
 
 
 def find_high_cardinality_categoricals(df: pd.DataFrame, categorical_cols: list) -> list:
+    """A column is excluded if it has too many distinct values in absolute
+    terms (>= HIGH_CARDINALITY_MIN_UNIQUE) OR too many relative to a small
+    dataset (>= HIGH_CARDINALITY_RATIO of rows). These were previously
+    AND-ed together, which meant a column like 'City' with ~1,100 unique
+    values on a 7,000-row dataset was never caught: its ratio (~0.16) sits
+    well under 0.5 even though 1,100 categories is unmanageable for label
+    encoding at any dataset size. OR is the correct combinator: either
+    condition alone is sufficient reason to exclude the column."""
     n = len(df)
     if n == 0:
         return []
     result = []
     for col in categorical_cols:
         nunique = df[col].nunique(dropna=True)
-        if nunique >= config.HIGH_CARDINALITY_MIN_UNIQUE and (nunique / n) >= config.HIGH_CARDINALITY_RATIO:
+        if nunique >= config.HIGH_CARDINALITY_MIN_UNIQUE or (nunique / n) >= config.HIGH_CARDINALITY_RATIO:
             result.append(col)
     return result
 

@@ -1,6 +1,6 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Mail, Send, Check, Edit, RefreshCw, Copy, Sparkles, ShieldCheck, Clock, CheckCircle } from 'lucide-react';
+import { Mail, Send, Check, Edit, RefreshCw, Copy, Sparkles, ShieldCheck, Clock, CheckCircle, Bot } from 'lucide-react';
 import Card, { CardHeader, CardTitle } from '../components/ui/Card';
 import Button from '../components/ui/Button';
 import Badge from '../components/ui/Badge';
@@ -35,9 +35,42 @@ export default function OutreachPage() {
   const [editSubject, setEditSubject] = useState('');
   const [draftCustomer, setDraftCustomer] = useState(null);
   const [draftDriver, setDraftDriver] = useState(null);
+  const [autoStatus, setAutoStatus] = useState(null);
+  const pollTimer = useRef(null);
   const customerId = searchParams.get('customer');
 
   useEffect(() => { loadEmails(); }, []);
+
+  // The automatic post-training pipeline (backend/agents/outreach_workflow.py)
+  // drafts high/critical-risk accounts in the background right after
+  // training. Poll while it's running so the queue fills in live instead of
+  // the page looking empty until someone happens to refresh it; stop as soon
+  // as it reports 'done' or isn't running at all.
+  useEffect(() => {
+    let cancelled = false;
+
+    async function poll() {
+      try {
+        const status = await outreachService.getAutoStatus();
+        if (cancelled) return;
+        setAutoStatus(status);
+        if (status.state === 'running') {
+          pollTimer.current = setTimeout(poll, 3000);
+        } else if (status.state === 'done' && status.queued > 0) {
+          loadEmails();
+        }
+      } catch {
+        // No dataset connected yet, or the backend is unreachable -- the
+        // rest of the page already has its own error handling for that.
+      }
+    }
+    poll();
+
+    return () => {
+      cancelled = true;
+      if (pollTimer.current) clearTimeout(pollTimer.current);
+    };
+  }, []);
 
   useEffect(() => {
     const targetId = selectedEmail?.customerId;
@@ -153,6 +186,19 @@ export default function OutreachPage() {
         )}
       </div>
 
+      {/* The automatic pipeline's progress — real numbers from the backend,
+          not a spinner with no information. Disappears once it's done. */}
+      {autoStatus?.state === 'running' && (
+        <div className="flex items-center gap-3 p-3 rounded-lg bg-accent/5 border border-accent/20">
+          <div className="w-4 h-4 rounded-full border-2 border-accent/30 border-t-accent animate-spin shrink-0" aria-hidden="true" />
+          <p className="text-xs text-text-secondary">
+            <span className="text-text-primary font-medium">ChurnGuard is drafting outreach</span> for your
+            highest-risk accounts — {autoStatus.done} of {autoStatus.total} done
+            {autoStatus.queued > 0 && `, ${autoStatus.queued} ready to review`}.
+          </p>
+        </div>
+      )}
+
       {/* How a draft travels — the human-approval rule, shown as the actual flow */}
       <div className="flex flex-wrap items-center gap-x-2 gap-y-2 p-3 rounded-lg bg-bg-tertiary/30 border border-border">
         <ShieldCheck size={15} className="text-accent shrink-0" aria-hidden="true" />
@@ -192,7 +238,10 @@ export default function OutreachPage() {
                   className={`w-full p-3 text-left hover:bg-bg-tertiary/30 transition-colors cursor-pointer ${selectedEmail?.id === email.id ? 'bg-bg-tertiary/50 border-l-2 border-l-accent' : ''}`}
                 >
                   <div className="flex items-center justify-between mb-1">
-                    <span className="text-sm font-medium text-text-primary truncate">{email.customerName}</span>
+                    <span className="text-sm font-medium text-text-primary truncate flex items-center gap-1.5">
+                      {email.customerName}
+                      {email.auto && <Bot size={12} className="text-accent shrink-0" aria-label="Drafted automatically" />}
+                    </span>
                     <Badge variant={statusColors[email.status]} size="xs">{statusFlow[email.status]}</Badge>
                   </div>
                   <p className="text-xs text-text-tertiary truncate">{email.subject}</p>
@@ -210,7 +259,15 @@ export default function OutreachPage() {
               <Card>
                 <div className="space-y-4">
                   <div className="flex items-center justify-between">
-                    <Badge variant={statusColors[selectedEmail.status]} size="md">{statusFlow[selectedEmail.status]}</Badge>
+                    <div className="flex items-center gap-2">
+                      <Badge variant={statusColors[selectedEmail.status]} size="md">{statusFlow[selectedEmail.status]}</Badge>
+                      {selectedEmail.auto && (
+                        <Badge variant="accent" size="xs" className="inline-flex items-center gap-1">
+                          <Bot size={10} aria-hidden="true" />
+                          Drafted automatically
+                        </Badge>
+                      )}
+                    </div>
                     <div className="flex items-center gap-2">
                       <Button variant="ghost" size="sm" icon={Copy} onClick={() => { navigator.clipboard.writeText(selectedEmail.body); addToast({ type: 'info', message: 'Copied to clipboard' }); }}>Copy</Button>
                       <Button

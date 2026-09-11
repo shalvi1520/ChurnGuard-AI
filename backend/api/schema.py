@@ -1,102 +1,52 @@
 """
-Python mirror of src/mock/datasetSchema.js -- the canonical list of fields
-a customer dataset maps onto. Kept in sync by hand (small, stable list);
-this is the one place the backend defines "what ChurnGuard expects in a
-customer dataset", matching the frontend's copy field-for-field so the
-validation report/mapping step behave identically whether computed
-client-side (mock mode) or server-side (real backend).
-"""
-import re
-from typing import Dict, List, Optional
+The canonical ChurnGuard field list, loaded from shared/churnguardFields.json.
 
-CHURNGUARD_FIELDS: List[Dict] = [
-    {
-        "key": "customer_id",
-        "label": "Customer ID",
-        "required": True,
-        "aliases": ["customerid", "customer", "accountid", "account", "id", "userid", "subscriberid"],
-    },
-    {
-        "key": "tenure",
-        "label": "Tenure (months)",
-        "required": True,
-        "aliases": ["tenure", "tenuremonths", "months", "monthsactive", "customerage", "subscriptionmonths"],
-    },
-    {
-        "key": "monthly_charges",
-        "label": "Monthly charges",
-        "required": True,
-        "aliases": ["monthlycharges", "monthlycharge", "mrr", "monthlyrevenue", "monthlyfee", "arpu"],
-    },
-    {
-        "key": "contract_type",
-        "label": "Contract type",
-        "required": True,
-        "aliases": ["contract", "contracttype", "plan", "plantype", "subscriptiontype", "term"],
-    },
-    {
-        "key": "churn",
-        "label": "Churn label",
-        "required": True,
-        "aliases": ["churn", "churned", "ischurn", "ischurned", "attrition", "exited", "cancelled", "canceled"],
-    },
-    {
-        "key": "total_charges",
-        "label": "Total charges",
-        "required": False,
-        "aliases": ["totalcharges", "totalcharge", "totalrevenue", "lifetimevalue", "ltv"],
-    },
-    {
-        "key": "service_tier",
-        "label": "Service / product tier",
-        "required": False,
-        "aliases": ["internetservice", "service", "servicetier", "product", "producttier", "tier", "package"],
-    },
-    {
-        "key": "payment_method",
-        "label": "Payment method",
-        "required": False,
-        "aliases": ["paymentmethod", "payment", "billingmethod", "paymenttype"],
-    },
-]
+That JSON file is THE definition -- the frontend (src/mock/datasetSchema.js)
+reads the exact same file, so the two sides cannot drift apart. This module
+only adds Python-side conveniences (lookups, name normalisation) on top of it.
+
+Automatic column matching lives in mapping.py, not here.
+"""
+import json
+import os
+import re
+from typing import Any, Dict, List, Optional
+
+_SHARED_PATH = os.path.normpath(
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "shared", "churnguardFields.json")
+)
+
+with open(_SHARED_PATH, "r", encoding="utf-8") as _fh:
+    _SCHEMA = json.load(_fh)
+
+SCHEMA_VERSION: int = _SCHEMA["version"]
+CHURNGUARD_FIELDS: List[Dict[str, Any]] = _SCHEMA["fields"]
 
 REQUIRED_FIELDS = [f for f in CHURNGUARD_FIELDS if f["required"]]
+OPTIONAL_FIELDS = [f for f in CHURNGUARD_FIELDS if not f["required"]]
 FIELD_LABELS = {f["key"]: f["label"] for f in CHURNGUARD_FIELDS}
+FIELD_BY_KEY = {f["key"]: f for f in CHURNGUARD_FIELDS}
+
+
+def get_field(key: str) -> Optional[Dict[str, Any]]:
+    return FIELD_BY_KEY.get(key)
 
 
 def pretty_feature_name(key: str) -> str:
-    return FIELD_LABELS.get(key, key.replace("_", " ").capitalize())
+    return FIELD_LABELS.get(key, str(key).replace("_", " ").capitalize())
 
 
 def normalize_column_name(name: Optional[str]) -> str:
+    """Lowercases and strips every separator so `Monthly_Charges`,
+    `monthly-charges` and `MonthlyCharges` all collapse to `monthlycharges`."""
     return re.sub(r"[^a-z0-9]", "", str(name or "").lower())
 
 
-def suggest_mappings(column_names: List[str]) -> Dict[str, str]:
-    """Best-effort match of dataset columns onto ChurnGuard fields.
-    Returns {fieldKey: columnName} -- only confident matches, mirrors
-    suggestMappings() in src/mock/datasetSchema.js."""
-    normalized = [(name, normalize_column_name(name)) for name in column_names]
-    taken = set()
-    suggestions: Dict[str, str] = {}
-
-    for field_def in CHURNGUARD_FIELDS:
-        match = None
-        for name, key in normalized:
-            if name in taken:
-                continue
-            if key == normalize_column_name(field_def["key"]):
-                match = name
-                break
-        if match is None:
-            for name, key in normalized:
-                if name in taken:
-                    continue
-                if key in field_def["aliases"]:
-                    match = name
-                    break
-        if match is not None:
-            suggestions[field_def["key"]] = match
-            taken.add(match)
-
-    return suggestions
+def tokenize_column_name(name: Optional[str]) -> List[str]:
+    """Splits a column name into lowercase word tokens, handling snake_case,
+    kebab-case, spaces and camelCase/PascalCase boundaries."""
+    raw = str(name or "")
+    spaced = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", raw)
+    spaced = re.sub(r"(?<=[A-Za-z])(?=[0-9])", " ", spaced)
+    parts = re.split(r"[^A-Za-z0-9]+", spaced)
+    return [p.lower() for p in parts if p]

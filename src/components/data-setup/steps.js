@@ -1,28 +1,68 @@
 // ============================================
-// ChurnGuard – Data setup step definitions
+// ChurnGuard – Data setup stage definitions
 // ============================================
 //
-// The one definition of the setup flow's shape. `SETUP_STEPS` drives the page's
-// state machine, the stepper and the breadcrumb; `PROCESSING_STAGES` drives the
-// staged checklist shown while the dataset is processed.
+// The setup flow is automatic: the user provides data, and everything after
+// that runs without further clicks unless a decision is genuinely needed.
+// These stages are what the progress view narrates while that happens.
+//
+// `label` is written in the present tense because it is shown while the stage
+// is running. `detail` answers "what is it actually doing?" in one line — the
+// user should never be watching an opaque spinner.
+//
+// Each stage maps to real work. Nothing here is a decorative delay: if a stage
+// is on screen, the operation it names is either running or finished.
 
-// `hint` is the one-line answer to "what happens at this step?", shown under
-// the stepper so the user always knows where they are and what comes next.
-export const SETUP_STEPS = [
-  { key: 'upload', label: 'Upload Dataset', short: 'Upload', hint: 'Choose a customer export from your computer, or load the demo dataset.' },
-  { key: 'validate', label: 'Validate Data', short: 'Validate', hint: 'We check your file for gaps, duplicates and the fields ChurnGuard needs.' },
-  { key: 'map', label: 'Map Columns', short: 'Map', hint: 'Confirm which of your columns holds each ChurnGuard field.' },
-  { key: 'process', label: 'Process Dataset', short: 'Process', hint: 'Your customer records are being prepared for scoring.' },
-  { key: 'predict', label: 'Generate Predictions', short: 'Predict', hint: 'Churn risk is being generated for every customer in your file.' },
+export const PIPELINE_STAGES = [
+  {
+    key: 'reading',
+    label: 'Reading your data',
+    detail: 'Parsing the file and counting rows and columns.',
+  },
+  {
+    key: 'understanding',
+    label: 'Understanding your columns',
+    detail: 'Matching your column names and values against the fields ChurnGuard needs.',
+  },
+  {
+    key: 'validating',
+    label: 'Validating records',
+    detail: 'Checking for gaps, duplicates and values that cannot be used.',
+  },
+  {
+    key: 'preparing',
+    label: 'Preparing your columns',
+    detail: 'Applying the matched fields and cleaning the data ChurnGuard will train on.',
+  },
+  {
+    key: 'predicting',
+    label: 'Training your model',
+    // This is genuinely the slow step (a real LightGBM + CatBoost ensemble is
+    // tuned and trained here, not a canned demo) — said plainly, so a minute
+    // of no visible change reads as "working" rather than "stuck".
+    detail:
+      'Tuning and training a churn model on your customers, then scoring every one. This is the ' +
+      'slowest step — it can take a minute or two for a full dataset. Keep this tab open.',
+  },
+  {
+    key: 'insights',
+    label: 'Building insights',
+    detail: 'Working out which factors drive risk across your customer base.',
+  },
 ];
 
-// The first three are already complete by the time the processing screen shows;
-// the rest track the service calls the page makes.
-export const PROCESSING_STAGES = [
-  { key: 'received', label: 'Dataset received' },
-  { key: 'validated', label: 'Data validated' },
-  { key: 'mapped', label: 'Columns mapped' },
-  { key: 'records', label: 'Preparing customer records' },
-  { key: 'predictions', label: 'Generating churn predictions' },
-  { key: 'insights', label: 'Preparing risk insights' },
+export const IDLE_STAGES = Object.fromEntries(PIPELINE_STAGES.map((s) => [s.key, 'pending']));
+
+/** The two ways a user can provide customer data. */
+export const DATA_SOURCES = [
+  {
+    key: 'upload',
+    label: 'Upload a file',
+    description: 'A customer export from your billing, CRM or data warehouse.',
+  },
+  {
+    key: 'crm',
+    label: 'Connect a CRM',
+    description: 'Pull customer records directly from a system over its API.',
+  },
 ];

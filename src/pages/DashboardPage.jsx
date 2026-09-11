@@ -4,10 +4,11 @@ import {
   Users, AlertTriangle, Target, TrendingUp, DollarSign, ChevronRight, Brain, Mail,
 } from 'lucide-react';
 import {
-  PieChart, Pie, Cell, ResponsiveContainer, LineChart, Line, XAxis, YAxis,
-  CartesianGrid, Tooltip, AreaChart, Area, BarChart, Bar,
+  PieChart, Pie, Cell, ResponsiveContainer, XAxis, YAxis,
+  CartesianGrid, Tooltip, BarChart, Bar, ReferenceLine,
 } from 'recharts';
 import MetricCard from '../components/ui/MetricCard';
+import DataSourceBadge from '../components/data-setup/DataSourceBadge';
 import Card, { CardTitle } from '../components/ui/Card';
 import ChartCard from '../components/ui/ChartCard';
 import { InfoTip } from '../components/ui/Tooltip';
@@ -30,13 +31,13 @@ const kpiConfig = [
   { key: 'revenueAtRisk', format: 'currency', icon: DollarSign },
 ];
 
-const TABLE_COLUMNS = [
+const BASE_TABLE_COLUMNS = [
   { label: 'Customer' },
   { label: 'Churn Risk', help: metric('churnProbability').help },
   { label: 'Risk Tier', help: metric('riskTier').help },
-  { label: 'Revenue at Risk', help: metric('customerRevenueAtRisk').help },
-  { label: 'Actions' },
 ];
+const REVENUE_COLUMN = { label: 'Revenue at Risk', help: metric('customerRevenueAtRisk').help };
+const ACTIONS_COLUMN = { label: 'Actions' };
 
 function ChartTooltip({ active, payload, label, valueFormatter }) {
   if (!active || !payload?.length) return null;
@@ -61,8 +62,6 @@ export default function DashboardPage() {
   const [error, setError] = useState(false);
   const [metrics, setMetrics] = useState(null);
   const [riskDistribution, setRiskDistribution] = useState([]);
-  const [churnTrend, setChurnTrend] = useState([]);
-  const [revenueAtRisk, setRevenueAtRisk] = useState([]);
   const [topDrivers, setTopDrivers] = useState([]);
   const [atRiskCustomers, setAtRiskCustomers] = useState([]);
   const navigate = useNavigate();
@@ -75,19 +74,15 @@ export default function DashboardPage() {
     let cancelled = false;
     async function load() {
       try {
-        const [metricsData, risk, trend, revenue, drivers, triage] = await Promise.all([
+        const [metricsData, risk, drivers, triage] = await Promise.all([
           dashboardService.getMetrics(),
           dashboardService.getRiskDistribution(),
-          dashboardService.getChurnTrend(),
-          dashboardService.getRevenueAtRisk(),
           dashboardService.getTopDrivers(),
           customerService.getCustomers({ sortBy: 'churnProbability', sortDir: 'desc', limit: 20 }),
         ]);
         if (cancelled) return;
         setMetrics(metricsData);
         setRiskDistribution(risk);
-        setChurnTrend(trend);
-        setRevenueAtRisk(revenue);
         setTopDrivers(drivers);
         setAtRiskCustomers(triage.customers.filter((c) => c.riskTier === 'high' || c.riskTier === 'critical').slice(0, 8));
       } catch {
@@ -106,6 +101,12 @@ export default function DashboardPage() {
   };
 
   const riskTotal = riskDistribution.reduce((sum, d) => sum + d.value, 0);
+
+  // Show the strongest drivers in BOTH directions. Filtering to positive-only
+  // silently emptied this chart whenever the sampled customers skewed toward
+  // staying (every mean SHAP value negative) -- the card rendered blank while
+  // `isEmpty` was false, so not even the empty state appeared.
+  const topDriversShown = topDrivers.slice(0, 6);
 
   if (loading) {
     return (
@@ -137,6 +138,11 @@ export default function DashboardPage() {
     );
   }
 
+  const showRevenue = metrics?.dataset?.available?.revenue !== false;
+  const tableColumns = showRevenue
+    ? [...BASE_TABLE_COLUMNS, REVENUE_COLUMN, ACTIONS_COLUMN]
+    : [...BASE_TABLE_COLUMNS, ACTIONS_COLUMN];
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -146,6 +152,13 @@ export default function DashboardPage() {
           Where your customer base stands right now, based on the model trained on your connected dataset: how many
           accounts are at risk, what it's worth, and which ones need attention first.
         </p>
+        {/* Which data these numbers come from -- reported by the backend, so a
+            real upload is never labelled as demo data or vice versa. */}
+        {metrics?.dataset && (
+          <div className="mt-3">
+            <DataSourceBadge source={metrics.dataset.source} filename={metrics.dataset.filename} />
+          </div>
+        )}
       </header>
 
       {/* KPIs */}
@@ -175,9 +188,9 @@ export default function DashboardPage() {
       )}
 
       {/* Portfolio shape */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      <div>
         <ChartCard metricKey="riskDistribution" isEmpty={riskDistribution.length === 0}>
-          <div className="h-full min-h-[14rem] flex items-center gap-2">
+          <div className="h-56 flex items-center gap-2">
             <ResponsiveContainer width="100%" height="100%">
               <PieChart>
                 <Pie data={riskDistribution} cx="50%" cy="50%" innerRadius={58} outerRadius={84} paddingAngle={3} dataKey="value" animationDuration={500}>
@@ -202,65 +215,38 @@ export default function DashboardPage() {
             </ul>
           </div>
         </ChartCard>
-
-        <ChartCard
-          metricKey="churnTrend"
-          isEmpty={churnTrend.length === 0}
-          emptyMessage="An uploaded dataset is a single snapshot, not a time series — a churn trend needs repeated uploads over time to compute."
-        >
-          <div className="h-56">
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={churnTrend} margin={{ top: 4, right: 8, left: -8, bottom: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#2A2F42" />
-                <XAxis dataKey="month" tick={{ fontSize: 11, fill: '#6B7490' }} axisLine={false} tickLine={false} />
-                <YAxis tick={{ fontSize: 11, fill: '#6B7490' }} axisLine={false} tickLine={false} tickFormatter={(v) => `${v}%`} width={44} />
-                <Tooltip content={<ChartTooltip valueFormatter={(v) => `${v}% churn`} />} />
-                <Line type="monotone" dataKey="churnRate" name="Actual churn" stroke="#F97316" strokeWidth={2} dot={{ r: 3, fill: '#F97316' }} animationDuration={500} />
-                <Line type="monotone" dataKey="predicted" name="Predicted" stroke="#86BC25" strokeWidth={2} strokeDasharray="5 5" dot={false} animationDuration={500} />
-              </LineChart>
-            </ResponsiveContainer>
-          </div>
-        </ChartCard>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <ChartCard
-          metricKey="revenueAtRiskTrend"
-          isEmpty={revenueAtRisk.length === 0}
-          emptyMessage="An uploaded dataset is a single snapshot, not a time series — this needs repeated uploads over time to compute."
-        >
-          <div className="h-56">
-            <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={revenueAtRisk} margin={{ top: 4, right: 8, left: -4, bottom: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#2A2F42" />
-                <XAxis dataKey="month" tick={{ fontSize: 11, fill: '#6B7490' }} axisLine={false} tickLine={false} />
-                <YAxis tick={{ fontSize: 11, fill: '#6B7490' }} axisLine={false} tickLine={false} tickFormatter={(v) => `$${(v / 1000000).toFixed(1)}M`} width={48} />
-                <Tooltip content={<ChartTooltip valueFormatter={(v) => formatCurrency(v)} />} />
-                <Area type="monotone" dataKey="revenue" name="Total revenue" stroke="#86BC25" fill="#86BC25" fillOpacity={0.05} strokeWidth={1.5} animationDuration={500} />
-                <Area type="monotone" dataKey="atRisk" name="At risk" stroke="#EF4444" fill="#EF4444" fillOpacity={0.12} strokeWidth={2} animationDuration={500} />
-              </AreaChart>
-            </ResponsiveContainer>
-          </div>
-        </ChartCard>
-
+      <div>
         <ChartCard metricKey="topDrivers" isEmpty={topDrivers.length === 0}>
           <div className="h-56">
             <ResponsiveContainer width="100%" height="100%">
-              <BarChart
-                data={topDrivers.filter((d) => d.direction === 'positive').slice(0, 6)}
-                layout="vertical"
-                margin={{ top: 4, right: 12, left: 0, bottom: 0 }}
-              >
+              <BarChart data={topDriversShown} layout="vertical" margin={{ top: 4, right: 12, left: 0, bottom: 0 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#2A2F42" horizontal={false} />
-                <XAxis type="number" tick={{ fontSize: 11, fill: '#6B7490' }} axisLine={false} tickLine={false} />
+                <XAxis
+                  type="number"
+                  tick={{ fontSize: 11, fill: '#6B7490' }}
+                  axisLine={false}
+                  tickLine={false}
+                  /* Keep zero on the axis, otherwise an all-negative set of
+                     drivers is drawn as full-width bars and reads as "large
+                     positive effect" -- the opposite of what it means. */
+                  domain={[(min) => Math.min(0, min), (max) => Math.max(0, max)]}
+                />
                 <YAxis type="category" dataKey="driver" tick={{ fontSize: 10, fill: '#9BA3B8' }} width={132} axisLine={false} tickLine={false} />
-                <Tooltip content={<ChartTooltip valueFormatter={(v) => `${v.toFixed(2)} effect on risk`} />} />
-                <Bar dataKey="impact" name="Effect on churn risk" fill="#F97316" radius={[0, 4, 4, 0]} barSize={16} animationDuration={500} />
+                <ReferenceLine x={0} stroke="#3A4056" />
+                <Tooltip content={<ChartTooltip valueFormatter={(v) => `${v > 0 ? '+' : ''}${v.toFixed(2)} effect on risk`} />} />
+                <Bar dataKey="impact" name="Effect on churn risk" radius={[0, 4, 4, 0]} barSize={16} animationDuration={500}>
+                  {topDriversShown.map((entry) => (
+                    <Cell key={entry.driver} fill={entry.direction === 'positive' ? '#F97316' : '#4ADE80'} />
+                  ))}
+                </Bar>
               </BarChart>
             </ResponsiveContainer>
           </div>
           <p className="text-[11px] text-text-tertiary mt-3">
-            Longer bar = stronger push toward churn, averaged over a sample of your customers.
+            Bars to the right (orange) push churn risk up; bars to the left (green) hold it down.
+            Averaged over a sample of your customers.
           </p>
         </ChartCard>
       </div>
@@ -291,7 +277,7 @@ export default function DashboardPage() {
               <caption className="sr-only">Accounts with critical churn risk</caption>
               <thead>
                 <tr className="border-b border-border">
-                  {TABLE_COLUMNS.map((col) => (
+                  {tableColumns.map((col) => (
                     <th key={col.label} scope="col" className="px-5 py-2.5 text-left text-xs font-semibold text-text-tertiary uppercase tracking-wider">
                       <span className="inline-flex items-center gap-1">
                         {col.label}
@@ -316,7 +302,9 @@ export default function DashboardPage() {
                       <span className="text-text-primary font-semibold tabular-nums">{c.churnProbability}%</span>
                     </td>
                     <td className="px-5 py-3"><RiskBadge tier={c.riskTier} /></td>
-                    <td className="px-5 py-3 text-text-primary tabular-nums">{formatCurrency(c.revenueAtRisk)}</td>
+                    {showRevenue && (
+                      <td className="px-5 py-3 text-text-primary tabular-nums">{formatCurrency(c.revenueAtRisk)}</td>
+                    )}
                     <td className="px-5 py-3" onClick={(e) => e.stopPropagation()}>
                       <div className="flex items-center gap-1">
                         <button

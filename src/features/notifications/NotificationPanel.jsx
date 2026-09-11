@@ -47,25 +47,47 @@ export default function NotificationPanel({ isOpen, onClose }) {
     dispatch({ type: 'MARK_ALL_READ' });
   };
 
+  // The panel's only other dismissal is clicking the invisible backdrop below,
+  // which a keyboard user can't do. Escape closes every other overlay in the
+  // app (Modal, Tooltip, the search palette); this one has to match.
+  useEffect(() => {
+    if (!isOpen) return undefined;
+    const onKey = (e) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [isOpen, onClose]);
+
   if (!isOpen) return null;
 
   return (
     <>
-      <div className="fixed inset-0 z-30" onClick={onClose} />
+      <div className="fixed inset-0 z-30" onClick={onClose} aria-hidden="true" />
       <motion.div
         initial={{ opacity: 0, y: -8, scale: 0.96 }}
         animate={{ opacity: 1, y: 0, scale: 1 }}
         exit={{ opacity: 0, y: -8, scale: 0.96 }}
+        role="dialog"
+        aria-label="Notifications"
         className="absolute top-full right-0 mt-2 w-96 max-h-[70vh] rounded-xl border border-border bg-bg-secondary shadow-2xl z-40 overflow-hidden"
       >
-        <div className="flex items-center justify-between px-4 py-3 border-b border-border">
-          <h3 className="text-sm font-semibold text-text-primary">Notifications</h3>
-          <button
-            onClick={handleMarkAllRead}
-            className="text-xs text-text-tertiary hover:text-accent transition-colors cursor-pointer"
-          >
-            Mark all read
-          </button>
+        <div className="px-4 py-3 border-b border-border">
+          <div className="flex items-center justify-between gap-3">
+            <h3 className="text-sm font-semibold text-text-primary">Notifications</h3>
+            <button
+              onClick={handleMarkAllRead}
+              className="text-xs text-text-tertiary hover:text-accent transition-colors cursor-pointer"
+            >
+              Mark all read
+            </button>
+          </div>
+          {/* ChurnGuard has no notification backend. Saying so beats letting
+              sample entries read as real activity in the user's workspace. */}
+          <p className="text-[11px] text-text-tertiary mt-1 leading-relaxed">
+            Sample notifications — ChurnGuard has no alerting backend yet, so these are examples,
+            not activity on your data.
+          </p>
         </div>
         <div className="overflow-y-auto max-h-[60vh] divide-y divide-border">
           {notifications.length === 0 ? (

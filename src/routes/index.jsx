@@ -19,6 +19,7 @@ const ExplainabilityPage = lazy(() => import('../pages/ExplainabilityPage'));
 const RecommendationsPage = lazy(() => import('../pages/RecommendationsPage'));
 const OutreachPage = lazy(() => import('../pages/OutreachPage'));
 const DataManagementPage = lazy(() => import('../pages/DataManagementPage'));
+const HistoryPage = lazy(() => import('../pages/HistoryPage'));
 const SettingsPage = lazy(() => import('../pages/SettingsPage'));
 const ExecutiveOverviewPage = lazy(() => import('../pages/ExecutiveOverviewPage'));
 const OnboardingPage = lazy(() => import('../pages/OnboardingPage'));
@@ -100,6 +101,7 @@ export const router = createBrowserRouter([
     { path: '/recommendations', Page: RecommendationsPage },
     { path: '/outreach', Page: OutreachPage },
     { path: '/data-management', Page: DataManagementPage },
+    { path: '/history', Page: HistoryPage },
     { path: '/settings', Page: SettingsPage },
     { path: '/executive', Page: ExecutiveOverviewPage },
   ].map(({ path, Page }) => ({

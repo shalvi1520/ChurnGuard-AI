@@ -18,19 +18,26 @@ export default function Pagination({ page, totalPages, onPageChange, className }
   };
 
   return (
-    <div className={cn('flex items-center gap-1', className)}>
+    // Icon-only arrows and bare page numbers say nothing on their own to a
+    // screen reader, so each control states what it does and which page is
+    // current. `aria-current` is what makes the highlighted page more than
+    // just a colour.
+    <nav className={cn('flex items-center gap-1', className)} aria-label="Pagination">
       <button
         onClick={() => onPageChange(page - 1)}
         disabled={page === 1}
+        aria-label="Previous page"
         className="p-1.5 rounded-lg text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary disabled:opacity-30 disabled:cursor-not-allowed transition-colors cursor-pointer"
       >
-        <ChevronLeft size={16} />
+        <ChevronLeft size={16} aria-hidden="true" />
       </button>
       {getPages().map((p, i) => (
         <button
           key={i}
           onClick={() => typeof p === 'number' && onPageChange(p)}
           disabled={p === '...'}
+          aria-label={typeof p === 'number' ? `Page ${p}` : undefined}
+          aria-current={p === page ? 'page' : undefined}
           className={cn(
             'min-w-[32px] h-8 rounded-lg text-xs font-medium transition-colors cursor-pointer',
             p === page
@@ -46,10 +53,11 @@ export default function Pagination({ page, totalPages, onPageChange, className }
       <button
         onClick={() => onPageChange(page + 1)}
         disabled={page === totalPages}
+        aria-label="Next page"
         className="p-1.5 rounded-lg text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary disabled:opacity-30 disabled:cursor-not-allowed transition-colors cursor-pointer"
       >
-        <ChevronRight size={16} />
+        <ChevronRight size={16} aria-hidden="true" />
       </button>
-    </div>
+    </nav>
   );
 }

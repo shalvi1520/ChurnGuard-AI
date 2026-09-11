@@ -15,24 +15,57 @@ _model = None
 _background_kmeans = None
 _feature_columns = None
 _kernel_explainer = None
+_loaded_fingerprint = "__unset__"  # distinct from None, which is a legitimate fingerprint value
 
 
-def _ensure_loaded() -> None:
-    global _model, _background_kmeans, _feature_columns, _kernel_explainer
-    if _kernel_explainer is None:
-        _model = artifacts.load_model()
-        _background_kmeans = artifacts.load_background_kmeans()
-        _feature_columns = artifacts.load_metadata()["feature_columns"]
+def _ensure_loaded(fingerprint: str = None) -> None:
+    global _model, _background_kmeans, _feature_columns, _kernel_explainer, _loaded_fingerprint
+    if _kernel_explainer is None or _loaded_fingerprint != fingerprint:
+        _model = artifacts.load_model(fingerprint)
+        _background_kmeans = artifacts.load_background_kmeans(fingerprint)
+        _feature_columns = artifacts.load_metadata(fingerprint)["feature_columns"]
 
         def _stack_predict_proba_class1(x_arr):
             x_df = pd.DataFrame(x_arr, columns=_feature_columns)
             return _model.predict_proba(x_df)[:, 1]
 
         _kernel_explainer = shap.KernelExplainer(_stack_predict_proba_class1, _background_kmeans)
+        _loaded_fingerprint = fingerprint
+
+
+def load_from(entry) -> None:
+    """Explainer-side counterpart to predictor.load_from() -- see its
+    docstring. Builds the KernelExplainer from an artifact_registry
+    RegistryEntry's saved model/background sample instead of the
+    fingerprint-keyed file lookup."""
+    global _model, _background_kmeans, _feature_columns, _kernel_explainer, _loaded_fingerprint
+    _model = entry.load_model()
+    _background_kmeans = entry.load_background_kmeans()
+    _feature_columns = entry.load_metadata()["feature_columns"]
+
+    def _stack_predict_proba_class1(x_arr):
+        x_df = pd.DataFrame(x_arr, columns=_feature_columns)
+        return _model.predict_proba(x_df)[:, 1]
+
+    _kernel_explainer = shap.KernelExplainer(_stack_predict_proba_class1, _background_kmeans)
+    _loaded_fingerprint = entry.cache_key
+
+
+def reset_cache() -> None:
+    """Drops the cached explainer so it is rebuilt from the current artifacts.
+    Must be called whenever a new model is trained -- see the matching note in
+    predictor.reset_cache(); a stale KernelExplainer would attribute risk using
+    the previous dataset's model."""
+    global _model, _background_kmeans, _feature_columns, _kernel_explainer, _loaded_fingerprint
+    _model = _background_kmeans = _feature_columns = _kernel_explainer = None
+    _loaded_fingerprint = "__unset__"
 
 
 def explain_customer(
-    customer_row: pd.DataFrame, nsamples: int = config.SHAP_NSAMPLES_DEFAULT, seed: int = config.SHAP_SEED_DEFAULT
+    customer_row: pd.DataFrame,
+    nsamples: int = config.SHAP_NSAMPLES_DEFAULT,
+    seed: int = config.SHAP_SEED_DEFAULT,
+    fingerprint: str = None,
 ) -> shap.Explanation:
     """
     customer_row: a single-row DataFrame of already-scaled features
@@ -42,7 +75,7 @@ def explain_customer(
     KernelExplainer is non-deterministic otherwise -- same fix as the
     Telco explainer.
     """
-    _ensure_loaded()
+    _ensure_loaded(fingerprint)
     np.random.seed(seed)
     sv = _kernel_explainer.shap_values(customer_row.values, nsamples=nsamples)
     sv = np.array(sv).reshape(1, -1)
@@ -60,10 +93,11 @@ def explain_high_risk_batch(
     threshold: float,
     nsamples: int = config.SHAP_NSAMPLES_DEFAULT,
     seed: int = config.SHAP_SEED_DEFAULT,
+    fingerprint: str = None,
 ) -> pd.DataFrame:
     """Batch precompute path: one SHAP call for all customers at/above the
     tuned decision threshold, not one-by-one."""
-    _ensure_loaded()
+    _ensure_loaded(fingerprint)
     proba = pd.Series(
         _model.predict_proba(scaled_df[_feature_columns])[:, 1], index=scaled_df.index
     )

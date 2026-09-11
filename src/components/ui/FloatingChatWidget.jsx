@@ -174,6 +174,8 @@ export default function FloatingChatWidget() {
         whileHover={{ scale: 1.05 }}
         whileTap={{ scale: 0.95 }}
         onClick={toggleOpen}
+        aria-label={isOpen && !isMinimized ? 'Close the AI assistant' : 'Open the AI assistant'}
+        aria-expanded={isOpen && !isMinimized}
         className="fixed bottom-6 right-6 z-50 w-12 h-12 rounded-full gradient-accent shadow-lg shadow-accent/20 flex items-center justify-center text-bg-primary cursor-pointer hover:shadow-xl hover:shadow-accent/30 transition-shadow"
       >
         {isOpen && !isMinimized ? <X size={20} /> : <MessageSquare size={20} />}

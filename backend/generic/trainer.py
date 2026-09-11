@@ -65,6 +65,15 @@ def choose_positive_label(y_raw: pd.Series, positive_label: Any = None) -> tuple
 
     counts = y_raw.value_counts()
     positive = counts.idxmin()
+    # .idxmin() returns the raw dtype of the Series index (e.g. np.int64 for
+    # an integer-coded label column), unlike .tolist() above which already
+    # converts to native Python types. Left as-is, this silently breaks any
+    # JSON serialization of the report downstream (e.g. persisting it to the
+    # database) with "Object of type int64 is not JSON serializable" --
+    # normalized here, once, rather than requiring every consumer of
+    # positive_label to know to guard against it.
+    if isinstance(positive, np.generic):
+        positive = positive.item()
     other = [v for v in observed if v != positive][0]
     return positive, other
 
@@ -77,6 +86,7 @@ def train_generic_model(
     positive_label: Any = None,
     n_trials: int = config.DEFAULT_N_TRIALS,
     imbalance_strategy: str = config.DEFAULT_IMBALANCE_STRATEGY,
+    fingerprint: Optional[str] = None,
 ) -> dict:
     warnings: list = [config.LEAKAGE_LIMITATION_WARNING]
 
@@ -263,12 +273,38 @@ def train_generic_model(
     y_val_proba = model.predict_proba(X_val_scaled)[:, 1]
     precisions, recalls, thresholds = precision_recall_curve(y_val, y_val_proba)
     precisions, recalls = precisions[:-1], recalls[:-1]
-    candidates = [(t, p, r) for p, r, t in zip(precisions, recalls, thresholds) if r >= target_recall]
-    if candidates:
-        best_thresh, _, _ = max(candidates, key=lambda x: x[1])
+
+    # F-beta (beta > 1 weights recall over precision, matching the original
+    # intent of target_recall -- catching churners matters more than a
+    # false positive) is used to pick AMONG candidates meeting target_recall,
+    # rather than raw precision. Raw precision is noisy point-to-point on a
+    # modest validation split: picking its argmax among candidates can land
+    # on a threshold with a much higher recall than target_recall, if
+    # precision happens to spike briefly at that point due to a handful of
+    # validation rows -- producing an operating point that "satisfies" the
+    # recall floor by accident, far past where it was actually asked to
+    # stop (recall 89% against a 75% target, with precision collapsing to
+    # 29%, is exactly this failure mode, observed empirically on more than
+    # one dataset). F-beta is smoother because it's a ratio of both curves
+    # together at each point, not one curve's isolated, noisier value.
+    beta = 1.5
+    beta_sq = beta**2
+    f_beta = (1 + beta_sq) * precisions * recalls / (beta_sq * precisions + recalls + 1e-12)
+
+    candidate_idx = [i for i, r in enumerate(recalls) if r >= target_recall]
+    if candidate_idx:
+        best_idx = max(candidate_idx, key=lambda i: f_beta[i])
+        best_thresh = float(thresholds[best_idx])
     else:
-        best_thresh = 0.5
-        warnings.append(f"No threshold cleared target_recall={target_recall}; falling back to 0.5.")
+        # No threshold clears target_recall at all -- picks the best
+        # F-beta point overall rather than a hardcoded 0.5, which is rarely
+        # the right answer when predicted probabilities aren't well
+        # calibrated around the midpoint.
+        best_idx = int(np.argmax(f_beta))
+        best_thresh = float(thresholds[best_idx])
+        warnings.append(
+            f"No threshold cleared target_recall={target_recall}; using the best-balanced (F-beta) point instead."
+        )
 
     y_test_proba = model.predict_proba(X_test_scaled)[:, 1]
     y_test_pred = (y_test_proba >= best_thresh).astype(int)
@@ -313,7 +349,7 @@ def train_generic_model(
         "warnings": warnings,
     }
 
-    artifacts.save_artifacts(model, scaler, encoders, background_kmeans, metadata)
+    artifacts.save_artifacts(model, scaler, encoders, background_kmeans, metadata, fingerprint=fingerprint)
 
     report = dict(metadata)
     report["n_rows_used"] = len(cleaned)

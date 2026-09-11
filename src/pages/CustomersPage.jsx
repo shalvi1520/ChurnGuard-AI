@@ -6,11 +6,36 @@ import { RiskBadge, StatusBadge } from '../components/ui/Badge';
 import Select from '../components/ui/Select';
 import Pagination from '../components/ui/Pagination';
 import EmptyState from '../components/ui/EmptyState';
-import { InfoTip } from '../components/ui/Tooltip';
+import Tooltip, { InfoTip } from '../components/ui/Tooltip';
 import { SkeletonTable } from '../components/ui/Skeleton';
-import { customerService } from '../services/api';
+import { customerService, dashboardService } from '../services/api';
 import { formatCurrency } from '../utils/helpers';
 import { metric } from '../utils/glossary';
+
+/**
+ * The two things you can do with an account from this table, following the
+ * product's PREDICT → EXPLAIN → ACT flow: understand why it is at risk, then
+ * act on it. Both go to pages that already exist and take the customer's real
+ * ID with them.
+ *
+ * Icon-only to keep the table narrow, but never icon-only in meaning: each has
+ * an aria-label naming the account and a tooltip that opens on hover AND on
+ * keyboard focus, so touch and keyboard users get the same explanation.
+ */
+function RowAction({ icon: Icon, label, tooltip, onClick }) {
+  return (
+    <Tooltip content={tooltip}>
+      <button
+        type="button"
+        aria-label={label}
+        onClick={onClick}
+        className="p-1.5 rounded-md text-text-tertiary hover:text-accent hover:bg-bg-tertiary transition-colors cursor-pointer focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-2"
+      >
+        <Icon size={15} aria-hidden="true" />
+      </button>
+    </Tooltip>
+  );
+}
 
 export default function CustomersPage() {
   const [customers, setCustomers] = useState([]);
@@ -26,7 +51,21 @@ export default function CustomersPage() {
   const [selected, setSelected] = useState([]);
   const [error, setError] = useState(false);
   const [debouncedSearch, setDebouncedSearch] = useState('');
+  // null until loaded -- columns default to showing while unknown, rather
+  // than flicker-hiding then reappearing. Only ever used to hide a column
+  // whose backing field genuinely wasn't part of this dataset (see
+  // backend's _dataset_context()'s `available` flags), never to hide one
+  // that simply hasn't loaded yet.
+  const [available, setAvailable] = useState(null);
   const navigate = useNavigate();
+
+  useEffect(() => {
+    let cancelled = false;
+    dashboardService.getMetrics()
+      .then((data) => { if (!cancelled) setAvailable(data?.dataset?.available ?? null); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
 
   // Typing shouldn't fire a request per keystroke; the debounced value is what
   // the fetch effect below actually depends on.
@@ -89,10 +128,14 @@ export default function CustomersPage() {
     return sortDir === 'asc' ? <ChevronUp size={12} /> : <ChevronDown size={12} />;
   };
 
+  const showMonthlyCharges = available === null || available.revenue !== false;
+
   const columns = [
     { key: 'id', label: 'Customer ID', sortable: true },
     { key: 'tenure', label: 'Tenure', sortable: true, help: metric('tenure').help },
-    { key: 'monthlyCharges', label: 'Monthly Charges', sortable: true, help: metric('monthlyCharges').help },
+    ...(showMonthlyCharges
+      ? [{ key: 'monthlyCharges', label: 'Monthly Charges', sortable: true, help: metric('monthlyCharges').help }]
+      : []),
     { key: 'contractType', label: 'Contract', sortable: true, help: metric('contractType').help },
     { key: 'churnProbability', label: 'Churn Risk', sortable: true, help: metric('churnProbability').help },
     { key: 'riskTier', label: 'Risk Tier', sortable: false, help: metric('riskTier').help },
@@ -238,7 +281,16 @@ export default function CustomersPage() {
                       </span>
                     </th>
                   ))}
-                  <th scope="col" className="px-4 py-2.5 text-left text-xs font-semibold text-text-tertiary uppercase tracking-wider">Actions</th>
+                  <th scope="col" className="px-4 py-2.5 text-left text-xs font-semibold text-text-tertiary uppercase tracking-wider">
+                    <span className="inline-flex items-center gap-1">
+                      Actions
+                      <InfoTip
+                        content="Understand an account, then act on it: the brain icon opens Explainability for this customer, the envelope icon opens Outreach."
+                        label="What the action icons do"
+                        size={12}
+                      />
+                    </span>
+                  </th>
                 </tr>
               </thead>
               <tbody>
@@ -263,27 +315,27 @@ export default function CustomersPage() {
                     <td className="px-4 py-3 text-text-secondary text-xs tabular-nums">
                       {c.tenure !== null && c.tenure !== undefined ? `${c.tenure} mo` : '—'}
                     </td>
-                    <td className="px-4 py-3 text-text-primary tabular-nums">{formatCurrency(c.monthlyCharges)}</td>
+                    {showMonthlyCharges && (
+                      <td className="px-4 py-3 text-text-primary tabular-nums">{formatCurrency(c.monthlyCharges)}</td>
+                    )}
                     <td className="px-4 py-3 text-text-secondary text-xs">{c.contractType || '—'}</td>
                     <td className="px-4 py-3 text-text-primary font-semibold tabular-nums">{c.churnProbability}%</td>
                     <td className="px-4 py-3"><RiskBadge tier={c.riskTier} size="xs" /></td>
                     <td className="px-4 py-3"><StatusBadge status={c.status} size="xs" /></td>
                     <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
-                      <div className="flex items-center gap-0.5">
-                        <button
-                          className="p-1.5 rounded hover:bg-bg-tertiary text-text-tertiary hover:text-text-primary cursor-pointer"
-                          aria-label={`Explain why ${c.id} is at risk`}
+                      <div className="flex items-center gap-1">
+                        <RowAction
+                          icon={Brain}
+                          label={`View explainability for ${c.id}`}
+                          tooltip="View explainability — why this account is scored the way it is"
                           onClick={() => navigate(`/explainability?customer=${c.id}`)}
-                        >
-                          <Brain size={13} aria-hidden="true" />
-                        </button>
-                        <button
-                          className="p-1.5 rounded hover:bg-bg-tertiary text-text-tertiary hover:text-text-primary cursor-pointer"
-                          aria-label={`Draft outreach for ${c.id}`}
+                        />
+                        <RowAction
+                          icon={Mail}
+                          label={`Create outreach for ${c.id}`}
+                          tooltip="Create outreach — draft a retention email for this account"
                           onClick={() => navigate(`/outreach?customer=${c.id}`)}
-                        >
-                          <Mail size={13} aria-hidden="true" />
-                        </button>
+                        />
                       </div>
                     </td>
                   </tr>

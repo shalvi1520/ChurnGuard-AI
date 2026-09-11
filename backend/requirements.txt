@@ -18,3 +18,8 @@ langchain-google-genai
 langchain-openai
 langchain-groq
 python-dotenv
+sqlalchemy
+psycopg2-binary
+bcrypt
+pyjwt
+pytest

@@ -4,7 +4,7 @@ import { motion, useInView } from 'framer-motion';
 import {
   Shield, ArrowRight, Brain, LineChart, Mail, Zap, Lock, Users,
   BarChart3, TrendingDown, ChevronDown, CheckCircle, Sparkles, Database,
-  Target, ShieldCheck, Globe, ChevronRight, Activity
+  Target, ShieldCheck, ChevronRight, Activity
 } from 'lucide-react';
 import Button from '../components/ui/Button';
 import { cn } from '../utils/helpers';
@@ -76,7 +76,13 @@ const faqs = [
 
 export default function LandingPage() {
   return (
-    <div className="min-h-screen bg-[#090A0F] text-text-primary selection:bg-accent/30 selection:text-white font-sans overflow-x-hidden">
+    // The marketing page is deliberately dark in every appearance setting: its
+    // copy, gradients and 3D hero are all built for a dark ground. The app
+    // itself follows the user's theme — see src/index.css.
+    <div
+      data-theme="dark"
+      className="min-h-screen bg-[#090A0F] text-text-primary selection:bg-accent/30 selection:text-white font-sans overflow-x-hidden"
+    >
       
       {/* Decorative Background Glows.
           Rendered as radial gradients rather than `blur-[150px]` layers: a 150px
@@ -119,13 +125,6 @@ export default function LandingPage() {
         <Suspense fallback={null}>
           <Hero3DBackground />
         </Suspense>
-
-        <FadeIn delay={0.1} className="relative z-10">
-          <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-bg-elevated/50 border border-border/50 text-text-secondary text-xs font-semibold uppercase tracking-widest mb-8 backdrop-blur-md">
-            <Sparkles size={14} className="text-accent" />
-            Deloitte Capstone 2026
-          </div>
-        </FadeIn>
 
         <FadeIn delay={0.2} className="max-w-5xl relative z-10">
           <h1 className="text-5xl md:text-7xl font-extrabold text-white tracking-tighter leading-[1.1] mb-6">
@@ -288,7 +287,6 @@ export default function LandingPage() {
                   {[
                     { icon: Lock, text: 'End-to-End Encryption' },
                     { icon: ShieldCheck, text: 'Role-Based Access' },
-                    { icon: Globe, text: 'SOC 2 Compliant (Pending)' },
                     { icon: Users, text: 'Human-in-the-loop AI' },
                   ].map((item, i) => (
                     <div key={i} className="flex items-center gap-4">
@@ -355,13 +353,14 @@ export default function LandingPage() {
             <div className="flex items-center gap-3">
               <Shield size={18} className="text-accent" />
               <span className="text-sm font-bold tracking-widest text-white">CHURNGUARD</span>
-              <span className="text-xs text-text-tertiary ml-2 font-medium">Deloitte Capstone 2026</span>
             </div>
-            <div className="flex flex-wrap justify-center items-center gap-8 text-sm font-medium text-text-tertiary">
-              <a href="#" className="hover:text-white transition-colors">Platform</a>
-              <a href="#" className="hover:text-white transition-colors">Pricing</a>
-              <a href="#" className="hover:text-white transition-colors">Privacy</a>
-              <a href="#" className="hover:text-white transition-colors">Terms</a>
+            {/* Every link here goes somewhere real. The previous Platform /
+                Pricing / Privacy / Terms row was four `href="#"` placeholders. */}
+            <div className="flex flex-wrap justify-center items-center gap-6 sm:gap-8 text-sm font-medium text-text-tertiary">
+              <a href="#features" className="hover:text-white transition-colors">Features</a>
+              <a href="#how-it-works" className="hover:text-white transition-colors">How It Works</a>
+              <a href="#security" className="hover:text-white transition-colors">Security</a>
+              <Link to="/login" className="hover:text-white transition-colors">Sign In</Link>
             </div>
             <p className="text-sm text-text-tertiary font-medium">
               © 2026 ChurnGuard. All rights reserved.

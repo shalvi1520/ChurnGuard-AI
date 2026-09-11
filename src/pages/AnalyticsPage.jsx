@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, ResponsiveContainer, Tooltip, Cell, LineChart, Line } from 'recharts';
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, ResponsiveContainer, Tooltip, Cell } from 'recharts';
 import { AlertTriangle } from 'lucide-react';
 import ChartCard from '../components/ui/ChartCard';
 import EmptyState from '../components/ui/EmptyState';
@@ -46,22 +46,19 @@ export default function AnalyticsPage() {
   const [error, setError] = useState(false);
   const [segmentation, setSegmentation] = useState(null);
   const [drivers, setDrivers] = useState([]);
-  const [churnTrend, setChurnTrend] = useState([]);
   const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
     async function load() {
       try {
-        const [seg, drv, trend] = await Promise.all([
+        const [seg, drv] = await Promise.all([
           dashboardService.getSegmentation(),
           dashboardService.getTopDrivers(),
-          dashboardService.getChurnTrend(),
         ]);
         if (cancelled) return;
         setSegmentation(seg);
         setDrivers(drv);
-        setChurnTrend(trend);
         setError(false);
       } catch {
         if (!cancelled) setError(true);
@@ -101,9 +98,6 @@ export default function AnalyticsPage() {
     );
   }
 
-  const trendPeriod = churnTrend.length
-    ? `${churnTrend[0].month} to ${churnTrend[churnTrend.length - 1].month}`
-    : '';
   const topDrivers = drivers.slice(0, 10);
 
   return (
@@ -148,23 +142,21 @@ export default function AnalyticsPage() {
           <p className="text-[11px] text-text-tertiary mt-3">Percentages are the average churn risk of accounts in each band.</p>
         </ChartCard>
 
-        <ChartCard
-          metricKey="riskByServiceTier"
-          isEmpty={!segmentation?.byServiceTier?.length}
-          emptyMessage="Map a service/product tier column during data setup to see this breakdown."
-        >
-          <div className="h-56">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={segmentation?.byServiceTier} layout="vertical" margin={{ top: 4, right: 12, left: 0, bottom: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#2A2F42" horizontal={false} />
-                <XAxis type="number" tick={{ fontSize: 11, fill: '#6B7490' }} axisLine={false} tickLine={false} />
-                <YAxis type="category" dataKey="segment" tick={{ fontSize: 10, fill: '#9BA3B8' }} width={116} axisLine={false} tickLine={false} />
-                <Tooltip content={<ChartTooltip valueFormatter={(v) => `${formatNumber(v)} at-risk accounts`} />} />
-                <Bar dataKey="atRisk" name="At-risk accounts" fill="#EF4444" radius={[0, 4, 4, 0]} barSize={16} animationDuration={500} />
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        </ChartCard>
+        {segmentation?.byServiceTier?.length > 0 && (
+          <ChartCard metricKey="riskByServiceTier">
+            <div className="h-56">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={segmentation.byServiceTier} layout="vertical" margin={{ top: 4, right: 12, left: 0, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#2A2F42" horizontal={false} />
+                  <XAxis type="number" tick={{ fontSize: 11, fill: '#6B7490' }} axisLine={false} tickLine={false} />
+                  <YAxis type="category" dataKey="segment" tick={{ fontSize: 10, fill: '#9BA3B8' }} width={116} axisLine={false} tickLine={false} />
+                  <Tooltip content={<ChartTooltip valueFormatter={(v) => `${formatNumber(v)} at-risk accounts`} />} />
+                  <Bar dataKey="atRisk" name="At-risk accounts" fill="#EF4444" radius={[0, 4, 4, 0]} barSize={16} animationDuration={500} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </ChartCard>
+        )}
 
         <ChartCard
           metricKey="topDrivers"
@@ -191,30 +183,6 @@ export default function AnalyticsPage() {
           <Legend items={[{ label: 'Raises churn risk', color: '#F97316' }, { label: 'Lowers churn risk', color: '#4ADE80' }]} />
         </ChartCard>
       </div>
-
-      <ChartCard
-        metricKey="churnTrend"
-        description={`Monthly churn rate, actual against predicted${trendPeriod ? ` (${trendPeriod})` : ''}`}
-        isEmpty={churnTrend.length === 0}
-        emptyMessage="An uploaded dataset is a single snapshot, not a time series — this needs repeated uploads over time to compute."
-      >
-        <div className="h-64">
-          <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={churnTrend} margin={{ top: 4, right: 8, left: -8, bottom: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#2A2F42" />
-              <XAxis dataKey="month" tick={{ fontSize: 11, fill: '#6B7490' }} axisLine={false} tickLine={false} />
-              <YAxis tick={{ fontSize: 11, fill: '#6B7490' }} axisLine={false} tickLine={false} tickFormatter={(v) => `${v}%`} width={44} />
-              <Tooltip content={<ChartTooltip valueFormatter={(v) => `${v}% of customers churned`} />} />
-              <Line type="monotone" dataKey="churnRate" name="Actual churn" stroke="#F97316" strokeWidth={2.5} dot={{ r: 4 }} animationDuration={500} />
-              <Line type="monotone" dataKey="predicted" name="Predicted" stroke="#86BC25" strokeWidth={2} strokeDasharray="5 5" dot={false} animationDuration={500} />
-            </LineChart>
-          </ResponsiveContainer>
-        </div>
-        <Legend items={[
-          { label: 'Actual churn rate', color: '#F97316' },
-          { label: 'Predicted', color: '#86BC25', dashed: true },
-        ]} />
-      </ChartCard>
     </div>
   );
 }

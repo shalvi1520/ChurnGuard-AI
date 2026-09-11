@@ -1,10 +1,17 @@
 """
-FastAPI route stubs for /predict and /explain/{customer_id}.
+The ChurnGuard FastAPI application.
 
-These define request/response shapes and call into predictor.py /
-explainer.py, but are NOT wired to any frontend, database, or
-background-job system yet -- that comes later per the project scope.
+`dataset_routes` and `connector_routes` are the API the frontend actually
+uses. `generic_routes` (the raw train/predict/explain pipeline) and
+`orchestration_routes` (the LangGraph agent pipeline) are extra surfaces for
+scripting; they are mounted when their dependencies are present.
+
+Optional routers are imported defensively on purpose: the LangGraph and Telco
+routes pull in packages the churn pipeline itself doesn't need, and a missing
+optional install must never stop a user from connecting a dataset. Anything
+that fails to mount is reported at /api/health rather than silently ignored.
 """
+import logging
 import os
 
 import pandas as pd
@@ -12,12 +19,15 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from .. import predictor
+from .connector_routes import router as connector_router
 from .dataset_routes import router as dataset_router
-from .generic_routes import router as generic_router
-from .orchestration_routes import router as orchestration_router
 
-app = FastAPI(title="ChurnGuard Backend")
+logger = logging.getLogger(__name__)
+
+app = FastAPI(
+    title="ChurnGuard Backend",
+    description="Churn prediction, SHAP explanation and retention drafting for a connected customer dataset.",
+)
 
 # Explicit origins (comma-separated) still work via CORS_ORIGINS for anyone
 # who wants to lock this down. Left unset, we match any localhost/127.0.0.1
@@ -39,9 +49,96 @@ app.add_middleware(
 )
 
 app.include_router(dataset_router)
-app.include_router(generic_router)
-app.include_router(orchestration_router)
+app.include_router(connector_router)
 
+# --- optional routers -------------------------------------------------------
+
+OPTIONAL_ROUTERS_SKIPPED = {}
+
+
+def _mount_optional(name: str, loader) -> None:
+    try:
+        app.include_router(loader())
+    except (ImportError, RuntimeError) as exc:
+        # ImportError: an optional package isn't installed. RuntimeError: the
+        # auth router's database.py/security.py raise this when configured
+        # but missing required env vars (DATABASE_URL, JWT_SECRET) -- both are
+        # "this optional feature isn't available", never a reason to stop the
+        # core churn pipeline from starting.
+        OPTIONAL_ROUTERS_SKIPPED[name] = str(exc)
+        logger.warning("Optional router %r not mounted: %s", name, exc)
+
+
+def _generic_router():
+    from .generic_routes import router
+    return router
+
+
+def _orchestration_router():
+    from .orchestration_routes import router
+    return router
+
+
+def _seed_demo_account() -> None:
+    """The landing page's "Explore Demo" link and LoginPage's prefilled form
+    (src/pages/auth/LoginPage.jsx) both assume demo@churnguard.ai / demo2026
+    just works -- true under the old mock authService, which accepted any
+    password. With real accounts that login would 401 unless this account
+    genuinely exists, so it's seeded once here rather than special-casing
+    "any password works for this one email" (a real backdoor, not a fix)."""
+    from ..db import security
+    from ..db.database import SessionLocal
+    from ..db.models import User
+
+    db = SessionLocal()
+    try:
+        if not db.query(User).filter(User.email == "demo@churnguard.ai").first():
+            db.add(User(
+                email="demo@churnguard.ai",
+                password_hash=security.hash_password("demo2026"),
+                name="Demo User",
+                company="ChurnGuard Demo",
+            ))
+            db.commit()
+    finally:
+        db.close()
+
+
+def _auth_router():
+    # Requires DATABASE_URL + JWT_SECRET (backend/.env) and the sqlalchemy/
+    # psycopg2/bcrypt/pyjwt extras -- optional so a server with no database
+    # configured still serves the core churn pipeline, just without accounts,
+    # persisted dataset history, or retrain-skipping.
+    from .auth_routes import router
+
+    from ..db.database import Base, engine
+    from ..db import models  # noqa: F401 -- import registers the tables on Base
+
+    Base.metadata.create_all(bind=engine)
+    _seed_demo_account()
+    return router
+
+
+_mount_optional("generic", _generic_router)
+_mount_optional("orchestration", _orchestration_router)
+_mount_optional("auth", _auth_router)
+
+
+@app.get("/")
+def root():
+    return {
+        "service": "ChurnGuard Backend",
+        "docs": "/docs",
+        "health": "/api/health",
+        "optionalRoutersSkipped": OPTIONAL_ROUTERS_SKIPPED,
+    }
+
+
+# --- Telco pipeline endpoints (pre-existing, not used by the frontend) -------
+#
+# These serve the fixed-schema Telco model in backend/ (as opposed to the
+# generic pipeline the app runs on). Left in place and unchanged in behaviour;
+# they need Telco artifacts produced by backend/train_and_export.py.
 
 class CustomerFeatures(BaseModel):
     """Raw customer attributes, matching the IBM Telco schema the model was trained on."""
@@ -90,14 +187,17 @@ class ExplainResponse(BaseModel):
 
 @app.post("/predict", response_model=PredictResponse)
 def predict_endpoint(request: PredictRequest) -> PredictResponse:
-    """Stub: shape only. Loads real artifacts via predictor.predict()."""
+    from .. import predictor
+
     raw_df = pd.DataFrame([request.features.model_dump(by_alias=True)])
     try:
         result = predictor.predict(raw_df)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-    except FileNotFoundError:
-        raise HTTPException(status_code=503, detail="Model artifacts not found. Run train_and_export.py first.")
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(
+            status_code=503, detail="Model artifacts not found. Run train_and_export.py first."
+        ) from exc
 
     row = result.iloc[0]
     return PredictResponse(
@@ -112,10 +212,11 @@ def predict_endpoint(request: PredictRequest) -> PredictResponse:
 def explain_endpoint(customer_id: str) -> ExplainResponse:
     """
     Stub only: looking a customer up by ID requires a database/customer
-    store, which is explicitly out of scope for this step. Returns 501
-    rather than fabricating a response.
+    store, which is out of scope for this endpoint. Returns 501 rather than
+    fabricating a response. (The app's real per-customer explanation is
+    GET /api/customers/{id}/explanation.)
     """
     raise HTTPException(
         status_code=501,
-        detail="Not implemented: customer lookup requires a data store, to be wired in a later step.",
+        detail="Not implemented: use GET /api/customers/{customer_id}/explanation for the connected dataset.",
     )

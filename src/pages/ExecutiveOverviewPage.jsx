@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { Users, AlertTriangle, DollarSign, TrendingUp, Shield, ArrowRight, Sparkles } from 'lucide-react';
-import { PieChart, Pie, Cell, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip } from 'recharts';
+import { PieChart, Pie, Cell, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ReferenceLine } from 'recharts';
 import Card from '../components/ui/Card';
 import { dashboardService, customerService } from '../services/api';
 import { formatCurrency, formatNumber, formatPercent, getRiskColor } from '../utils/helpers';
@@ -34,12 +34,27 @@ export default function ExecutiveOverviewPage() {
     </div>
   );
 
+  // The backend omits a KPI it has no data for (e.g. retention rate when no
+  // customer carries a churn outcome), so each one is read defensively and
+  // simply left out rather than rendered as a crash or an invented number.
+  // The KPI cards below already filter defensively on metrics.kpis; this
+  // table needs its own check since it's a fixed set of columns, not a
+  // filtered list -- the same `available` flags the backend computes in
+  // _dataset_context() drive both, just applied differently.
+  const showRevenue = metrics.dataset?.available?.revenue !== false;
+
   const kpis = [
-    { label: 'Total Customers', value: formatNumber(metrics.kpis.totalCustomers.value), icon: Users, color: '#86BC25' },
-    { label: 'Customers at Risk', value: formatNumber(metrics.kpis.customersAtRisk.value), icon: AlertTriangle, color: '#EF4444' },
-    { label: 'Revenue at Risk', value: formatCurrency(metrics.kpis.revenueAtRisk.value), icon: DollarSign, color: '#F97316' },
-    { label: 'Retention Rate', value: formatPercent(metrics.kpis.retentionRate.value), icon: TrendingUp, color: '#4ADE80' },
-  ];
+    { key: 'totalCustomers', label: 'Total Customers', format: formatNumber, icon: Users, color: '#86BC25' },
+    { key: 'customersAtRisk', label: 'Customers at Risk', format: formatNumber, icon: AlertTriangle, color: '#EF4444' },
+    { key: 'revenueAtRisk', label: 'Revenue at Risk', format: formatCurrency, icon: DollarSign, color: '#F97316' },
+    { key: 'retentionRate', label: 'Retention Rate', format: formatPercent, icon: TrendingUp, color: '#4ADE80' },
+  ]
+    .filter((k) => metrics.kpis[k.key] !== undefined)
+    .map((k) => ({ ...k, value: k.format(metrics.kpis[k.key].value) }));
+  // Both directions, strongest first. Filtering to positive-only left this
+  // chart blank whenever every averaged SHAP value came out negative.
+  const topDriversShown = drivers.slice(0, 5);
+
 
   return (
     <div className="space-y-8">
@@ -109,16 +124,38 @@ export default function ExecutiveOverviewPage() {
         </Card>
 
         <Card>
-          <h3 className="text-sm font-semibold text-text-primary mb-4">Top Churn Drivers</h3>
+          <h3 className="text-sm font-semibold text-text-primary mb-1">Top Churn Drivers</h3>
+          <p className="text-xs text-text-tertiary mb-4">
+            Orange raises churn risk, green lowers it — averaged across your customers.
+          </p>
           <div className="h-64">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={drivers.filter(d => d.direction === 'positive').slice(0, 5)} layout="vertical">
-                <CartesianGrid strokeDasharray="3 3" stroke="#2A2F42" horizontal={false} />
-                <XAxis type="number" tick={{ fontSize: 11, fill: '#6B7490' }} axisLine={false} tickLine={false} />
-                <YAxis type="category" dataKey="driver" tick={{ fontSize: 11, fill: '#9BA3B8' }} width={150} axisLine={false} tickLine={false} />
-                <Bar dataKey="impact" fill="#F97316" radius={[0, 6, 6, 0]} barSize={20} />
-              </BarChart>
-            </ResponsiveContainer>
+            {topDriversShown.length === 0 ? (
+              <div className="h-full flex items-center justify-center text-center px-6">
+                <p className="text-xs text-text-tertiary">
+                  Driver analysis isn&apos;t available for this dataset yet.
+                </p>
+              </div>
+            ) : (
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={topDriversShown} layout="vertical">
+                  <CartesianGrid strokeDasharray="3 3" stroke="#2A2F42" horizontal={false} />
+                  <XAxis
+                    type="number"
+                    tick={{ fontSize: 11, fill: '#6B7490' }}
+                    axisLine={false}
+                    tickLine={false}
+                    domain={[(min) => Math.min(0, min), (max) => Math.max(0, max)]}
+                  />
+                  <YAxis type="category" dataKey="driver" tick={{ fontSize: 11, fill: '#9BA3B8' }} width={150} axisLine={false} tickLine={false} />
+                  <ReferenceLine x={0} stroke="#3A4056" />
+                  <Bar dataKey="impact" radius={[0, 6, 6, 0]} barSize={20}>
+                    {topDriversShown.map((entry) => (
+                      <Cell key={entry.driver} fill={entry.direction === 'positive' ? '#F97316' : '#4ADE80'} />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            )}
           </div>
         </Card>
       </div>
@@ -130,7 +167,7 @@ export default function ExecutiveOverviewPage() {
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-border">
-                {['Account', 'Risk Score', 'Revenue at Risk', 'Contract'].map(h => (
+                {(showRevenue ? ['Account', 'Risk Score', 'Revenue at Risk', 'Contract'] : ['Account', 'Risk Score', 'Contract']).map(h => (
                   <th key={h} className="px-4 py-2.5 text-left text-xs font-semibold text-text-tertiary uppercase tracking-wider">{h}</th>
                 ))}
               </tr>
@@ -138,7 +175,7 @@ export default function ExecutiveOverviewPage() {
             <tbody>
               {topAtRisk.length === 0 ? (
                 <tr>
-                  <td colSpan={4} className="px-4 py-6 text-center text-sm text-text-tertiary">
+                  <td colSpan={showRevenue ? 4 : 3} className="px-4 py-6 text-center text-sm text-text-tertiary">
                     No critical-risk accounts right now.
                   </td>
                 </tr>
@@ -150,7 +187,9 @@ export default function ExecutiveOverviewPage() {
                   <td className="px-4 py-3">
                     <span className="text-lg font-bold tabular-nums" style={{ color: getRiskColor(c.riskTier) }}>{c.churnProbability}%</span>
                   </td>
-                  <td className="px-4 py-3 font-semibold text-text-primary tabular-nums">{formatCurrency(c.revenueAtRisk)}</td>
+                  {showRevenue && (
+                    <td className="px-4 py-3 font-semibold text-text-primary tabular-nums">{formatCurrency(c.revenueAtRisk)}</td>
+                  )}
                   <td className="px-4 py-3 text-text-secondary text-xs">{c.contractType || '—'}</td>
                 </tr>
               ))}
@@ -161,7 +200,7 @@ export default function ExecutiveOverviewPage() {
 
       {/* Footer */}
       <div className="text-center py-4">
-        <p className="text-xs text-text-tertiary">ChurnGuard · Deloitte Capstone 2026 · AI-Powered Customer Retention Intelligence</p>
+        <p className="text-xs text-text-tertiary">ChurnGuard · AI-Powered Customer Retention Intelligence</p>
       </div>
     </div>
   );

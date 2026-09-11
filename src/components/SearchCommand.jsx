@@ -21,6 +21,22 @@ export default function SearchCommand({ isOpen, onClose }) {
     if (isOpen) setQuery('');
   }, [isOpen]);
 
+  // The palette prints an "ESC" hint, so Escape has to actually close it.
+  // Without this the only ways out were clicking the backdrop or picking a
+  // result — and the backdrop sits over the whole app, so a keyboard user was
+  // stuck with an overlay swallowing every click.
+  useEffect(() => {
+    if (!isOpen) return undefined;
+    const onKey = (e) => {
+      if (e.key === 'Escape') {
+        e.stopPropagation();
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [isOpen, onClose]);
+
   useEffect(() => {
     const trimmed = query.trim();
     if (!trimmed) {
@@ -48,7 +64,7 @@ export default function SearchCommand({ isOpen, onClose }) {
 
   return (
     <AnimatePresence>
-      <div className="fixed inset-0 z-[60]">
+      <div className="fixed inset-0 z-[60]" role="dialog" aria-modal="true" aria-label="Search">
         <motion.div
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
