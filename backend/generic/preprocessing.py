@@ -24,7 +24,11 @@ def split_column_types(df: pd.DataFrame, exclude: Optional[list] = None):
         dtype = df[col].dtype
         if pd.api.types.is_datetime64_any_dtype(dtype):
             datetime_cols.append(col)
-        elif pd.api.types.is_object_dtype(dtype) or isinstance(dtype, pd.CategoricalDtype):
+        elif (
+            pd.api.types.is_object_dtype(dtype)
+            or pd.api.types.is_string_dtype(dtype)
+            or isinstance(dtype, pd.CategoricalDtype)
+        ):
             categorical_cols.append(col)
         else:
             numeric_cols.append(col)

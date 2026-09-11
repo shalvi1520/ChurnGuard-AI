@@ -38,3 +38,5 @@ catboost_info/
 # Trained model artifacts (regenerable via backend/*/train_and_export.py)
 backend/artifacts/
 backend/generic/artifacts/
+
+.venv/
