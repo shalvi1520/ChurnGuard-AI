@@ -85,6 +85,14 @@ class TrainedModel(Base):
     # `predictions`: older rows simply don't support a full-result cache hit
     # and fall back to the narrower training-only cache instead.
     full_result_extra: Mapped[dict] = mapped_column(JSON, nullable=True)
+    # Persisted AI-drafted outreach emails for this exact trained result, so
+    # a later cache hit on the same fingerprint restores drafts instead of
+    # redrafting them (see _persist_outreach_drafts / _load_cached_outreach_drafts
+    # in dataset_routes.py). Was previously read/written by that code without
+    # ever being declared here -- SQLAlchemy silently dropped every write,
+    # since it only persists columns it knows about. Nullable for the same
+    # backfill reason as predictions/full_result_extra.
+    outreach_drafts: Mapped[list] = mapped_column(JSON, nullable=True)
     trained_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=datetime.datetime.utcnow)
 
     dataset: Mapped["Dataset"] = relationship(back_populates="trained_models")
