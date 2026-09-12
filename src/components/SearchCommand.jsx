@@ -1,14 +1,14 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Search, Users, BarChart3, Settings, ArrowRight } from 'lucide-react';
+import { Search, Users, LayoutDashboard, Settings, ArrowRight } from 'lucide-react';
 import { customerService } from '../services/api';
-import { cn, getRiskColor } from '../utils/helpers';
+import { getRiskColor, getRiskLabel } from '../utils/helpers';
 
+// Same names and icons as the sidebar, so a destination reads the same everywhere.
 const quickLinks = [
-  { label: 'Dashboard', path: '/dashboard', icon: BarChart3 },
-  { label: 'Customer List', path: '/customers', icon: Users },
-  { label: 'Risk Analytics', path: '/analytics', icon: BarChart3 },
+  { label: 'Portfolio & Risk', path: '/dashboard', icon: LayoutDashboard },
+  { label: 'Customers', path: '/customers', icon: Users },
   { label: 'Settings', path: '/settings', icon: Settings },
 ];
 
@@ -60,6 +60,30 @@ export default function SearchCommand({ isOpen, onClose }) {
     onClose();
   };
 
+  // Typing a full Customer ID and pressing Enter goes straight to that
+  // account: the exact ID if it's listed, otherwise the top result.
+  const trimmed = query.trim();
+  const pickTarget = (list) =>
+    list.find((c) => String(c.id).toLowerCase() === trimmed.toLowerCase()) ?? list[0] ?? null;
+  const enterTarget = pickTarget(results);
+
+  const handleKeyDown = async (e) => {
+    if (e.key !== 'Enter' || !trimmed) return;
+    e.preventDefault();
+    let target = enterTarget;
+    // Results are debounced. If they haven't arrived, or are still for an
+    // earlier, shorter query, ask now rather than open the wrong account.
+    if (!target || !String(target.id).toLowerCase().includes(trimmed.toLowerCase())) {
+      try {
+        const data = await customerService.getCustomers({ search: trimmed, limit: 8 });
+        target = pickTarget(data.customers);
+      } catch {
+        target = null;
+      }
+    }
+    if (target) handleSelect(`/customers/${target.id}`);
+  };
+
   if (!isOpen) return null;
 
   return (
@@ -85,6 +109,8 @@ export default function SearchCommand({ isOpen, onClose }) {
                 autoFocus
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
+                onKeyDown={handleKeyDown}
+                aria-label="Search customers by ID"
                 placeholder="Search customers by ID..."
                 className="w-full py-3.5 bg-transparent text-sm text-text-primary outline-none placeholder:text-text-tertiary"
               />
@@ -106,18 +132,35 @@ export default function SearchCommand({ isOpen, onClose }) {
                           <div
                             className="w-2 h-2 rounded-full shrink-0"
                             style={{ backgroundColor: getRiskColor(c.riskTier) }}
+                            aria-hidden="true"
                           />
                           <div className="min-w-0">
                             <div className="text-text-primary font-medium truncate">{c.id}</div>
+                            <div className="text-[11px] text-text-tertiary">
+                              {getRiskLabel(c.riskTier)} · {c.churnProbability}% churn risk
+                            </div>
                           </div>
                         </div>
-                        <ArrowRight size={14} className="text-text-tertiary opacity-0 group-hover:opacity-100 transition-opacity shrink-0" />
+                        {enterTarget?.id === c.id ? (
+                          <kbd className="text-[10px] px-1.5 py-0.5 rounded bg-bg-tertiary text-text-tertiary font-mono shrink-0" title="Press Enter to open">
+                            ↵
+                          </kbd>
+                        ) : (
+                          <ArrowRight size={14} className="text-text-tertiary opacity-0 group-hover:opacity-100 transition-opacity shrink-0" />
+                        )}
                       </button>
                     ))}
                   </div>
                 ) : (
-                  <div className="py-8 text-center text-sm text-text-tertiary">
-                    No results found for "{query}"
+                  <div className="py-8 text-center">
+                    <p className="text-sm text-text-tertiary">No results found for "{query}"</p>
+                    <button
+                      type="button"
+                      onClick={() => handleSelect('/customers')}
+                      className="mt-2 text-xs text-accent hover:underline cursor-pointer"
+                    >
+                      Browse all customers
+                    </button>
                   </div>
                 )
               ) : (

@@ -15,8 +15,8 @@ import { formatDate, formatNumber } from '../../utils/helpers';
  * rather than filled in, which is why so much below is conditional.
  *
  * SCOPE: this page describes DATA — quality, readiness and provenance.
- * Portfolio numbers (revenue at risk, customers at risk) belong to the
- * Overview and are deliberately not repeated here.
+ * Portfolio numbers (revenue at risk, customers at risk) belong to
+ * Portfolio & Risk and are deliberately not repeated here.
  *
  * It reads entirely from the record `AppContext` already holds, so opening
  * Data Management with a dataset connected makes no API calls at all.
@@ -438,7 +438,7 @@ export default function CompleteStep({ summary, onViewOverview, onViewCustomers 
             </p>
             <div className="flex flex-wrap gap-2">
               <Button size="sm" onClick={onViewOverview}>
-                View Overview
+                View Portfolio & Risk
                 <ArrowRight size={14} className="ml-1" aria-hidden="true" />
               </Button>
               <Button variant="secondary" size="sm" onClick={onViewCustomers} icon={Users}>

@@ -1,5 +1,6 @@
 import { motion } from 'framer-motion';
-import { TrendingUp, TrendingDown } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { TrendingUp, TrendingDown, ArrowRight } from 'lucide-react';
 import { cn, formatNumber, formatCurrency, formatPercent } from '../../utils/helpers';
 import { LineChart, Line, ResponsiveContainer } from 'recharts';
 import { InfoTip } from './Tooltip';
@@ -8,8 +9,13 @@ import { InfoTip } from './Tooltip';
  * `description` is visible supporting text — it says what the number means
  * without needing a mouse. `help` is the extra detail behind the info icon.
  * Both usually come from utils/glossary.js so the wording matches everywhere.
+ *
+ * `action` ({ to, label, state }) is for the rare metric that IS a set of
+ * accounts you can open ("Customers at Risk" → those customers). It renders a
+ * visible, named link whose hit area covers the card; leave it off for figures
+ * that don't lead anywhere, so not every card turns into a button.
  */
-export default function MetricCard({ title, value, change, trend, format = 'number', sparklineData, icon: Icon, description, help, className, delay = 0 }) {
+export default function MetricCard({ title, value, change, trend, format = 'number', sparklineData, icon: Icon, description, help, action, className, delay = 0 }) {
   const formattedValue = format === 'currency'
     ? formatCurrency(value)
     : format === 'percent'
@@ -32,7 +38,8 @@ export default function MetricCard({ title, value, change, trend, format = 'numb
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.4, delay }}
       className={cn(
-        'rounded-xl border border-border bg-bg-card p-5 hover:border-border-light transition-all duration-200 group',
+        'relative rounded-xl border border-border bg-bg-card p-5 transition-all duration-200 group',
+        action ? 'hover:border-accent/40 cursor-pointer' : 'hover:border-border-light',
         className
       )}
     >
@@ -40,7 +47,12 @@ export default function MetricCard({ title, value, change, trend, format = 'numb
         <div className="min-w-0">
           <div className="flex items-center gap-1.5">
             <span className="text-xs font-medium text-text-tertiary uppercase tracking-wider">{title}</span>
-            {help && <InfoTip content={help} label={`What ${title} means`} size={12} />}
+            {/* Above the action link's card-wide hit area, so the info icon still opens its tooltip. */}
+            {help && (
+              <span className="relative z-10 inline-flex">
+                <InfoTip content={help} label={`What ${title} means`} size={12} />
+              </span>
+            )}
           </div>
           {description && (
             <p className="text-[11px] text-text-tertiary/90 mt-1 leading-snug">{description}</p>
@@ -90,6 +102,21 @@ export default function MetricCard({ title, value, change, trend, format = 'numb
           </div>
         )}
       </div>
+      {action && (
+        <Link
+          to={action.to}
+          state={action.state}
+          className={cn(
+            'mt-3 inline-flex items-center gap-1 text-xs font-medium text-accent hover:underline underline-offset-2',
+            'rounded-sm focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-2',
+            // Stretched over the whole card: one focusable link, card-sized target.
+            'after:absolute after:inset-0 after:rounded-xl'
+          )}
+        >
+          {action.label}
+          <ArrowRight size={12} className="transition-transform group-hover:translate-x-0.5" aria-hidden="true" />
+        </Link>
+      )}
     </motion.div>
   );
 }

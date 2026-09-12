@@ -21,7 +21,7 @@ export default function NotFoundPage() {
         </p>
         <Link to="/dashboard">
           <Button variant="primary" size="lg" icon={ArrowLeft}>
-            Back to Dashboard
+            Back to Portfolio & Risk
           </Button>
         </Link>
       </motion.div>

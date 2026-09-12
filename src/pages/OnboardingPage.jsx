@@ -155,7 +155,7 @@ export default function OnboardingPage() {
                   <CardDescription>One last step: ChurnGuard needs a customer dataset before it can show you any risk, explanations or recommendations.</CardDescription>
                 </CardHeader>
                 <div className="p-4 rounded-lg bg-bg-tertiary/30 border border-border text-sm text-text-secondary">
-                  Next you'll upload a CSV export of your customers — or load the demo dataset in one click if you'd rather explore first. Your Overview unlocks as soon as that's done.
+                  Next you'll upload a CSV export of your customers — or load the demo dataset in one click if you'd rather explore first. Portfolio & Risk unlocks as soon as that's done.
                 </div>
               </Card>
             )}

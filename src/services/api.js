@@ -3,7 +3,7 @@
 // ============================================
 
 import axios from 'axios';
-import { mockNotifications, mockChatResponses } from '../mock/notifications';
+import { mockNotifications } from '../mock/notifications';
 import { delay } from '../utils/helpers';
 
 // ChurnGuard runs on a real FastAPI + ML backend (backend/) -- every
@@ -13,13 +13,6 @@ import { delay } from '../utils/helpers';
 // isn't running, the UI shows a real "couldn't load" error state rather
 // than silently substituting invented numbers.
 const BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api';
-
-// The AI assistant widget is a separate, self-contained feature (not part
-// of the churn-prediction pipeline): when enabled, it calls a server-side
-// proxy (server.js) holding the Grok/xAI key; otherwise it uses canned demo
-// replies. This is unrelated to whether the churn backend is connected.
-const USE_LIVE_ASSISTANT = import.meta.env.VITE_USE_LIVE_ASSISTANT === 'true';
-const ASSISTANT_URL = import.meta.env.VITE_ASSISTANT_API_URL || '/api/assistant';
 
 // Axios instance
 const apiClient = axios.create({
@@ -449,68 +442,6 @@ export const connectorService = {
       ),
       CONNECTOR_ERROR_OPTIONS
     );
-  },
-};
-
-// ============================================
-// Chat Services
-// ============================================
-//
-// Powers the floating AI assistant widget (components/ui/FloatingChatWidget).
-// There is no assistant *page* — the widget is the whole surface. Separate
-// concern from the churn-prediction backend above: it either talks to the
-// live Grok proxy (server.js) or uses canned demo replies, never the churn API.
-
-async function getDemoChatResponse(message, context = {}) {
-  await delay(500);
-  const lower = message.toLowerCase();
-  for (const [key, response] of Object.entries(mockChatResponses)) {
-    if (key !== 'default' && lower.includes(key.toLowerCase().slice(0, 20))) {
-      return response;
-    }
-  }
-  if (lower.includes('high risk') || lower.includes('highest risk')) {
-    return mockChatResponses['Which customers are at highest risk?'];
-  }
-  if (lower.includes('churn driver') || lower.includes('why')) {
-    return mockChatResponses['What are the biggest churn drivers?'];
-  }
-  if (lower.includes('email') || lower.includes('draft')) {
-    return {
-      message: `I'd be happy to help draft an outreach email. ${context.customerName ? `For ${context.customerName}, I recommend a personalized retention email addressing their specific concerns.` : 'Please navigate to a specific customer profile, and I can generate a tailored email.'}\n\nWould you like me to proceed?`,
-      actions: context.customerId ? [{ label: 'Generate Email', link: `/outreach?customer=${context.customerId}` }] : [],
-    };
-  }
-  if (lower.includes('summarize') || lower.includes('summary')) {
-    return {
-      message: `I can't summarize your portfolio from here — that view lives on the Overview page, built from whatever dataset you've connected. Head there for the current totals, at-risk count and revenue at risk.`,
-      actions: [
-        { label: 'View Overview', link: '/dashboard' },
-        { label: 'High Risk Customers', link: '/customers?risk=critical' },
-      ],
-    };
-  }
-  return mockChatResponses['default'];
-}
-
-export const chatService = {
-  async sendMessage(message, context = {}) {
-    if (USE_LIVE_ASSISTANT) {
-      try {
-        const res = await fetch(ASSISTANT_URL, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ message, context }),
-        });
-        if (!res.ok) throw new Error(`Assistant service returned ${res.status}`);
-        return await res.json();
-      } catch {
-        // Server-side Grok integration unavailable (no key configured, or the
-        // proxy isn't running) — fall back to demo mode so the UI never breaks.
-        return getDemoChatResponse(message, context);
-      }
-    }
-    return getDemoChatResponse(message, context);
   },
 };
 

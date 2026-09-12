@@ -38,7 +38,7 @@ export const mockNotifications = [
     timestamp: '2026-08-29T09:00:00Z',
     read: false,
     priority: 'medium',
-    link: '/analytics',
+    link: '/dashboard',
   },
   {
     id: 'NOTIF-003',
@@ -71,42 +71,3 @@ export const mockNotifications = [
     link: '/recommendations',
   },
 ];
-
-// The assistant widget's canned replies (used whenever the live Grok proxy is
-// off, which is the default). Same rules as the notifications above: it must
-// not name customers that don't exist, must not quote numbers it can't know,
-// and every link must go somewhere real.
-//
-// Until session 10 these quoted "DataSphere Solutions — 88.1%", drivers like
-// "Login Frequency Drop" (not a field in the current schema at all) and linked
-// to /customers/CUST-1005, which 404s into the not-found state. The assistant
-// now points at the page that holds the user's own real answer instead of
-// inventing one — the same correction session 6 made to the summary reply.
-export const mockChatResponses = {
-  'Which customers are at highest risk?': {
-    message:
-      "I can't read your customer list from here, so I won't guess at names or scores.\n\nCustomers, filtered to Critical, ranks every account by the churn probability the model gave it — that's the real answer for your dataset.",
-    actions: [
-      { label: 'Critical risk customers', link: '/customers?risk=critical' },
-      { label: 'All customers', link: '/customers' },
-    ],
-  },
-  'Why is this customer likely to churn?': {
-    message:
-      'Explainability breaks a single account down into the factors that pushed its score up or down, using the model\'s real SHAP values for that customer.\n\nPick the account there and you\'ll see what actually drove it, not a generic list.',
-    actions: [{ label: 'Open Explainability', link: '/explainability' }],
-  },
-  'What are the biggest churn drivers?': {
-    message:
-      'Risk Analytics shows the drivers averaged across your whole customer base, computed from the model trained on your data — which fields matter, and whether each one raises or lowers risk.\n\nFor one specific account, Explainability is the place to look.',
-    actions: [
-      { label: 'Open Risk Analytics', link: '/analytics' },
-      { label: 'Open Explainability', link: '/explainability' },
-    ],
-  },
-  'default': {
-    message:
-      'I can point you to the right part of ChurnGuard. Try:\n\n• "Which customers are at highest risk?"\n• "Why is this customer likely to churn?"\n• "What are the biggest churn drivers?"\n• "Draft an outreach email"\n\nI answer from the app\'s structure, not from your data — the pages themselves hold the real numbers.',
-    actions: [],
-  },
-};

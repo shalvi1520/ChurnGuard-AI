@@ -372,7 +372,7 @@ export default function HistoryPage() {
         {deletingActive && (
           <p className="text-xs text-risk-medium mt-3 leading-relaxed" role="alert">
             This is the dataset ChurnGuard is currently running on. Deleting its saved copy does
-            not disconnect it — your Overview and customers stay exactly as they are — but you
+            not disconnect it — Portfolio & Risk and your customers stay exactly as they are — but you
             will not be able to bring it back from History later.
           </p>
         )}

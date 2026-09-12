@@ -9,11 +9,10 @@ from typing import Dict, List, Optional
 from .base import Connector, ConnectorError, CredentialField, DataSource, FetchResult
 from .http_endpoint import HttpEndpointConnector
 from .hubspot import HubSpotConnector
-from .salesforce import SalesforceConnector
 
 _REGISTRY: Dict[str, Connector] = {
     c.id: c
-    for c in (HubSpotConnector(), SalesforceConnector(), HttpEndpointConnector())
+    for c in (HubSpotConnector(), HttpEndpointConnector())
 }
 
 

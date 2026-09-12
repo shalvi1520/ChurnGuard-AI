@@ -1,5 +1,5 @@
 import { lazy, Suspense } from 'react';
-import { createBrowserRouter, Navigate } from 'react-router-dom';
+import { createBrowserRouter, Navigate, Outlet, ScrollRestoration } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useApp } from '../context/AppContext';
 import { requiresDatasetSetup } from './accessRules';
@@ -14,7 +14,6 @@ const ForgotPasswordPage = lazy(() => import('../pages/auth/ForgotPasswordPage')
 const DashboardPage = lazy(() => import('../pages/DashboardPage'));
 const CustomersPage = lazy(() => import('../pages/CustomersPage'));
 const CustomerDetailPage = lazy(() => import('../pages/CustomerDetailPage'));
-const AnalyticsPage = lazy(() => import('../pages/AnalyticsPage'));
 const ExplainabilityPage = lazy(() => import('../pages/ExplainabilityPage'));
 const RecommendationsPage = lazy(() => import('../pages/RecommendationsPage'));
 const OutreachPage = lazy(() => import('../pages/OutreachPage'));
@@ -37,7 +36,7 @@ function PageLoader() {
 }
 
 // Connecting a dataset is the first required step of the product: without one
-// there is nothing to show on the Overview or any analysis page. Which paths
+// there is nothing to show on Portfolio & Risk or any analysis page. Which paths
 // are exempt lives in `accessRules.js` so the sidebar and this guard agree.
 function ProtectedRoute({ children, requiresDataset = true }) {
   const { isAuthenticated, isLoading } = useAuth();
@@ -69,7 +68,20 @@ function AuthRoute({ children }) {
   return <Navigate to={datasetSetupComplete ? '/dashboard' : '/data-management'} replace />;
 }
 
-export const router = createBrowserRouter([
+// Scroll behaves like a normal website: a page you drill into starts at the
+// top (the dashboard's CTA sits at the bottom, and without this Customers
+// opened already scrolled down), and Back/Forward return to where you were.
+// In-page filter changes opt out with `preventScrollReset`.
+function RootLayout() {
+  return (
+    <>
+      <ScrollRestoration />
+      <Outlet />
+    </>
+  );
+}
+
+export const router = createBrowserRouter([{ element: <RootLayout />, children: [
   {
     path: '/',
     element: <Suspense fallback={<PageLoader />}><LandingPage /></Suspense>,
@@ -96,7 +108,6 @@ export const router = createBrowserRouter([
     { path: '/dashboard', Page: DashboardPage },
     { path: '/customers', Page: CustomersPage },
     { path: '/customers/:id', Page: CustomerDetailPage },
-    { path: '/analytics', Page: AnalyticsPage },
     { path: '/explainability', Page: ExplainabilityPage },
     { path: '/recommendations', Page: RecommendationsPage },
     { path: '/outreach', Page: OutreachPage },
@@ -114,8 +125,12 @@ export const router = createBrowserRouter([
       </ProtectedRoute>
     ),
   })),
+  // Risk Analytics was folded into Portfolio & Risk (/dashboard). The old path
+  // redirects so bookmarks and stale links land on the page that now holds
+  // those charts; /dashboard applies the usual auth and dataset guards.
+  { path: '/analytics', element: <Navigate to="/dashboard" replace /> },
   {
     path: '*',
     element: <Suspense fallback={<PageLoader />}><NotFoundPage /></Suspense>,
   },
-]);
+] }]);

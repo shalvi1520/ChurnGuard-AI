@@ -2,10 +2,11 @@
 // ChurnGuard – Metric glossary
 // ============================================
 //
-// One definition per metric, shared by every page that shows it (Overview,
-// Analytics, Customers, Customer Detail, Executive View). Explaining the same
-// number differently on two pages is exactly the redundancy this file exists to
-// prevent — if a metric needs describing, add it here and import it.
+// One definition per metric, shared by every page that shows it (Portfolio &
+// Risk, Customers, Customer Detail, Explainability, Recommendations).
+// Explaining the same number differently on two pages is exactly the
+// redundancy this file exists to prevent — if a metric needs describing, add
+// it here and import it.
 //
 // `label`       – the visible name
 // `description` – the short line shown under the value (visible, not hover-only)
@@ -27,11 +28,6 @@ export const METRICS = {
     label: 'Customers at Risk',
     description: 'High or critical churn risk',
     help: 'Accounts with a churn probability of 60% or above. These are the ones worth acting on first.',
-  },
-  avgChurnRisk: {
-    label: 'Average Churn Risk',
-    description: 'Mean churn probability',
-    help: 'The average predicted churn probability across all monitored customers. Useful as a baseline — an individual account well above it is an outlier worth a look.',
   },
   retentionRate: {
     label: 'Retention Rate',
@@ -94,8 +90,8 @@ export const METRICS = {
   // ---------- Charts and analysis ----------
   riskDistribution: {
     label: 'Churn Risk Distribution',
-    description: 'How the customer base splits across risk tiers',
-    help: 'Every monitored customer falls into exactly one band, so these four numbers add up to your total customers.',
+    description: 'See how your customers are spread across Low, Medium, High and Critical risk',
+    help: 'Shows the number and percentage of customers in each churn-risk tier. Every monitored customer falls into exactly one band, so these four numbers add up to your total customers.',
   },
   churnTrend: {
     label: 'Churn Rate Trend',
@@ -109,8 +105,8 @@ export const METRICS = {
   },
   topDrivers: {
     label: 'Top Churn Drivers',
-    description: 'The factors moving churn risk most across the whole customer base',
-    help: 'Averaged SHAP effect over a sample of your customers. Orange factors raise churn risk, green ones lower it, and a longer bar means a bigger effect either way. Drivers for one specific account live on the Explainability page.',
+    description: 'See which customer factors contribute most to predicted churn risk',
+    help: 'Drivers are ranked by their contribution to the model\'s churn predictions. Orange factors raise churn risk, green ones lower it, and a longer bar means a bigger effect either way. Drivers for one specific account live on the Explainability page.',
   },
   shapContribution: {
     label: 'Feature Contributions',
@@ -119,18 +115,18 @@ export const METRICS = {
   },
   riskByPlan: {
     label: 'Risk by Contract Type',
-    description: 'Total accounts vs at-risk accounts by contract',
-    help: 'Compare the pair of bars: a tall orange bar next to a short grey one means that contract type is disproportionately at risk.',
+    description: 'Compare how much churn risk is concentrated in each contract group',
+    help: 'Shows total customers alongside customers classified as High or Critical risk. The percentage above each orange bar is that group\'s at-risk share — compare shares, not bar heights, since groups differ in size.',
   },
   riskByTenure: {
     label: 'Risk by Customer Tenure',
-    description: 'Average churn risk by how long accounts have been customers',
-    help: 'Average churn probability within each tenure band, computed from your uploaded data.',
+    description: 'See how average churn risk changes across customer tenure groups',
+    help: 'This compares customers at different tenure levels; it is not a historical churn trend. Each point takes the colour of the risk tier its average falls in.',
   },
   riskByServiceTier: {
-    label: 'At-Risk Accounts by Service Tier',
-    description: 'Number of at-risk accounts on each service/product tier',
-    help: 'Only available when a service/product tier column was mapped during data setup.',
+    label: 'Risk by Service Tier',
+    description: 'Compare how much churn risk is concentrated in each service or product tier',
+    help: 'Shows total customers alongside customers classified as High or Critical risk for each tier. Only available when a service/product tier column was mapped during data setup.',
   },
 };
 

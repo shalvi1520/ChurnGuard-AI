@@ -1,3 +1,5 @@
+import { Link } from 'react-router-dom';
+import { ArrowRight } from 'lucide-react';
 import Card from './Card';
 import { InfoTip } from './Tooltip';
 import { cn } from '../../utils/helpers';
@@ -11,6 +13,9 @@ import { metric } from '../../utils/glossary';
  * Pass `metricKey` to pull all three strings from utils/glossary.js so the same
  * chart is described identically wherever it appears. `title`/`description`/
  * `help` can override individually.
+ *
+ * `emptyAction` ({ to, label, state }) gives the empty state a next step, so a
+ * chart with nothing to draw is never a dead end.
  */
 export default function ChartCard({
   metricKey,
@@ -20,6 +25,7 @@ export default function ChartCard({
   action,
   isEmpty = false,
   emptyMessage = 'No data to show yet.',
+  emptyAction,
   className,
   bodyClassName,
   children,
@@ -31,7 +37,9 @@ export default function ChartCard({
 
   return (
     <Card className={cn('flex flex-col', className)}>
-      <div className="flex items-start justify-between gap-3 mb-4">
+      {/* Wraps so an `action` drops below the title on a narrow card instead
+          of squeezing the title and description into a sliver beside it. */}
+      <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-2 mb-4">
         <div className="min-w-0">
           <div className="flex items-center gap-1.5">
             <h3 className="text-sm font-semibold text-text-primary">{heading}</h3>
@@ -43,8 +51,18 @@ export default function ChartCard({
       </div>
 
       {isEmpty ? (
-        <div className="flex flex-1 items-center justify-center rounded-lg border border-dashed border-border py-10 px-4">
+        <div className="flex flex-1 flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-border py-10 px-4">
           <p className="text-xs text-text-tertiary text-center max-w-xs">{emptyMessage}</p>
+          {emptyAction && (
+            <Link
+              to={emptyAction.to}
+              state={emptyAction.state}
+              className="inline-flex items-center gap-1 text-xs font-medium text-accent hover:underline underline-offset-2 rounded-sm focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-2"
+            >
+              {emptyAction.label}
+              <ArrowRight size={12} aria-hidden="true" />
+            </Link>
+          )}
         </div>
       ) : (
         <div className={cn('flex-1', bodyClassName)}>{children}</div>

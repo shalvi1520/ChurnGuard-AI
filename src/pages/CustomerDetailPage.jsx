@@ -1,27 +1,36 @@
 import { useState, useEffect } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams } from 'react-router-dom';
 import {
-  ArrowLeft, Mail, UserX, Brain, Lightbulb, ArrowRight, TrendingUp, TrendingDown,
+  UserX, ArrowRight, TrendingUp, TrendingDown,
 } from 'lucide-react';
 import Card, { CardHeader, CardTitle } from '../components/ui/Card';
-import Button from '../components/ui/Button';
 import { RiskBadge, StatusBadge } from '../components/ui/Badge';
 import { InfoTip } from '../components/ui/Tooltip';
 import Avatar from '../components/ui/Avatar';
 import EmptyState from '../components/ui/EmptyState';
+import PageTrail from '../components/ui/PageTrail';
 import { SkeletonCard } from '../components/ui/Skeleton';
 import { customerService, explainabilityService } from '../services/api';
 import { formatCurrency, getRiskColor } from '../utils/helpers';
 import { metric } from '../utils/glossary';
+import { useWorkflowNav, withCustomer } from '../utils/navigation';
 
 export default function CustomerDetailPage() {
   const { id } = useParams();
-  const navigate = useNavigate();
+  const { from, customersPath, drill, goBackTo } = useWorkflowNav();
   const [customer, setCustomer] = useState(null);
   const [explanation, setExplanation] = useState(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    // A page can render once against a location that no longer matches it
+    // while the route is being replaced. Measured back when page transitions
+    // still ran through AnimatePresence's `mode="wait"`: `id` came back
+    // undefined and this effect fetched /api/customers/undefined (a 404) on
+    // every navigation away from an account. Cheap guard; keeps it from
+    // coming back.
+    if (!id) return undefined;
+
     let cancelled = false;
     async function load() {
       try {
@@ -46,10 +55,26 @@ export default function CustomerDetailPage() {
     return () => { cancelled = true; };
   }, [id]);
 
+  // "Customers" returns to the list this account was opened from -- filters,
+  // sort and page intact -- not a reset, unfiltered list.
+  const listPath = customersPath ?? '/customers';
+  const trail = (
+    <PageTrail
+      crumbs={[
+        { label: 'Portfolio & Risk', to: '/dashboard' },
+        { label: 'Customers', to: listPath },
+        { label: id },
+      ]}
+      back={from ? { label: from.label, to: from.path } : { label: 'Customers', to: listPath }}
+    />
+  );
+  // Explain / recommend / outreach all return here by name.
+  const open = (path) => drill(path, `customer ${id}`);
+
   if (loading) {
     return (
       <div className="space-y-6">
-        <div className="h-6 w-24 bg-bg-tertiary rounded animate-pulse" />
+        {trail}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           <div className="lg:col-span-2 space-y-4">{Array.from({ length: 3 }).map((_, i) => <SkeletonCard key={i} />)}</div>
           <SkeletonCard />
@@ -60,13 +85,16 @@ export default function CustomerDetailPage() {
 
   if (!customer) {
     return (
-      <EmptyState
-        icon={UserX}
-        title="We couldn't find that account"
-        description={`No customer with the ID "${id}" exists in the connected dataset. It may have been removed, or the link may be out of date.`}
-        actionLabel="Back to Customers"
-        action={() => navigate('/customers')}
-      />
+      <div className="space-y-6">
+        {trail}
+        <EmptyState
+          icon={UserX}
+          title="We couldn't find that account"
+          description={`No customer with the ID "${id}" exists in the connected dataset. It may have been removed, or the link may be out of date.`}
+          actionLabel="Back to Customers"
+          action={() => goBackTo(listPath)}
+        />
+      </div>
     );
   }
 
@@ -89,10 +117,7 @@ export default function CustomerDetailPage() {
 
   return (
     <div className="space-y-6">
-      {/* Back + Header */}
-      <button onClick={() => navigate('/customers')} className="flex items-center gap-1.5 text-sm text-text-tertiary hover:text-text-primary transition-colors cursor-pointer">
-        <ArrowLeft size={16} /> Back to Customers
-      </button>
+      {trail}
 
       <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-4">
         <div className="flex items-start gap-4">
@@ -108,9 +133,6 @@ export default function CustomerDetailPage() {
               {customer.tenure !== null && customer.tenure !== undefined && <span>{customer.tenure} months tenure</span>}
             </div>
           </div>
-        </div>
-        <div className="flex items-center gap-2 flex-wrap">
-          <Button size="sm" icon={Mail} onClick={() => navigate(`/outreach?customer=${customer.id}`)}>Draft outreach</Button>
         </div>
       </div>
 
@@ -167,14 +189,63 @@ export default function CustomerDetailPage() {
                 <>Explainability breaks down every factor moving this score and by how much.</>
               )}
             </p>
-            <div className="flex flex-wrap gap-2 mt-4">
-              <Button size="sm" variant="secondary" icon={Brain} iconRight={ArrowRight} onClick={() => navigate(`/explainability?customer=${customer.id}`)}>
-                See the full breakdown
-              </Button>
-              <Button size="sm" variant="ghost" icon={Lightbulb} onClick={() => navigate(`/recommendations?customer=${customer.id}`)}>
-                What to do about it
-              </Button>
-            </div>
+          </Card>
+
+          {/* The bridge into the retention workflow. Three stages in order,
+              each a link — deliberately restrained: the card isn't a button
+              and neither is a whole row's worth of surface. */}
+          <Card>
+            <CardHeader>
+              <CardTitle>Retention journey</CardTitle>
+              <p className="text-xs text-text-tertiary mt-1">
+                Work through it in order. Nothing here contacts the customer on its own.
+              </p>
+            </CardHeader>
+            <ol className="space-y-1">
+              {[
+                {
+                  n: 1,
+                  title: 'Understand the risk',
+                  description: 'Which factors moved this score, and by how much.',
+                  to: withCustomer('/explainability', customer.id),
+                },
+                {
+                  n: 2,
+                  title: 'Decide what to do',
+                  description: 'Recommended retention actions, for you to approve.',
+                  to: withCustomer('/recommendations', customer.id),
+                },
+                {
+                  n: 3,
+                  title: 'Reach out',
+                  description: 'A drafted message you review before anything is sent.',
+                  to: withCustomer('/outreach', customer.id),
+                },
+              ].map((stage) => (
+                <li key={stage.n}>
+                  <button
+                    type="button"
+                    onClick={() => open(stage.to)}
+                    className="group flex w-full items-start gap-3 rounded-lg px-3 py-2.5 text-left hover:bg-bg-tertiary transition-colors cursor-pointer focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-2"
+                  >
+                    <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-border text-[11px] font-semibold text-text-tertiary transition-colors group-hover:border-accent/40 group-hover:text-accent">
+                      {stage.n}
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="flex items-center gap-1.5 text-sm font-medium text-text-primary">
+                        {stage.title}
+                        <ArrowRight
+                          size={13}
+                          className="text-text-tertiary opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100"
+                          aria-hidden="true"
+                        />
+                      </span>
+                      <span className="mt-0.5 block text-xs text-text-tertiary">{stage.description}</span>
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ol>
           </Card>
 
           {/* Account Info — only fields actually present in the uploaded dataset */}
@@ -198,32 +269,8 @@ export default function CustomerDetailPage() {
           </Card>
         </div>
 
-        {/* Right: Top risk factors + Actions */}
+        {/* Right: Top risk factors */}
         <div className="space-y-6">
-          {/* Action Center */}
-          <Card>
-            <CardHeader>
-              <CardTitle>What to do next</CardTitle>
-              <p className="text-xs text-text-tertiary mt-1">Nothing here contacts the customer on its own.</p>
-            </CardHeader>
-            <div className="space-y-2">
-              {[
-                { icon: Brain, label: 'Explain this risk score', color: 'text-accent', action: () => navigate(`/explainability?customer=${customer.id}`) },
-                { icon: Lightbulb, label: 'See recommended actions', color: 'text-risk-medium', action: () => navigate(`/recommendations?customer=${customer.id}`) },
-                { icon: Mail, label: 'Draft an outreach email', color: 'text-blue-400', action: () => navigate(`/outreach?customer=${customer.id}`) },
-              ].map(act => (
-                <button
-                  key={act.label}
-                  onClick={act.action}
-                  className="flex items-center gap-3 w-full px-3 py-2.5 rounded-lg text-sm text-text-secondary hover:text-text-primary hover:bg-bg-tertiary transition-colors cursor-pointer"
-                >
-                  <act.icon size={16} className={act.color} />
-                  {act.label}
-                </button>
-              ))}
-            </div>
-          </Card>
-
           {/* Top risk factors — a compact version of the Explainability breakdown */}
           <Card>
             <CardHeader>
@@ -253,10 +300,13 @@ export default function CustomerDetailPage() {
                   );
                 })}
                 <button
-                  onClick={() => navigate(`/explainability?customer=${customer.id}`)}
+                  onClick={() => open(withCustomer('/explainability', customer.id))}
                   className="text-xs text-accent hover:underline cursor-pointer"
                 >
-                  See the full breakdown →
+                  {/* Goes where the button above goes, so it must not read as a
+                      second, different action -- two controls with the same name
+                      are ambiguous to anyone navigating by label. */}
+                  See every factor →
                 </button>
               </div>
             ) : (

@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
-  LayoutDashboard, Users, BarChart3, Brain, Lightbulb, Mail,
+  LayoutDashboard, Users, Brain, Lightbulb, Mail,
   Database, Settings, ChevronLeft, Shield, Presentation, LogOut,
   Search, Bell, Menu, X, Lock, Check, History
 } from 'lucide-react';
@@ -14,7 +14,6 @@ import Avatar from '../components/ui/Avatar';
 import NotificationPanel from '../features/notifications/NotificationPanel';
 import SearchCommand from '../components/SearchCommand';
 import ToastContainer from '../components/ui/Toast';
-import FloatingChatWidget from '../components/ui/FloatingChatWidget';
 import Badge from '../components/ui/Badge';
 import ThemeToggle from '../components/ui/ThemeToggle';
 
@@ -22,7 +21,8 @@ import ThemeToggle from '../components/ui/ThemeToggle';
 // portfolio, then act on individual accounts. Data is first because nothing
 // else works until a dataset is connected (see routes/accessRules.js), and
 // History sits beside it because reconnecting a previous dataset is the other
-// half of the same job.
+// half of the same job. Monitor is exactly two destinations: the portfolio as
+// a whole, and the individual accounts in it.
 const navGroups = [
   {
     label: 'Data',
@@ -34,9 +34,8 @@ const navGroups = [
   {
     label: 'Monitor',
     items: [
-      { to: '/dashboard', icon: LayoutDashboard, label: 'Overview' },
+      { to: '/dashboard', icon: LayoutDashboard, label: 'Portfolio & Risk' },
       { to: '/customers', icon: Users, label: 'Customers' },
-      { to: '/analytics', icon: BarChart3, label: 'Risk Analytics' },
     ],
   },
   {
@@ -182,7 +181,6 @@ export default function AppLayout({ children }) {
         </div>
         <main className="p-6">{children}</main>
         <ToastContainer />
-        <FloatingChatWidget />
       </div>
     );
   }
@@ -416,19 +414,22 @@ export default function AppLayout({ children }) {
 
         {/* Page content */}
         <main className="flex-1 p-6 max-lg:pt-20 overflow-x-hidden">
-          <AnimatePresence mode="wait">
-            <motion.div
-              key={location.pathname}
-              initial={{ opacity: 0, y: 6 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0 }}
-              // `mode="wait"` runs exit before enter, so keep the exit short —
-              // it's pure dead time on every navigation.
-              transition={{ duration: 0.15, exit: { duration: 0.08 } }}
-            >
-              {children}
-            </motion.div>
-          </AnimatePresence>
+          {/* No exit animation, and no AnimatePresence around the page:
+              `mode="wait"` kept the outgoing page on screen until its exit
+              finished and only then mounted the next route, so the new page's
+              code wasn't even requested until the animation was done —
+              measured at ~400ms of dead time on every navigation, worst
+              leaving a chart-heavy page like Portfolio & Risk. The incoming
+              page now renders as soon as it can and fades in, which is the
+              part a user actually perceives. */}
+          <motion.div
+            key={location.pathname}
+            initial={{ opacity: 0, y: 4 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.12 }}
+          >
+            {children}
+          </motion.div>
         </main>
       </div>
 
@@ -437,9 +438,6 @@ export default function AppLayout({ children }) {
 
       {/* Toast notifications */}
       <ToastContainer />
-
-      {/* AI assistant — a global floating widget, deliberately not a nav item */}
-      <FloatingChatWidget />
     </div>
   );
 }

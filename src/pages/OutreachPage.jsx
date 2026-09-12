@@ -1,14 +1,17 @@
 import { useState, useEffect, useRef } from 'react';
-import { useSearchParams } from 'react-router-dom';
-import { Mail, Send, Check, Edit, RefreshCw, Copy, Sparkles, ShieldCheck, Clock, CheckCircle, Bot } from 'lucide-react';
+import { Link, useSearchParams } from 'react-router-dom';
+import { Mail, Send, Check, Edit, RefreshCw, Copy, Sparkles, ShieldCheck, Clock, CheckCircle, Bot, ArrowRight, ArrowLeft } from 'lucide-react';
 import Card, { CardHeader, CardTitle } from '../components/ui/Card';
 import Button from '../components/ui/Button';
 import Badge from '../components/ui/Badge';
 import EmptyState from '../components/ui/EmptyState';
+import PageTrail from '../components/ui/PageTrail';
+import RetentionFlow from '../components/ui/RetentionFlow';
 import { SkeletonCard } from '../components/ui/Skeleton';
-import { outreachService, customerService, explainabilityService } from '../services/api';
+import { outreachService, customerService, explainabilityService, recommendationService } from '../services/api';
 import { useApp } from '../context/AppContext';
 import { formatRelativeDate } from '../utils/helpers';
+import { customersHref, useWorkflowNav, withCustomer } from '../utils/navigation';
 
 const statusFlow = { draft: 'Draft', reviewed: 'Edited', approved: 'Approved', sent: 'Sent' };
 const statusColors = { draft: 'draft', reviewed: 'reviewed', approved: 'approved', sent: 'sent' };
@@ -35,9 +38,32 @@ export default function OutreachPage() {
   const [editSubject, setEditSubject] = useState('');
   const [draftCustomer, setDraftCustomer] = useState(null);
   const [draftDriver, setDraftDriver] = useState(null);
+  const [draftAction, setDraftAction] = useState(null);
   const [autoStatus, setAutoStatus] = useState(null);
   const pollTimer = useRef(null);
   const customerId = searchParams.get('customer');
+  const { from, customersPath, stateFrom, drill, goBackTo } = useWorkflowNav();
+  const openState = stateFrom('Outreach');
+  // Which account this page is about: the one it was opened for, or — when it
+  // was opened as the whole review queue — whichever draft is being reviewed.
+  const contextCustomerId = customerId || selectedEmail?.customerId || '';
+  // Opened for one account: say whose, and how to get back to it. Opened from
+  // the sidebar it is the whole review queue, with no single account to name.
+  const trail = (
+    <PageTrail
+      crumbs={contextCustomerId ? [
+        { label: 'Customers', to: customersPath ?? '/customers' },
+        { label: contextCustomerId, to: `/customers/${contextCustomerId}` },
+        { label: 'Outreach' },
+      ] : []}
+      back={from && { label: from.label, to: from.path }}
+    />
+  );
+  const goToRecommendations = () => {
+    const to = withCustomer('/recommendations', contextCustomerId);
+    if (from?.path === to) goBackTo(to);
+    else drill(to, 'Outreach');
+  };
 
   useEffect(() => { loadEmails(); }, []);
 
@@ -77,21 +103,26 @@ export default function OutreachPage() {
     if (!targetId) {
       setDraftCustomer(null);
       setDraftDriver(null);
+      setDraftAction(null);
       return;
     }
     let cancelled = false;
     async function loadContext() {
-      try {
-        const [customerData, explanation] = await Promise.all([
-          customerService.getCustomer(targetId),
-          explainabilityService.getSHAPExplanation(targetId),
-        ]);
-        if (cancelled) return;
-        setDraftCustomer(customerData);
-        setDraftDriver(explanation?.features?.[0] || null);
-      } catch {
-        if (!cancelled) { setDraftCustomer(null); setDraftDriver(null); }
-      }
+      // Settled, not all-or-nothing: this is the summary of what stages 1 and
+      // 2 found, and losing one of the three must not blank the other two or
+      // stop the draft itself being reviewed.
+      const [customerRes, explanationRes, recsRes] = await Promise.allSettled([
+        customerService.getCustomer(targetId),
+        explainabilityService.getSHAPExplanation(targetId),
+        recommendationService.getRecommendations(targetId),
+      ]);
+      if (cancelled) return;
+      setDraftCustomer(customerRes.status === 'fulfilled' ? customerRes.value : null);
+      setDraftDriver(explanationRes.status === 'fulfilled' ? explanationRes.value?.features?.[0] ?? null : null);
+      const recs = recsRes.status === 'fulfilled' ? recsRes.value : [];
+      // The action the user accepted, if they got that far; otherwise the
+      // highest-ranked suggestion this message is answering.
+      setDraftAction(recs?.find((r) => r.status === 'approved') ?? recs?.[0] ?? null);
     }
     loadContext();
     return () => { cancelled = true; };
@@ -162,6 +193,7 @@ export default function OutreachPage() {
   if (loading) {
     return (
       <div className="space-y-6">
+        {trail}
         <div className="h-7 w-64 bg-bg-tertiary rounded animate-pulse" />
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           <SkeletonCard />
@@ -173,18 +205,23 @@ export default function OutreachPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-4">
-        <header className="max-w-2xl">
-          <h1 className="text-xl font-bold text-text-primary tracking-tight">Retention outreach</h1>
-          <p className="text-sm text-text-secondary mt-1 leading-relaxed">
-            ChurnGuard drafts a starting point from the account's risk factors. You edit it, you approve it, and
-            nothing is sent until you say so.
-          </p>
-        </header>
-        {customerId && (
-          <Button size="sm" icon={Sparkles} loading={generating} onClick={handleGenerate}>Draft a new email</Button>
-        )}
+      <div className="space-y-2">
+        {trail}
+        <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-4">
+          <header className="max-w-2xl">
+            <h1 className="text-xl font-bold text-text-primary tracking-tight">Retention outreach</h1>
+            <p className="text-sm text-text-secondary mt-1 leading-relaxed">
+              ChurnGuard drafts a starting point from the account's risk factors. You edit it, you approve it, and
+              nothing is sent until you say so.
+            </p>
+          </header>
+          {customerId && (
+            <Button size="sm" icon={Sparkles} loading={generating} onClick={() => handleGenerate()}>Draft a new email</Button>
+          )}
+        </div>
       </div>
+
+      <RetentionFlow customerId={contextCustomerId} stage="outreach" />
 
       {/* The automatic pipeline's progress — real numbers from the backend,
           not a spinner with no information. Disappears once it's done. */}
@@ -229,6 +266,14 @@ export default function OutreachPage() {
                 <p className="text-[11px] text-text-tertiary mt-1">
                   Open a customer and choose &ldquo;Draft an outreach email&rdquo; to create one.
                 </p>
+                <Link
+                  to={customersHref({ status: 'at-risk' })}
+                  state={openState}
+                  className="mt-3 inline-flex items-center gap-1 text-xs font-medium text-accent hover:underline underline-offset-2 rounded-sm focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-2"
+                >
+                  View at-risk customers
+                  <ArrowRight size={12} aria-hidden="true" />
+                </Link>
               </div>
             ) : (
               emails.map(email => (
@@ -294,25 +339,43 @@ export default function OutreachPage() {
                     </div>
                     <div>
                       <span className="text-xs text-text-tertiary">Account</span>
-                      <p className="text-text-primary font-medium">{selectedEmail.customerId}</p>
+                      <p>
+                        <Link
+                          to={`/customers/${selectedEmail.customerId}`}
+                          state={openState}
+                          className="text-text-primary font-medium hover:text-accent hover:underline underline-offset-2 rounded-sm focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-2"
+                        >
+                          {selectedEmail.customerId}
+                        </Link>
+                      </p>
                     </div>
                   </div>
 
-                  {/* What this draft was written from */}
+                  {/* The chain this message came from: the risk (stage 1) and
+                      the action answering it (stage 2), one line each. Those
+                      pages own the detail; this is only enough to review the
+                      draft against. */}
                   <div className="p-3 rounded-lg bg-bg-tertiary/30 border border-border">
-                    <p className="text-xs text-text-tertiary font-medium mb-1">What this draft is based on</p>
-                    <p className="text-xs text-text-secondary leading-relaxed">
-                      {draftCustomer ? (
-                        <>
-                          {draftCustomer.id} is at{' '}
-                          <span className="text-text-primary font-medium">{draftCustomer.churnProbability}% churn risk</span>
-                          {draftDriver && <> with {draftDriver.feature.toLowerCase()} at {draftDriver.value}</>}.
-                          {' '}An LLM drafted this from the account's real risk factors — check it against what you know
-                          about the account before sending.
-                        </>
-                      ) : (
-                        <>Check this draft against what you know about the account before sending.</>
-                      )}
+                    <p className="text-xs text-text-tertiary font-medium mb-2">What this draft is based on</p>
+                    <ol className="flex flex-wrap items-center gap-x-2 gap-y-1.5 text-xs">
+                      <li className="text-text-secondary">
+                        {draftCustomer ? (
+                          <>
+                            <span className="text-text-primary font-medium">{draftCustomer.churnProbability}% churn risk</span>
+                            {draftDriver && <> · {draftDriver.feature.toLowerCase()} at {draftDriver.value}</>}
+                          </>
+                        ) : (
+                          'This account’s risk factors'
+                        )}
+                      </li>
+                      <li aria-hidden="true" className="text-text-tertiary">→</li>
+                      <li className="text-text-secondary">{draftAction ? draftAction.title : 'Recommended action'}</li>
+                      <li aria-hidden="true" className="text-text-tertiary">→</li>
+                      <li className="text-text-primary font-medium">This message</li>
+                    </ol>
+                    <p className="text-[11px] text-text-tertiary mt-2 leading-relaxed">
+                      An LLM drafted this from the account&apos;s real risk factors — check it against what you know
+                      about the account before sending.
                     </p>
                   </div>
 
@@ -392,6 +455,28 @@ export default function OutreachPage() {
           )}
         </div>
       </div>
+
+      {/* The end of the workflow — and the way back up it. The primary action
+          for a draft (approve, then mark as sent) stays with the draft itself. */}
+      {contextCustomerId && (
+        <Card className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div className="min-w-0">
+            <p className="text-sm font-medium text-text-primary">Nothing here sends itself.</p>
+            <p className="text-xs text-text-tertiary mt-1">
+              Approve a draft, send it from your own email tools, then mark it as sent — ChurnGuard has no delivery
+              integration and never contacts a customer on its own.
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            <Button variant="ghost" size="sm" icon={ArrowLeft} onClick={goToRecommendations}>
+              Back to recommendations
+            </Button>
+            <Button variant="secondary" size="sm" onClick={() => goBackTo(`/customers/${contextCustomerId}`)}>
+              Back to the account
+            </Button>
+          </div>
+        </Card>
+      )}
     </div>
   );
 }

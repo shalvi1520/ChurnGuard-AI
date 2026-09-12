@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react';
-import { useSearchParams, useNavigate } from 'react-router-dom';
+import { useState, useEffect, useCallback } from 'react';
+import { useSearchParams, useLocation } from 'react-router-dom';
 import { AlertTriangle, ArrowRight, Sparkles, ChevronDown } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Cell, CartesianGrid, Tooltip, ReferenceLine } from 'recharts';
 import Card, { CardHeader, CardTitle } from '../components/ui/Card';
@@ -9,16 +9,38 @@ import Select from '../components/ui/Select';
 import Badge, { RiskBadge } from '../components/ui/Badge';
 import { InfoTip } from '../components/ui/Tooltip';
 import EmptyState from '../components/ui/EmptyState';
+import PageTrail from '../components/ui/PageTrail';
+import RetentionFlow from '../components/ui/RetentionFlow';
 import { SkeletonChart } from '../components/ui/Skeleton';
 import ModelArchitecture from '../components/ModelArchitecture';
 import { explainabilityService, customerService } from '../services/api';
 import { getRiskTier } from '../utils/helpers';
 import { metric } from '../utils/glossary';
+import { useWorkflowNav, withCustomer } from '../utils/navigation';
 
+/**
+ * Stage 1 of the retention workflow: WHY is this account at risk.
+ *
+ * The page answers, in order: who is this account, how risky is it, why is it
+ * risky, and what happens next. It deliberately owns the *why* alone — the
+ * actions live on Recommendations and the message on Outreach, which only
+ * carry a compact summary of what is shown here.
+ */
 export default function ExplainabilityPage() {
-  const [searchParams] = useSearchParams();
-  const navigate = useNavigate();
-  const [selectedCustomer, setSelectedCustomer] = useState(searchParams.get('customer') || '');
+  const [searchParams, setSearchParams] = useSearchParams();
+  const location = useLocation();
+  const { from, customersPath, drill, goBackTo } = useWorkflowNav();
+  // The account is part of the URL, so a refresh, a shared link and Back all
+  // show the same one. Switching accounts refines this page rather than
+  // leaving it: it replaces the entry and keeps the drill-down context.
+  const selectedCustomer = searchParams.get('customer') || '';
+  const selectCustomer = useCallback(
+    (customerId) => setSearchParams(
+      customerId ? { customer: customerId } : {},
+      { replace: true, state: location.state, preventScrollReset: true }
+    ),
+    [setSearchParams, location.state]
+  );
   const [customerOptions, setCustomerOptions] = useState([]);
   const [explanation, setExplanation] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -32,7 +54,7 @@ export default function ExplainabilityPage() {
         const data = await customerService.getCustomers({ sortBy: 'churnProbability', sortDir: 'desc', limit: 200 });
         if (cancelled) return;
         setCustomerOptions(data.customers);
-        if (!selectedCustomer && data.customers[0]) setSelectedCustomer(data.customers[0].id);
+        if (!selectedCustomer && data.customers[0]) selectCustomer(data.customers[0].id);
       } catch {
         // The account selector just stays empty; the page's error state still works per-selection.
       }
@@ -67,25 +89,47 @@ export default function ExplainabilityPage() {
     fill: f.direction === 'increases' ? '#F97316' : '#4ADE80',
   })) || [];
 
+  // The selector lists the 200 riskiest accounts; one opened from Customers
+  // may be outside that, and must still show as the selected option.
+  const accountOptions = customerOptions.map(c => ({ value: c.id, label: c.id }));
+  if (selectedCustomer && !accountOptions.some((o) => o.value === selectedCustomer)) {
+    accountOptions.unshift({ value: selectedCustomer, label: selectedCustomer });
+  }
+
+  const goToRecommendations = () =>
+    drill(withCustomer('/recommendations', selectedCustomer), 'Explainability');
+
   return (
     <div className="space-y-6">
-      <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-4">
-        <header className="max-w-2xl">
-          <h1 className="text-xl font-bold text-text-primary tracking-tight">Why this account is at risk</h1>
-          <p className="text-sm text-text-secondary mt-1 leading-relaxed">
-            Every customer's risk score is built from a handful of signals. This page shows which ones pushed this
-            account's score up, which held it down, and by how much.
-          </p>
-        </header>
-        <Select
-          label="Account"
-          value={selectedCustomer}
-          onChange={(e) => setSelectedCustomer(e.target.value)}
-          options={customerOptions.map(c => ({ value: c.id, label: c.id }))}
-          placeholder=""
-          className="md:w-72"
+      <div className="space-y-2">
+        <PageTrail
+          crumbs={selectedCustomer ? [
+            { label: 'Customers', to: customersPath ?? '/customers' },
+            { label: selectedCustomer, to: `/customers/${selectedCustomer}` },
+            { label: 'Explainability' },
+          ] : []}
+          back={from && { label: from.label, to: from.path }}
         />
+        <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-4">
+          <header className="max-w-2xl">
+            <h1 className="text-xl font-bold text-text-primary tracking-tight">Why this account is at risk</h1>
+            <p className="text-sm text-text-secondary mt-1 leading-relaxed">
+              Every customer's risk score is built from a handful of signals. This page shows which ones pushed this
+              account's score up, which held it down, and by how much.
+            </p>
+          </header>
+          <Select
+            label="Account"
+            value={selectedCustomer}
+            onChange={(e) => selectCustomer(e.target.value)}
+            options={accountOptions}
+            placeholder=""
+            className="md:w-72"
+          />
+        </div>
       </div>
+
+      <RetentionFlow customerId={selectedCustomer} stage="explain" />
 
       {loading ? (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6"><SkeletonChart /><SkeletonChart /></div>
@@ -94,31 +138,37 @@ export default function ExplainabilityPage() {
           icon={AlertTriangle}
           title="We couldn't load this explanation"
           description="The factor breakdown for this account didn't come back. Try another account, or reload the page."
+          actionLabel={selectedCustomer ? 'Back to the account' : undefined}
+          action={selectedCustomer ? () => goBackTo(`/customers/${selectedCustomer}`) : undefined}
         />
       ) : explanation ? (
         <>
-          {/* Risk summary */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <Card>
-              <span className="text-xs text-text-tertiary uppercase tracking-wider font-medium">Account</span>
-              <p className="text-lg font-bold text-text-primary mt-1">{explanation.customerId}</p>
-            </Card>
-            <Card>
-              <span className="text-xs text-text-tertiary uppercase tracking-wider font-medium inline-flex items-center gap-1">
+          {/* Who this is and how risky they are — the context the factors below
+              explain. Kept to one compact row: the account's own page owns the
+              full record. */}
+          <Card className="flex flex-wrap items-center gap-x-8 gap-y-4">
+            <div>
+              <span className="text-[10px] text-text-tertiary uppercase tracking-wider font-medium">Account</span>
+              <p className="text-sm font-semibold text-text-primary mt-0.5">{explanation.customerId}</p>
+            </div>
+            <div>
+              <span className="text-[10px] text-text-tertiary uppercase tracking-wider font-medium inline-flex items-center gap-1">
                 Churn risk
                 <InfoTip content={metric('churnProbability').help} label="What churn risk means" size={11} />
               </span>
-              <div className="flex items-baseline gap-2 mt-1">
-                <p className="text-3xl font-bold tabular-nums" style={{ color: explanation.churnProbability > 70 ? '#EF4444' : explanation.churnProbability > 50 ? '#F97316' : explanation.churnProbability > 30 ? '#FBBF24' : '#4ADE80' }}>
-                  {explanation.churnProbability}%
-                </p>
+              <div className="flex items-center gap-2 mt-0.5">
+                <span className="text-sm font-semibold text-text-primary tabular-nums">{explanation.churnProbability}%</span>
                 <RiskBadge tier={getRiskTier(explanation.churnProbability)} size="xs" />
               </div>
-              <p className="text-[11px] text-text-tertiary mt-1">
-                Against a {explanation.baselineRisk}% baseline (the model's expected risk before this account's specific factors are applied).
+            </div>
+            <div className="min-w-0">
+              <span className="text-[10px] text-text-tertiary uppercase tracking-wider font-medium">Model baseline</span>
+              <p className="text-sm text-text-secondary mt-0.5 tabular-nums">
+                {explanation.baselineRisk}%
+                <span className="text-[11px] text-text-tertiary ml-1.5">before this account's own factors</span>
               </p>
-            </Card>
-          </div>
+            </div>
+          </Card>
 
           {/* Factor contributions */}
           <ChartCard metricKey="shapContribution" isEmpty={chartData.length === 0}>
@@ -168,7 +218,7 @@ export default function ExplainabilityPage() {
                 {explanation.features.map((f, i) => {
                   const isOpen = openFeature === i;
                   return (
-                    <li key={f.feature} className="rounded-lg border border-border/60 bg-bg-tertiary/20">
+                    <li key={`${f.feature}-${i}`} className="rounded-lg border border-border/60 bg-bg-tertiary/20">
                       <button
                         type="button"
                         onClick={() => setOpenFeature(isOpen ? null : i)}
@@ -224,14 +274,23 @@ export default function ExplainabilityPage() {
             </Card>
           )}
 
-          <div className="flex flex-wrap items-center gap-3">
-            <Button size="sm" icon={Sparkles} iconRight={ArrowRight} onClick={() => navigate(`/recommendations?customer=${selectedCustomer}`)}>
-              What to do about it
-            </Button>
-            <Button variant="ghost" size="sm" onClick={() => navigate(`/customers/${selectedCustomer}`)}>
-              Back to the account
-            </Button>
-          </div>
+          {/* Stage 1 → stage 2. The handover is the point of the page ending. */}
+          <Card className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div className="min-w-0">
+              <p className="text-sm font-medium text-text-primary">Understand the risk. Now decide what to do.</p>
+              <p className="text-xs text-text-tertiary mt-1">
+                Recommendations turns these factors into specific actions you can approve.
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2 shrink-0">
+              <Button variant="ghost" size="sm" onClick={() => goBackTo(`/customers/${selectedCustomer}`)}>
+                Back to the account
+              </Button>
+              <Button size="sm" iconRight={ArrowRight} onClick={goToRecommendations}>
+                Continue to recommendations
+              </Button>
+            </div>
+          </Card>
 
           <ModelArchitecture />
         </>

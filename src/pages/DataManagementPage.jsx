@@ -279,7 +279,7 @@ export default function DataManagementPage() {
         });
 
         setStage({ insights: 'done' });
-        addToast({ type: 'success', message: 'Your data is ready — Overview unlocked' });
+        addToast({ type: 'success', message: 'Your data is ready — Portfolio & Risk unlocked' });
       } catch (err) {
         setStageStates((prev) => {
           const failed = Object.keys(prev).find((k) => prev[k] === 'active');
@@ -501,7 +501,7 @@ export default function DataManagementPage() {
   const handleReplace = useCallback(async () => {
     resetFlow();
     await disconnectCurrent();
-    addToast({ type: 'info', message: 'Connect data to unlock your Overview again' });
+    addToast({ type: 'info', message: 'Connect data to unlock Portfolio & Risk again' });
   }, [disconnectCurrent, resetFlow, addToast]);
 
   // ---------------------------------------------------------------- restore --

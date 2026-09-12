@@ -1055,8 +1055,16 @@ def _load_cached_full_result(current_user, fingerprint: str) -> Optional[Dict[st
     e.g. rows from before this feature existed). Returning None here just
     means run_prediction() falls back to the narrower training-only cache
     (or a full retrain) exactly as if this function didn't exist -- never a
-    correctness issue, only a speed one."""
-    if current_user is None:
+    correctness issue, only a speed one.
+
+    Also None when the fitted model for `fingerprint` isn't on disk. The
+    cached scores live in the (shared, remote) database, but the artifacts
+    are local and git-ignored -- so on another machine, or after they were
+    cleaned up, a DB row alone would restore scores for a model that can't be
+    loaded, and every per-customer explanation, recommendation and outreach
+    draft would then fail with 503. Same rule _load_cached_training() follows:
+    never trust a DB row over what's actually there to load."""
+    if current_user is None or not generic_artifacts.is_trained(fingerprint):
         return None
     db = SessionLocal()
     try:
@@ -1831,11 +1839,20 @@ def get_segmentation():
 
 # ----------------------------------------------------------------- customers
 
+def _matches_segment(value: Any, wanted: str) -> bool:
+    """Same key get_segmentation() groups by (str() of the stored value), so
+    clicking a segment on Portfolio & Risk lists exactly the accounts that
+    segment counted."""
+    return value is not None and str(value) == wanted
+
+
 @router.get("/customers")
 def list_customers(
     search: Optional[str] = None,
     risk: Optional[str] = None,
     status: Optional[str] = None,
+    contract: Optional[str] = None,
+    serviceTier: Optional[str] = None,
     sortBy: str = "churnProbability",
     sortDir: str = "desc",
     page: int = 1,
@@ -1851,6 +1868,11 @@ def list_customers(
         filtered = [c for c in filtered if c["riskTier"] == risk]
     if status and status != "all":
         filtered = [c for c in filtered if c["status"] == status]
+    # Portfolio & Risk's "Where risk concentrates" drill-downs.
+    if contract:
+        filtered = [c for c in filtered if _matches_segment(c["contractType"], contract)]
+    if serviceTier:
+        filtered = [c for c in filtered if _matches_segment(c["serviceTier"], serviceTier)]
 
     if sortBy:
         reverse = sortDir == "desc"
