@@ -20,7 +20,7 @@
   ],
   "reusedModel": {
     "driftState": "moderate",
-    "trainedAt": "2026-09-12T12:25:31.115991+00:00"
+    "trainedAt": "<volatile>"
   },
   "source": {
     "detail": "reuse.csv",

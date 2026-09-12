@@ -837,6 +837,66 @@ def _select_extra_columns(df: pd.DataFrame, mapped_and_special: set) -> tuple[Li
     return kept, skipped
 
 
+def _dedupe_preserving_order(names: List[str]) -> List[str]:
+    seen = set()
+    out = []
+    for name in names:
+        if name not in seen:
+            seen.add(name)
+            out.append(name)
+    return out
+
+
+def _canonicalize_columns(
+    raw_df: pd.DataFrame, field_to_col: Dict[str, str]
+) -> tuple[pd.DataFrame, List[Dict[str, str]]]:
+    """Renames the user's columns to ChurnGuard field names, without ever
+    producing two columns of the same name.
+
+    A plain rename collides whenever the data ALREADY contains a column
+    named like a canonical field while a *different* column is mapped to it:
+    a portal with both `tenure` and `tenure_months`, where the matcher picks
+    `tenure_months`, ends up with two columns called `tenure`. Pandas then
+    returns a DataFrame from `df["tenure"]` instead of a Series, and the
+    first thing downstream to ask for `.dtype` dies with an AttributeError
+    that says nothing about the real cause.
+
+    Rare with a fixed column list; much more likely since the HubSpot
+    connector began discovering every property a portal defines rather than
+    requesting a fixed dozen.
+
+    The mapped column wins the canonical name -- the matcher chose it
+    deliberately. The colliding original is renamed aside rather than
+    dropped, so its signal survives as an ordinary extra feature, and is
+    reported so the rename is never silent.
+    """
+    rename_map = {col: field_key for field_key, col in field_to_col.items()}
+    existing = set(raw_df.columns)
+
+    # `target not in rename_map` matters: a column that is itself being
+    # renamed away frees its name, so that is not a collision.
+    collisions = {
+        target: col
+        for col, target in rename_map.items()
+        if target != col and target in existing and target not in rename_map
+    }
+    if not collisions:
+        return raw_df.rename(columns=rename_map), []
+
+    displaced: List[Dict[str, str]] = []
+    aside: Dict[str, str] = {}
+    for target, mapped_from in collisions.items():
+        candidate = f"{target}_original"
+        suffix = 2
+        while candidate in existing or candidate in aside.values():
+            candidate = f"{target}_original_{suffix}"
+            suffix += 1
+        aside[target] = candidate
+        displaced.append({"column": target, "renamedTo": candidate, "mappedFrom": mapped_from})
+
+    return raw_df.rename(columns=aside).rename(columns=rename_map), displaced
+
+
 def _canonical_feature_columns(field_to_col: Dict[str, str]) -> List[str]:
     """Required + present-optional ChurnGuard fields -- never 'churn' or
     'customer_id', and deliberately never the vertical-specific extras
@@ -882,7 +942,7 @@ def resolve_training_eligibility(
     canonical_fields = _canonical_feature_columns(field_to_col)
     schema_hash = schema_hash_util.compute_schema_hash(canonical_fields)
 
-    df = entry.raw_df.rename(columns={col: key for key, col in field_to_col.items()})
+    df, _displaced = _canonicalize_columns(entry.raw_df, field_to_col)
     extra_cols, _ = _select_extra_columns(df, set(canonical_fields) | {"customer_id"})
     available_columns = set(canonical_fields) | set(extra_cols)
 
@@ -1221,7 +1281,7 @@ def train_and_score(entry: DatasetEntry, current_user) -> TrainingResult:
     if "customer_id" not in field_to_col:
         raise TrainingError(f"{schema.pretty_feature_name('customer_id')} must be mapped before predicting.")
 
-    df = entry.raw_df.rename(columns={col: field_key for field_key, col in field_to_col.items()})
+    df, displaced_columns = _canonicalize_columns(entry.raw_df, field_to_col)
 
     present_optional = [f for f in OPTIONAL_FEATURE_KEYS if f in field_to_col]
     feature_cols = MODEL_FEATURE_KEYS + present_optional
@@ -1255,9 +1315,35 @@ def train_and_score(entry: DatasetEntry, current_user) -> TrainingResult:
     if entry.derived_churn_source and entry.derived_churn_source in df.columns:
         excluded.add(entry.derived_churn_source)
     extra_cols, extra_columns_skipped = _select_extra_columns(df, excluded)
-    all_feature_cols = feature_cols + extra_cols
+    # A column renamed aside to free a canonical field name is still real
+    # data, so it is reported rather than quietly altered underfoot.
+    for moved in displaced_columns:
+        extra_columns_skipped.append({
+            "column": moved["column"],
+            "reason": (
+                f'kept as "{moved["renamedTo"]}" -- your "{moved["mappedFrom"]}" column was matched to '
+                f'{schema.pretty_feature_name(moved["column"])}, so both could not keep that name'
+            ),
+        })
+    # Deduped rather than concatenated blindly: a column reaching the frame
+    # twice makes df[col] return a DataFrame instead of a Series, and the
+    # failure surfaces much later as an unreadable pandas AttributeError.
+    # _select_extra_columns() already excludes feature_cols, so this is
+    # belt-and-braces -- the guarantee should not depend on which
+    # required/optional path a column arrived through.
+    all_feature_cols = _dedupe_preserving_order(feature_cols + extra_cols)
 
-    model_df = df[["customer_id", "churn"] + all_feature_cols].copy()
+    selected = _dedupe_preserving_order(["customer_id", "churn"] + all_feature_cols)
+    model_df = df[selected].copy()
+    duplicated = [c for c in model_df.columns if list(model_df.columns).count(c) > 1]
+    if duplicated:
+        # Unreachable via _canonicalize_columns, which resolves name
+        # collisions at the source. If it ever happens anyway, say so in
+        # terms the user can act on instead of dying on .dtype later.
+        raise TrainingError(
+            "The connected data has more than one column called "
+            f"{', '.join(sorted(set(duplicated)))}. Rename or remove the duplicate and try again."
+        )
     model_df["customer_id"] = model_df["customer_id"].astype(str).str.strip()
 
     model_df, cleaning = _clean_model_frame(model_df, feature_cols)

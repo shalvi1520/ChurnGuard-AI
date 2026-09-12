@@ -32,31 +32,55 @@ ACTIVE_LIFECYCLE_STAGES = {
     "opportunity", "customer", "evangelist",
 }
 
-# HubSpot object -> (properties to request, label)
+# Fallback property lists, used only when property discovery is unavailable
+# (see _properties_for()). A hardcoded list cannot know what a given portal
+# actually stores: it asks for fields that may not exist and silently misses
+# the custom ones that carry the real churn signal.
 _OBJECTS = {
     "companies": (
         [
-            "hs_object_id", "name", "domain", "lifecyclestage", "type", "industry",
-            "annualrevenue", "hs_lastmodifieddate", "createdate", "numberofemployees",
+            "name", "domain", "lifecyclestage", "type", "industry",
+            "annualrevenue", "createdate", "numberofemployees",
         ],
         "Companies",
         "Company records — usually the right level for account churn.",
     ),
     "contacts": (
-        [
-            "hs_object_id", "email", "firstname", "lastname", "lifecyclestage",
-            "hs_lead_status", "createdate", "hs_analytics_num_visits",
-            "tenure_months", "monthly_charges", "contract_type", "support_tickets_count",
-        ],
+        ["email", "lifecyclestage", "createdate"],
         "Contacts",
         "Individual contact records.",
     ),
     "deals": (
-        ["hs_object_id", "dealname", "dealstage", "amount", "closedate", "createdate", "pipeline"],
+        ["dealname", "dealstage", "amount", "closedate", "createdate", "pipeline"],
         "Deals",
         "Deal records — useful when a deal represents a subscription.",
     ),
 }
+
+# Always requested, whatever discovery returns: email identifies the contact.
+_ALWAYS_INCLUDE = {"email"}
+
+# Properties that exist on every portal and carry no churn signal -- HubSpot's
+# own bookkeeping, marketing analytics and ownership fields. Excluded so a
+# discovered list stays the portal's real data rather than hundreds of
+# internal columns the matcher would then have to reject one by one.
+_EXCLUDED_PROPERTIES_PREFIX_TUPLE = ("hs_", "hubspot_")
+_EXCLUDED_PROPERTIES = {
+    "hubspot_owner_id", "hubspot_team_id", "hubspot_owner_assigneddate",
+    "associatedcompanyid", "associatedcompanylastupdated",
+    "num_associated_deals", "num_conversion_events", "num_unique_conversion_events",
+    "recent_conversion_date", "recent_conversion_event_name",
+    "first_conversion_date", "first_conversion_event_name",
+    "webinar_ever_attended", "surveymonkeyeventlastupdated", "webinareventlastupdated",
+    "ip_city", "ip_state", "ip_country", "ip_state_code", "ip_country_code",
+    "currentlyinworkflow", "days_to_close",
+}
+
+# A portal can define a very large number of properties; the object endpoint
+# takes them as a query string, which has a practical length limit. Capped so
+# a pathological portal degrades to "most of the data" instead of a failed
+# request.
+MAX_DISCOVERED_PROPERTIES = 120
 
 
 class HubSpotConnector(Connector):
@@ -153,6 +177,65 @@ class HubSpotConnector(Connector):
         return [DataSource(id=key, label=meta[1], description=meta[2]) for key, meta in _OBJECTS.items()]
 
     @staticmethod
+    def _is_useful_property(prop: Dict[str, Any]) -> bool:
+        """Whether a discovered property is worth importing.
+
+        Rejects HubSpot's own internal/analytics fields rather than pulling
+        the several hundred a typical portal defines. `lifecyclestage` is
+        deliberately NOT excluded despite being HubSpot-defined: it is the
+        fallback churn signal when a portal has no explicit churn property.
+        """
+        name = (prop.get("name") or "").strip()
+        if not name or name in _EXCLUDED_PROPERTIES:
+            return False
+        if name in _ALWAYS_INCLUDE or name == "lifecyclestage":
+            return True
+        if name.startswith(_EXCLUDED_PROPERTIES_PREFIX_TUPLE):
+            return False
+        # Calculated/rollup fields are derived from other data HubSpot already
+        # returns, and hidden ones are not user-facing data at all.
+        if prop.get("calculated") or prop.get("hidden"):
+            return False
+        if prop.get("archived"):
+            return False
+        return True
+
+    def discover_properties(self, credentials: Dict[str, str], source_id: str) -> List[str]:
+        """The properties this portal actually defines on `source_id`.
+
+        Asking the portal what exists is the difference between importing a
+        customer's real data and importing whatever a hardcoded list happened
+        to name: fields that don't exist come back empty, and the custom ones
+        holding the actual churn signal are never requested at all.
+
+        Degrades to the static fallback list on any failure -- a portal that
+        won't answer the properties endpoint (a token without the scope, say)
+        should still import something rather than nothing.
+        """
+        try:
+            payload = self._get(credentials, f"/crm/v3/properties/{source_id}", {})
+        except ConnectorError:
+            return list(_OBJECTS[source_id][0])
+
+        discovered = [
+            prop["name"]
+            for prop in payload.get("results", [])
+            if self._is_useful_property(prop)
+        ]
+        if not discovered:
+            return list(_OBJECTS[source_id][0])
+
+        # Deterministic order, with the identifier first, so repeat imports
+        # produce a stable column order (and therefore a stable fingerprint).
+        ordered = sorted(_ALWAYS_INCLUDE & set(discovered)) + sorted(
+            set(discovered) - _ALWAYS_INCLUDE
+        )
+        for required in _ALWAYS_INCLUDE:
+            if required not in ordered:
+                ordered.insert(0, required)
+        return ordered[:MAX_DISCOVERED_PROPERTIES]
+
+    @staticmethod
     def normalize(results: List[dict]) -> pd.DataFrame:
         """Flattens HubSpot's `{id, properties: {...}}` envelope into one row
         per record. Kept static so it can be unit-tested without a network call."""
@@ -165,6 +248,25 @@ class HubSpotConnector(Connector):
         # HubSpot echoes these back on every object and they carry no churn
         # signal -- dropping them keeps the mapping review free of noise.
         return frame.drop(columns=[c for c in ("hs_lastmodifieddate", "hs_createdate") if c in frame.columns])
+
+    @staticmethod
+    def _has_real_churn_column(frame: pd.DataFrame) -> bool:
+        """True when the portal defines its own churn property AND it holds
+        actual values.
+
+        Presence of the column alone isn't enough: a property defined in
+        HubSpot but never populated arrives as a column of blanks, and
+        treating that as the label would train on nothing. Requires at least
+        one non-blank value before it counts.
+        """
+        for candidate in ("churned", "churn", "is_churned", "has_churned"):
+            if candidate not in frame.columns:
+                continue
+            values = frame[candidate].astype(str).str.strip().str.lower()
+            populated = ~(frame[candidate].isna() | values.isin({"", "nan", "none"}))
+            if bool(populated.any()):
+                return True
+        return False
 
     @staticmethod
     def _derive_churned(frame: pd.DataFrame) -> pd.DataFrame:
@@ -192,7 +294,17 @@ class HubSpotConnector(Connector):
         Runs on the normalized frame before it reaches
         ingest.register_dataframe(). Static for the same reason normalize() is:
         unit-testable without a network call.
+
+        Skipped entirely when the portal already has a real `churned`
+        property carrying actual values -- see _has_real_churn_column(). A
+        recorded outcome always beats one inferred from pipeline stage, and
+        overwriting it would replace the customer's own data with a guess.
         """
+        if HubSpotConnector._has_real_churn_column(frame):
+            # Keep lifecyclestage: it is an ordinary feature here, not the
+            # label's source, so dropping it would discard real signal.
+            return frame
+
         if "lifecyclestage" not in frame.columns:
             return frame
 
@@ -218,7 +330,10 @@ class HubSpotConnector(Connector):
                 f"Choose one of: {', '.join(_OBJECTS)}.",
             )
 
-        properties, label, _ = _OBJECTS[source_id]
+        label = _OBJECTS[source_id][1]
+        # Ask the portal what it actually stores rather than naming fields in
+        # advance -- see discover_properties().
+        properties = self.discover_properties(credentials, source_id)
         collected: List[dict] = []
         after = None
         while len(collected) < limit:
@@ -241,13 +356,29 @@ class HubSpotConnector(Connector):
                 "Pick a different record type, or check the private app can see this data.",
             )
 
+        normalized = self.normalize(collected)
+        used_real_churn = self._has_real_churn_column(normalized)
+        records = self._derive_churned(normalized)
+
+        notes = [
+            f"Imported {len(properties)} propert{'y' if len(properties) == 1 else 'ies'} "
+            f"discovered on your portal's {label.lower().rstrip('s')} object, rather than a fixed list."
+        ]
+        if used_real_churn:
+            notes.append(
+                "Your portal has its own churn property with real values, so that was used as the outcome "
+                "directly — nothing was inferred."
+            )
+        else:
+            notes.append(
+                "No populated churn property was found, so the churn outcome was derived from each record's "
+                "lifecycle stage: 'other' counts as churned, every active stage as retained. Records with no "
+                "lifecycle stage set are left unlabelled and excluded from training."
+            )
+
         return FetchResult(
-            records=self._derive_churned(self.normalize(collected)),
+            records=records,
             source_label=f"HubSpot {label}",
             detail=f"{len(collected):,} {label.lower()} imported",
-            notes=[
-                "HubSpot has no churn field of its own, so the churn outcome was derived from each record's "
-                "lifecycle stage: 'other' counts as churned, every active stage as retained. Contacts with no "
-                "lifecycle stage set are left unlabelled and excluded from training."
-            ],
+            notes=notes,
         )

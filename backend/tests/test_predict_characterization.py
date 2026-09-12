@@ -40,16 +40,38 @@ FIXTURE_DIR = Path(__file__).parent / "fixtures"
 # excluded -- their presence is still part of the contract.
 VOLATILE_KEYS = ("datasetId",)
 
+# Nested values that also change run to run: the REUSE_MODEL path reports
+# when the reused model was trained, and the registry entry is rebuilt on
+# every run. `driftState` alongside it is NOT volatile and stays compared.
+VOLATILE_NESTED = {"reusedModel": ("trainedAt",)}
+
 
 def _stable(payload: dict) -> dict:
-    return {**payload, **{k: "<volatile>" for k in VOLATILE_KEYS if k in payload}}
+    out = {**payload, **{k: "<volatile>" for k in VOLATILE_KEYS if k in payload}}
+    for parent, children in VOLATILE_NESTED.items():
+        if isinstance(out.get(parent), dict):
+            out[parent] = {
+                **out[parent],
+                **{c: "<volatile>" for c in children if c in out[parent]},
+            }
+    return out
 
 
 def save_fixture(name: str, payload: dict) -> None:
+    """Writes a fixture only if it does not already exist.
+
+    Write-once on purpose. An earlier version overwrote on every run, which
+    made the comparison below circular -- it compared freshly-captured output
+    against a file written from that same output moments earlier, and so
+    could never fail. A baseline that regenerates itself is not a baseline.
+
+    Delete the file deliberately to re-record one.
+    """
     FIXTURE_DIR.mkdir(exist_ok=True)
-    (FIXTURE_DIR / f"{name}.json").write_text(
-        json.dumps(_stable(payload), indent=2, sort_keys=True), encoding="utf-8"
-    )
+    path = FIXTURE_DIR / f"{name}.json"
+    if path.exists():
+        return
+    path.write_text(json.dumps(_stable(payload), indent=2, sort_keys=True), encoding="utf-8")
 
 
 def load_fixture(name: str) -> dict:
