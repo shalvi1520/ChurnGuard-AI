@@ -35,6 +35,12 @@ from ..generic import artifacts as generic_artifacts
 from ..generic.explainer import explain_customer, explain_high_risk_batch
 from ..generic.io_utils import load_dataset_from_bytes
 from . import derive_label, ingest, mapping, profiling, recommendations, schema, store
+from .training import (
+    NeedsDerivedLabel,
+    NoUsableModel,
+    TrainingError,
+    TrainingResult,
+)
 from .store import DatasetEntry, DatasetSource
 
 router = APIRouter(prefix="/api", tags=["churnguard"])
@@ -722,32 +728,34 @@ def _clean_model_frame(
 
 def _check_churn_column(model_df: pd.DataFrame, column_name: str) -> None:
     """Caught here rather than deep inside the trainer, so the message names
-    the user's own column and says what a churn outcome has to look like."""
+    the user's own column and says what a churn outcome has to look like.
+
+    Raises TrainingError, not HTTPException: this runs inside
+    train_and_score(), which the scheduled sync calls with no HTTP layer to
+    raise into. run_prediction() translates it back to the same 400 and the
+    same message text it always produced."""
     summary = profiling.churn_label_summary(model_df["churn"].tolist())
     distinct = summary["distinct"]
 
     if len(distinct) < 2:
-        raise HTTPException(
-            400,
+        raise TrainingError(
             f'Every customer has the same value in "{column_name}" '
             f'({distinct[0] if distinct else "no values at all"}), so there is no churn to learn from. '
-            "Choose a column that records who has already left and who has stayed.",
+            "Choose a column that records who has already left and who has stayed."
         )
     if len(distinct) > 2:
         shown = ", ".join(distinct[:5]) + ("…" if len(distinct) > 5 else "")
-        raise HTTPException(
-            400,
+        raise TrainingError(
             f'"{column_name}" holds {len(distinct)} different values ({shown}), but a churn outcome needs '
             "exactly two — such as Yes/No, 1/0 or Churned/Active. Choose a different column, or reduce that "
-            "column to a two-value outcome in your export.",
+            "column to a two-value outcome in your export."
         )
 
     smaller = min(summary["counts"].values())
     if smaller < 6:
-        raise HTTPException(
-            400,
+        raise TrainingError(
             f'Only {smaller} customer(s) in "{column_name}" fall on one side of the outcome. ChurnGuard needs at '
-            "least 6 examples of each so the model has a pattern to learn. Upload a dataset covering more history.",
+            "least 6 examples of each so the model has a pattern to learn. Upload a dataset covering more history."
         )
 
 
@@ -910,6 +918,26 @@ def resolve_training_eligibility(
     return "BLOCKED", {"schemaHash": schema_hash}
 
 
+def _safe_close(db) -> None:
+    """Closes a session without ever raising.
+
+    Every best-effort DB helper below is built around `except: <degrade
+    gracefully>` so that a database problem can never break /predict. That
+    guarantee was incomplete: the matching `finally: db.close()` sat OUTSIDE
+    the except, so an exception from close() escaped the handler that exists
+    precisely to contain it -- turning a silent cache miss into a 500.
+
+    Narrow, since close() rarely raises. Not theoretical though: Neon drops
+    connections mid-transaction (observed while applying migrations), and
+    the scheduled sync in backend/sync/ runs these same helpers unattended,
+    where a 500 has no user to retry it.
+    """
+    try:
+        db.close()
+    except Exception:  # noqa: BLE001 -- closing is cleanup; failing to close must not surface
+        logger.warning("Failed to close database session cleanly", exc_info=True)
+
+
 def _load_cached_training(current_user, fingerprint: str) -> Optional[dict]:
     """A previous successful training run for this exact data, scoped to the
     signed-in user -- or None if there isn't one, the caller isn't signed in,
@@ -930,7 +958,7 @@ def _load_cached_training(current_user, fingerprint: str) -> Optional[dict]:
     except Exception:  # noqa: BLE001 -- a DB hiccup means "train normally", never a broken /predict
         return None
     finally:
-        db.close()
+        _safe_close(db)
 
 
 def _persist_training(current_user, entry: DatasetEntry, fingerprint: str, report: dict) -> None:
@@ -968,7 +996,7 @@ def _persist_training(current_user, entry: DatasetEntry, fingerprint: str, repor
         logger.warning("Failed to persist training history for fingerprint %s", fingerprint, exc_info=True)
         db.rollback()
     finally:
-        db.close()
+        _safe_close(db)
 
 
 def _persist_predictions(
@@ -1017,7 +1045,7 @@ def _persist_predictions(
         logger.warning("Failed to persist predictions for fingerprint %s", fingerprint, exc_info=True)
         db.rollback()
     finally:
-        db.close()
+        _safe_close(db)
 
 
 def _load_cached_full_result(current_user, fingerprint: str) -> Optional[Dict[str, Any]]:
@@ -1049,35 +1077,34 @@ def _load_cached_full_result(current_user, fingerprint: str) -> Optional[Dict[st
     except Exception:  # noqa: BLE001 -- a DB hiccup means "compute normally", never a broken /predict
         return None
     finally:
-        db.close()
+        _safe_close(db)
 
 
 def _score_with_reused_model(
-    dataset_id: str,
     entry: DatasetEntry,
     df: pd.DataFrame,
     field_to_col: Dict[str, str],
     feature_cols: List[str],
     registry_entry,
     drift_state: str,
-    background_tasks: BackgroundTasks,
-) -> Dict[str, Any]:
+) -> TrainingResult:
     """REUSE_MODEL scoring (see resolve_training_eligibility()): this connect
     has no churn column, but a model trained on the same canonical field
     shape already exists and covers every feature it needs. Runs inference +
     SHAP only -- no training, no churn-labelled fields (there's no churn
-    history to report, so `churned` is None per customer, never guessed),
-    and the response says plainly that scores come from a model trained on
-    different, earlier data, plus how much this data has drifted from it."""
+    history to report, so `churned` is None per customer, never guessed).
+
+    Returns a TrainingResult and mutates nothing: the request path applies it
+    to the in-memory entry, the scheduled sync does not.
+    """
     all_feature_cols = registry_entry.feature_columns
     missing_cols = [c for c in all_feature_cols if c not in df.columns]
     if missing_cols:
         # resolve_training_eligibility() already checked this at /validate --
         # a genuine mismatch here means the data or mapping changed since.
-        raise HTTPException(
-            400,
+        raise TrainingError(
             "This dataset no longer matches the model ChurnGuard was going to reuse. "
-            "Re-check your data and try again.",
+            "Re-check your data and try again."
         )
 
     model_df = df[["customer_id"] + all_feature_cols].copy()
@@ -1086,7 +1113,7 @@ def _score_with_reused_model(
     scoring_feature_cols = [f for f in feature_cols if f in all_feature_cols]
     model_df, cleaning = _clean_model_frame(model_df, scoring_feature_cols)
     if model_df.empty:
-        raise HTTPException(400, "No usable customer rows were left after cleaning. Check the connected data.")
+        raise TrainingError("No usable customer rows were left after cleaning. Check the connected data.")
 
     generic_predictor.load_from(registry_entry)
     generic_explainer.load_from(registry_entry)
@@ -1095,7 +1122,7 @@ def _score_with_reused_model(
     try:
         predictions = generic_predictor.predict(model_df[all_feature_cols], cache_key)
     except ValueError as exc:
-        raise HTTPException(400, str(exc)) from exc
+        raise TrainingError(str(exc)) from exc
 
     # `drift_state` was already computed by resolve_training_eligibility()
     # before this function was ever called (Step 4: PSI decides eligibility,
@@ -1103,7 +1130,6 @@ def _score_with_reused_model(
     # so /validate's preview and this response can never disagree.
 
     customers: List[Dict[str, Any]] = []
-    customers_by_id: Dict[str, Dict[str, Any]] = {}
     raw_features_by_id: Dict[str, Dict[str, Any]] = {}
 
     for idx in model_df.index:
@@ -1136,71 +1162,56 @@ def _score_with_reused_model(
             "churned": None,
         }
         customers.append(record)
-        customers_by_id[cid] = record
         raw_features_by_id[cid] = {k: model_df.at[idx, k] for k in all_feature_cols}
 
-    entry.customers = customers
-    entry.customers_by_id = customers_by_id
-    entry.raw_features_by_id = raw_features_by_id
-    entry.training_report = registry_entry.load_metadata()
-    entry.trained = True
-    entry.cleaning = cleaning
-    entry.raw_drivers = {}
-    entry.explanation_base_value = {}
-    entry.ai_explanations = {}
-    entry.outreach_drafts = []
-    entry.fingerprint = cache_key
-    entry.top_drivers = _compute_top_drivers(model_df, all_feature_cols, cache_key)
-
     eligible_count = sum(1 for c in customers if c["riskTier"] in ("high", "critical"))
-    entry.auto_outreach_state = "running" if eligible_count else "done"
-    entry.auto_outreach_done = 0
-    entry.auto_outreach_total = min(eligible_count, business_rules.MAX_AUTO_DRAFTS_PER_RUN)
-    entry.auto_outreach_queued = 0
-    entry.auto_outreach_skipped = 0
-    if eligible_count:
-        background_tasks.add_task(_run_auto_outreach, entry)
 
-    return {
-        "datasetId": dataset_id,
-        "status": "completed",
-        "trainingSource": "reused",
-        "customersProcessed": len(customers),
-        "fieldsMapped": len(field_to_col),
-        "mappedFields": sorted(field_to_col),
-        "labelledChurnCount": None,
-        "cleaning": cleaning,
-        "extraColumnsUsed": [c for c in all_feature_cols if c not in MODEL_FEATURE_KEYS + OPTIONAL_FEATURE_KEYS],
-        "extraColumnsSkipped": [],
-        "source": entry.source.as_dict(),
-        "trainingMetrics": {
+    return TrainingResult(
+        fingerprint=cache_key,
+        report=registry_entry.load_metadata(),
+        customers=customers,
+        raw_features_by_id=raw_features_by_id,
+        top_drivers=_compute_top_drivers(model_df, all_feature_cols, cache_key),
+        cleaning=cleaning,
+        extra_columns_used=[c for c in all_feature_cols if c not in MODEL_FEATURE_KEYS + OPTIONAL_FEATURE_KEYS],
+        extra_columns_skipped=[],
+        field_to_col=field_to_col,
+        training_source="reused",
+        labelled_churn_count=None,
+        training_metrics={
             "accuracy": registry_entry.metrics.get("accuracy"),
             "precision": registry_entry.metrics.get("precision"),
             "recall": registry_entry.metrics.get("recall"),
             "f1": registry_entry.metrics.get("f1"),
             "rocAuc": registry_entry.metrics.get("roc_auc"),
         },
-        "reusedModel": {
-            "trainedAt": registry_entry.trained_at,
-            "driftState": drift_state,
-        },
-        "autoOutreach": entry.auto_outreach_status(),
-    }
+        eligible_count=eligible_count,
+        restored_drafts=None,
+        # Historic behaviour: this path queues outreach without user or
+        # fingerprint context, so its drafts are not persisted.
+        outreach_persist_context=False,
+        reused_model={"trainedAt": registry_entry.trained_at, "driftState": drift_state},
+    )
 
 
-@router.post("/datasets/{dataset_id}/predict")
-def run_prediction(
-    dataset_id: str,
-    background_tasks: BackgroundTasks,
-    current_user=Depends(get_current_user_optional),
-):
-    entry = _dataset_or_404(dataset_id)
+def train_and_score(entry: DatasetEntry, current_user) -> TrainingResult:
+    """Train (or reuse a cached/registered model), score every customer, and
+    persist what should outlive the request -- and nothing else.
+
+    Pure with respect to the session: no DatasetEntry mutation, no
+    BackgroundTasks, no HTTPException. That is what makes it callable from
+    the scheduled CRM sync, which has no request to hang any of those on and
+    must never disturb a dataset the user currently has open.
+
+    Raises TrainingError / NeedsDerivedLabel / NoUsableModel; run_prediction()
+    maps those back to the exact HTTP responses /predict has always returned.
+    """
     if not entry.mappings:
-        raise HTTPException(400, "Map your columns before running predictions.")
+        raise TrainingError("Map your columns before running predictions.")
 
     field_to_col = {field_key: col for col, field_key in entry.mappings.items() if field_key}
     if "customer_id" not in field_to_col:
-        raise HTTPException(400, f"{schema.pretty_feature_name('customer_id')} must be mapped before predicting.")
+        raise TrainingError(f"{schema.pretty_feature_name('customer_id')} must be mapped before predicting.")
 
     df = entry.raw_df.rename(columns={col: field_key for field_key, col in field_to_col.items()})
 
@@ -1209,7 +1220,7 @@ def run_prediction(
     missing_features = [f for f in feature_cols if f not in df.columns]
     if missing_features:
         labels = ", ".join(schema.pretty_feature_name(f) for f in missing_features)
-        raise HTTPException(400, f"These mapped columns are missing from the connected data: {labels}.")
+        raise TrainingError(f"These mapped columns are missing from the connected data: {labels}.")
 
     if "churn" not in field_to_col:
         # No churn column -- resolve_training_eligibility() decides whether
@@ -1220,25 +1231,16 @@ def run_prediction(
         state, extra = resolve_training_eligibility(entry, field_to_col, entry.profile, mapping.analyze(entry.profile))
         if state == "REUSE_MODEL":
             return _score_with_reused_model(
-                dataset_id,
-                entry,
-                df,
-                field_to_col,
-                feature_cols,
-                extra["registryEntry"],
-                extra.get("driftState", "none"),
-                background_tasks,
+                entry, df, field_to_col, feature_cols, extra["registryEntry"], extra.get("driftState", "none")
             )
         if state == "DERIVE_LABEL":
-            raise HTTPException(
-                409,
+            raise NeedsDerivedLabel(
                 "This dataset has no churn column yet. Derive one first via "
-                f"POST /datasets/{dataset_id}/derive-churn, then map it and try again.",
+                f"POST /datasets/{entry.id}/derive-churn, then map it and try again."
             )
-        raise HTTPException(
-            400,
+        raise NoUsableModel(
             "ChurnGuard couldn't find or derive a churn outcome for this data, and no existing model fits "
-            "its shape. Map a churn column, or connect a dataset that has one.",
+            "its shape. Map a churn column, or connect a dataset that has one."
         )
 
     excluded = set(feature_cols) | {"customer_id", "churn"}
@@ -1252,13 +1254,12 @@ def run_prediction(
 
     model_df, cleaning = _clean_model_frame(model_df, feature_cols)
     if model_df.empty:
-        raise HTTPException(400, "No usable customer rows were left after cleaning. Check the connected data.")
+        raise TrainingError("No usable customer rows were left after cleaning. Check the connected data.")
 
     _check_churn_column(model_df, field_to_col["churn"])
 
     train_df = model_df.drop(columns=["customer_id"])
     fingerprint = fingerprint_util.compute_fingerprint(train_df)
-    entry.fingerprint = fingerprint
 
     logger.warning(
         "CACHE-DEBUG /predict: fingerprint=%s signed_in=%s user_email=%s DB_AVAILABLE=%s",
@@ -1284,77 +1285,42 @@ def run_prediction(
         report = cached_full["report"]
         customers = cached_full["customers"]
         extra = cached_full["extra"]
-
-        entry.customers = customers
-        entry.customers_by_id = {c["id"]: c for c in customers}
-        entry.raw_features_by_id = extra["rawFeaturesById"]
-        entry.training_report = report
-        entry.trained = True
-        entry.cleaning = extra["cleaning"]
-        entry.raw_drivers = {}
-        entry.explanation_base_value = {}
-        entry.ai_explanations = {}
-        entry.top_drivers = extra["topDrivers"]
+        eligible_count = sum(1 for c in customers if c["riskTier"] in ("high", "critical"))
 
         # Deliberately NOT re-queuing _run_auto_outreach here, unlike the
         # full-training path below. That loop recomputes a fresh SHAP
         # explanation from scratch for every high/critical-risk customer
-        # (entry.raw_drivers is reset above, never carried over) before even
+        # (entry.raw_drivers is reset, never carried over) before even
         # attempting to draft a message -- by far the most expensive
         # remaining step, and one a full cache hit has no way to skip
         # per-customer the way it skips training/inference/top-drivers in
         # bulk. Instead, any drafts a previous run already generated and
         # persisted for this exact fingerprint (see _persist_outreach_drafts)
         # are restored directly -- no redundant SHAP/LLM work either way.
-        eligible_count = sum(1 for c in customers if c["riskTier"] in ("high", "critical"))
         restored = _load_cached_outreach_drafts(current_user, fingerprint)
-        if restored is not None:
-            entry.outreach_drafts = restored
-            entry.auto_outreach_state = "done"
-            entry.auto_outreach_done = 0
-            entry.auto_outreach_total = 0
-            entry.auto_outreach_queued = len(restored)
-            entry.auto_outreach_skipped = max(0, eligible_count - len(restored))
-        else:
-            # Nothing was ever successfully drafted for this data before
-            # (e.g. every attempt previously failed -- a rate-limited LLM
-            # key, none configured yet at the time). Retrying is safe and
-            # worthwhile now: generate_outreach_message() always succeeds,
-            # falling back to a template draft rather than failing, so this
-            # will no longer come back empty the way a pure LLM-only
-            # attempt could.
-            entry.outreach_drafts = []
-            entry.auto_outreach_state = "running" if eligible_count else "done"
-            entry.auto_outreach_done = 0
-            entry.auto_outreach_total = min(eligible_count, business_rules.MAX_AUTO_DRAFTS_PER_RUN)
-            entry.auto_outreach_queued = 0
-            entry.auto_outreach_skipped = 0
-            if eligible_count:
-                background_tasks.add_task(
-                    _run_auto_outreach, entry, current_user, fingerprint
-                )
 
-        return {
-            "datasetId": dataset_id,
-            "status": "completed",
-            "customersProcessed": len(customers),
-            "fieldsMapped": len(field_to_col),
-            "mappedFields": sorted(field_to_col),
-            "labelledChurnCount": sum(1 for c in customers if c["churned"]),
-            "cleaning": extra["cleaning"],
-            "extraColumnsUsed": extra["extraColumnsUsed"],
-            "extraColumnsSkipped": extra["extraColumnsSkipped"],
-            "source": entry.source.as_dict(),
-            "trainingMetrics": {
+        return TrainingResult(
+            fingerprint=fingerprint,
+            report=report,
+            customers=customers,
+            raw_features_by_id=extra["rawFeaturesById"],
+            top_drivers=extra["topDrivers"],
+            cleaning=extra["cleaning"],
+            extra_columns_used=extra["extraColumnsUsed"],
+            extra_columns_skipped=extra["extraColumnsSkipped"],
+            field_to_col=field_to_col,
+            training_source="cached",
+            labelled_churn_count=sum(1 for c in customers if c["churned"]),
+            training_metrics={
                 "accuracy": report["test_metrics"]["accuracy"],
                 "precision": report["test_metrics"]["precision"],
                 "recall": report["test_metrics"]["recall"],
                 "f1": report["test_metrics"]["f1"],
                 "rocAuc": report["test_metrics"]["roc_auc"],
             },
-            "autoOutreach": entry.auto_outreach_status(),
-            "trainingSource": "cached",
-        }
+            eligible_count=eligible_count,
+            restored_drafts=restored,
+        )
 
     cached_report = _load_cached_training(current_user, fingerprint) if DB_AVAILABLE else None
     logger.warning("CACHE-DEBUG /predict: training_only_cache_hit=%s", cached_report is not None)
@@ -1366,7 +1332,7 @@ def run_prediction(
                 train_df, target_col="churn", n_trials=PREDICT_N_TRIALS, fingerprint=fingerprint
             )
         except ValueError as exc:
-            raise HTTPException(400, str(exc)) from exc
+            raise TrainingError(str(exc)) from exc
         if DB_AVAILABLE and current_user is not None:
             _persist_training(current_user, entry, fingerprint, report)
 
@@ -1407,7 +1373,7 @@ def run_prediction(
     try:
         predictions = generic_predictor.predict(model_df[all_feature_cols], fingerprint)
     except ValueError as exc:
-        raise HTTPException(400, str(exc)) from exc
+        raise TrainingError(str(exc)) from exc
 
     positive_label = report["positive_label"]
 
@@ -1428,7 +1394,6 @@ def run_prediction(
                 extra_columns_skipped.append({"column": col, "reason": reason})
 
     customers: List[Dict[str, Any]] = []
-    customers_by_id: Dict[str, Dict[str, Any]] = {}
     raw_features_by_id: Dict[str, Dict[str, Any]] = {}
     labelled_churn_count = 0
 
@@ -1461,105 +1426,144 @@ def run_prediction(
             "churned": churned,
         }
         customers.append(record)
-        customers_by_id[cid] = record
         raw_features_by_id[cid] = {k: model_df.at[idx, k] for k in all_feature_cols}
 
-    entry.customers = customers
-    entry.customers_by_id = customers_by_id
-    entry.raw_features_by_id = raw_features_by_id
-    entry.training_report = report
-    entry.trained = True
-    entry.cleaning = cleaning
-    entry.raw_drivers = {}
-    entry.explanation_base_value = {}
-    entry.ai_explanations = {}
-    entry.outreach_drafts = []
-    entry.top_drivers = _compute_top_drivers(model_df, all_feature_cols, fingerprint)
+    top_drivers = _compute_top_drivers(model_df, all_feature_cols, fingerprint)
 
     if DB_AVAILABLE:
         _persist_predictions(
             current_user, fingerprint, customers, raw_features_by_id,
-            entry.top_drivers, cleaning, extra_columns_used, extra_columns_skipped,
+            top_drivers, cleaning, extra_columns_used, extra_columns_skipped,
         )
 
-    # Eligible customers (see business_rules.MIN_RISK_TIER_FOR_AUTO_OUTREACH)
-    # get outreach drafted automatically, in the background, so the queue is
-    # already populated by the time anyone opens Outreach -- not triggered by
-    # a click. Runs after the response is sent; never blocks /predict itself.
-    #
-    # Gated on cached_report is None (a genuinely fresh training run), not
-    # just "did we reach this code path" -- this bottom-of-function path is
-    # also where a training-only cache hit (cached_report is not None, see
-    # above) lands, since that cache only skips the Optuna/StackingClassifier
-    # fit, not inference/SHAP/outreach. Without this guard, a training-only
-    # cache hit would still recompute a full SHAP explanation for every
-    # high/critical-risk customer and re-draft outreach for all of them --
-    # the same expensive, pointless-for-unchanged-data work the full-result
-    # cache path above already skips, just reached by a different route.
-    eligible_count = sum(
-        1 for c in customers if c["riskTier"] in ("high", "critical")
-    )
-    if cached_report is None:
-        entry.auto_outreach_state = "running" if eligible_count else "done"
-        entry.auto_outreach_done = 0
-        entry.auto_outreach_total = min(eligible_count, business_rules.MAX_AUTO_DRAFTS_PER_RUN)
-        entry.auto_outreach_queued = 0
-        entry.auto_outreach_skipped = 0
-        if eligible_count:
-            background_tasks.add_task(_run_auto_outreach, entry, current_user, fingerprint)
-    else:
-        # Training-only cache hit: restore previously auto-drafted outreach
-        # for this exact data if any exists, rather than either leaving the
-        # page empty or paying to redraft it. A miss here (None) just means
-        # no prior run ever finished persisting drafts for this fingerprint
-        # -- reported as "skipped", identical to the pre-existing behaviour.
-        restored = _load_cached_outreach_drafts(current_user, fingerprint) if DB_AVAILABLE else None
-        if restored is not None:
-            entry.outreach_drafts = restored
-            entry.auto_outreach_state = "done"
-            entry.auto_outreach_done = 0
-            entry.auto_outreach_total = 0
-            entry.auto_outreach_queued = len(restored)
-            entry.auto_outreach_skipped = max(0, eligible_count - len(restored))
-        else:
-            # Nothing was ever successfully drafted for this data before --
-            # retry fresh rather than permanently giving up. Safe now that
-            # generate_outreach_message() always succeeds (template
-            # fallback), so this won't come back empty again.
-            entry.auto_outreach_state = "running" if eligible_count else "done"
-            entry.auto_outreach_done = 0
-            entry.auto_outreach_total = min(eligible_count, business_rules.MAX_AUTO_DRAFTS_PER_RUN)
-            entry.auto_outreach_queued = 0
-            entry.auto_outreach_skipped = 0
-            if eligible_count:
-                background_tasks.add_task(
-                    _run_auto_outreach, entry, current_user, fingerprint
-                )
+    eligible_count = sum(1 for c in customers if c["riskTier"] in ("high", "critical"))
 
-    return {
-        "datasetId": dataset_id,
-        "status": "completed",
-        "customersProcessed": len(customers),
-        "fieldsMapped": len(field_to_col),
-        "mappedFields": sorted(field_to_col),
-        "labelledChurnCount": labelled_churn_count,
-        "cleaning": cleaning,
-        "extraColumnsUsed": extra_columns_used,
-        "extraColumnsSkipped": extra_columns_skipped,
-        "source": entry.source.as_dict(),
-        "trainingMetrics": {
+    # A training-only cache hit lands here too (cached_report is not None):
+    # that cache skips only the Optuna/StackingClassifier fit, not
+    # inference/SHAP/outreach. Restoring previously drafted outreach for this
+    # exact data avoids paying to redraft it; a miss (None) just means no
+    # prior run ever finished persisting drafts, and the caller queues a
+    # fresh run exactly as before.
+    restored = (
+        _load_cached_outreach_drafts(current_user, fingerprint)
+        if (cached_report is not None and DB_AVAILABLE)
+        else None
+    )
+
+    return TrainingResult(
+        fingerprint=fingerprint,
+        report=report,
+        customers=customers,
+        raw_features_by_id=raw_features_by_id,
+        top_drivers=top_drivers,
+        cleaning=cleaning,
+        extra_columns_used=extra_columns_used,
+        extra_columns_skipped=extra_columns_skipped,
+        field_to_col=field_to_col,
+        training_source="cached" if cached_report is not None else "trained",
+        labelled_churn_count=labelled_churn_count,
+        training_metrics={
             "accuracy": report["test_metrics"]["accuracy"],
             "precision": report["test_metrics"]["precision"],
             "recall": report["test_metrics"]["recall"],
             "f1": report["test_metrics"]["f1"],
             "rocAuc": report["test_metrics"]["roc_auc"],
         },
+        eligible_count=eligible_count,
+        restored_drafts=restored,
+    )
+
+
+def apply_result_to_entry(entry: DatasetEntry, result: TrainingResult) -> bool:
+    """Writes a TrainingResult onto the in-memory dataset the session is
+    looking at, and reports whether auto-outreach still needs queuing.
+
+    The request path calls this; the scheduled sync deliberately does not --
+    a background retrain must not swap what a user currently has open.
+    """
+    entry.customers = result.customers
+    entry.customers_by_id = {c["id"]: c for c in result.customers}
+    entry.raw_features_by_id = result.raw_features_by_id
+    entry.training_report = result.report
+    entry.trained = True
+    entry.cleaning = result.cleaning
+    entry.raw_drivers = {}
+    entry.explanation_base_value = {}
+    entry.ai_explanations = {}
+    entry.fingerprint = result.fingerprint
+    entry.top_drivers = result.top_drivers
+
+    if result.restored_drafts is not None:
+        entry.outreach_drafts = result.restored_drafts
+        entry.auto_outreach_state = "done"
+        entry.auto_outreach_done = 0
+        entry.auto_outreach_total = 0
+        entry.auto_outreach_queued = len(result.restored_drafts)
+        entry.auto_outreach_skipped = max(0, result.eligible_count - len(result.restored_drafts))
+        return False
+
+    entry.outreach_drafts = []
+    entry.auto_outreach_state = "running" if result.eligible_count else "done"
+    entry.auto_outreach_done = 0
+    entry.auto_outreach_total = min(result.eligible_count, business_rules.MAX_AUTO_DRAFTS_PER_RUN)
+    entry.auto_outreach_queued = 0
+    entry.auto_outreach_skipped = 0
+    return bool(result.eligible_count)
+
+
+def _build_predict_response(dataset_id: str, entry: DatasetEntry, result: TrainingResult) -> Dict[str, Any]:
+    """The /predict response body, assembled from a TrainingResult."""
+    body = {
+        "datasetId": dataset_id,
+        "status": "completed",
+        "customersProcessed": len(result.customers),
+        "fieldsMapped": len(result.field_to_col),
+        "mappedFields": sorted(result.field_to_col),
+        "labelledChurnCount": result.labelled_churn_count,
+        "cleaning": result.cleaning,
+        "extraColumnsUsed": result.extra_columns_used,
+        "extraColumnsSkipped": result.extra_columns_skipped,
+        "source": entry.source.as_dict(),
+        "trainingMetrics": result.training_metrics,
         "autoOutreach": entry.auto_outreach_status(),
         # 'cached': this exact data (see generic/fingerprint.py) was already
         # trained for this account, so the fitted model was reloaded instead
         # of retrained. Only possible when signed in.
-        "trainingSource": "cached" if cached_report is not None else "trained",
+        "trainingSource": result.training_source,
     }
+    if result.reused_model is not None:
+        body["reusedModel"] = result.reused_model
+    return body
+
+
+@router.post("/datasets/{dataset_id}/predict")
+def run_prediction(
+    dataset_id: str,
+    background_tasks: BackgroundTasks,
+    current_user=Depends(get_current_user_optional),
+):
+    entry = _dataset_or_404(dataset_id)
+
+    try:
+        result = train_and_score(entry, current_user)
+    except NeedsDerivedLabel as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except (TrainingError, NoUsableModel) as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    should_queue_outreach = apply_result_to_entry(entry, result)
+
+    # Eligible customers (see business_rules.MIN_RISK_TIER_FOR_AUTO_OUTREACH)
+    # get outreach drafted automatically, in the background, so the queue is
+    # already populated by the time anyone opens Outreach -- not triggered by
+    # a click. Runs after the response is sent; never blocks /predict itself.
+    if should_queue_outreach:
+        if result.outreach_persist_context:
+            background_tasks.add_task(_run_auto_outreach, entry, current_user, result.fingerprint)
+        else:
+            background_tasks.add_task(_run_auto_outreach, entry)
+
+    return _build_predict_response(dataset_id, entry, result)
 
 
 @router.get("/datasets/history")
@@ -1958,7 +1962,7 @@ def _persist_outreach_drafts(current_user, fingerprint: str, drafts: List[Dict[s
         logger.warning("Failed to persist outreach drafts for fingerprint %s", fingerprint, exc_info=True)
         db.rollback()
     finally:
-        db.close()
+        _safe_close(db)
 
 
 def _load_cached_outreach_drafts(current_user, fingerprint: str) -> Optional[List[Dict[str, Any]]]:
@@ -1985,7 +1989,7 @@ def _load_cached_outreach_drafts(current_user, fingerprint: str) -> Optional[Lis
     except Exception:  # noqa: BLE001 -- a DB hiccup means "no cached drafts", never a broken /predict
         return None
     finally:
-        db.close()
+        _safe_close(db)
 
 
 def _run_auto_outreach(

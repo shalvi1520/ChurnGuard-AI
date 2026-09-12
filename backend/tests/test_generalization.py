@@ -53,12 +53,30 @@ def _upload_validate(client, df: pd.DataFrame, name: str) -> dict:
     return {"id": dataset_id, "validation": validation}
 
 
-def _train_has_target(client, seed: int, n: int = 40) -> str:
+def _reuse_slice_of(frame: pd.DataFrame, n: int) -> pd.DataFrame:
+    """An unlabelled frame drawn from the same population as `frame`.
+
+    A REUSE_MODEL test must not accidentally be a drift test. At these row
+    counts (~4-6 rows per bin over PSI's 10 bins) two *independent* draws of
+    the same distribution measure as PSI > 1.0, so the drift gate declines
+    the reuse and the path under test never runs -- a latent flake that
+    happened to pass only because of the particular seeds chosen. Sampling
+    from the training frame keeps the distributions genuinely comparable.
+    """
+    sampled = frame.sample(n=n, random_state=7).drop(columns=["Churned"]).reset_index(drop=True)
+    sampled["CustID"] = [f"R-{i:04d}" for i in range(len(sampled))]
+    return sampled
+
+
+def _train_has_target(client, seed: int, n: int = 40) -> tuple[str, pd.DataFrame]:
     """Uploads a small labeled dataset (customer_id, tenure, contract_type,
     churn) and trains it for real -- fast: n_trials is capped low by
     dataset_routes.py's PREDICT_N_TRIALS regardless, and 40 rows keeps the
-    stacking fit itself quick. Returns the dataset id."""
-    rng = np.random.default_rng(seed)
+    stacking fit itself quick.
+
+    Returns (dataset_id, the frame it trained on) -- the frame so a
+    REUSE_MODEL test can slice its unlabelled input from the same draw
+    rather than generating an independent one (see _reuse_slice_of)."""
     df = _synthetic_dataset(
         seed, n,
         Churned=lambda r: r.choice(["Yes", "No"], p=[0.35, 0.65]),
@@ -71,7 +89,7 @@ def _train_has_target(client, seed: int, n: int = 40) -> str:
     assert resp.status_code == 200
     resp = client.post(f"/api/datasets/{uploaded['id']}/predict")
     assert resp.status_code == 200, resp.text
-    return uploaded["id"]
+    return uploaded["id"], df
 
 
 # --------------------------------------------------------------- Test 1 ---
@@ -79,7 +97,7 @@ def _train_has_target(client, seed: int, n: int = 40) -> str:
 # no training call made.
 
 def test_reuse_model_when_schema_matches_and_no_churn_column(client, monkeypatch):
-    _train_has_target(client, seed=1)
+    _dataset_id, trained_frame = _train_has_target(client, seed=1)
 
     def _fail_if_trained(*args, **kwargs):
         raise AssertionError("train_generic_model must not be called on a REUSE_MODEL connect")
@@ -87,7 +105,9 @@ def test_reuse_model_when_schema_matches_and_no_churn_column(client, monkeypatch
     from backend.generic import trainer as generic_trainer
     monkeypatch.setattr(generic_trainer, "train_generic_model", _fail_if_trained)
 
-    unlabeled = _synthetic_dataset(seed=2, n=30)  # same canonical shape, no churn column
+    # Same canonical shape, no churn column, same population -- see
+    # _reuse_slice_of on why this must not be an independent draw.
+    unlabeled = _reuse_slice_of(trained_frame, n=30)
     uploaded = _upload_validate(client, unlabeled, "unlabeled.csv")
     assert uploaded["validation"]["eligibility"]["state"] == "REUSE_MODEL"
     assert uploaded["validation"]["status"] == "ready"
@@ -220,7 +240,7 @@ def test_no_hard_requirement_for_contract_type(client):
 # retrains; new version saved, old version still retrievable.
 
 def test_has_target_always_retrains_and_versions_registry(client):
-    ds1 = _train_has_target(client, seed=5)
+    ds1, _ = _train_has_target(client, seed=5)
 
     canonical = schema_hash.compute_schema_hash(["tenure", "contract_type"])
     v1 = artifact_registry.get_latest(canonical)
@@ -232,7 +252,7 @@ def test_has_target_always_retrains_and_versions_registry(client):
     from backend.api.dataset_routes import resolve_training_eligibility
     from backend.api import store
 
-    entry2 = store.get_dataset(_train_has_target(client, seed=6))
+    entry2 = store.get_dataset(_train_has_target(client, seed=6)[0])
     field_to_col = {v: k for k, v in entry2.mappings.items()}
     state, _extra = resolve_training_eligibility(entry2, field_to_col, entry2.profile, {"fields": []})
     assert state == "HAS_TARGET"

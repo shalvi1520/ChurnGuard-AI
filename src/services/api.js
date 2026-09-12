@@ -253,8 +253,17 @@ function isUnreachable(err) {
  *
  * A connection failure is reported as its own thing rather than as a problem
  * with the user's data — telling someone to "try a different file" when the
- * backend simply isn't running sends them in entirely the wrong direction. */
-async function callDatasetApi(promise) {
+ * backend simply isn't running sends them in entirely the wrong direction.
+ *
+ * `fallbackHint` is the "what do I do about it" line appended to a 4xx/5xx.
+ * It defaults to the file-oriented GENERIC_HINT, which is right for the
+ * upload/validate/train path but wrong for a connector: the backend already
+ * folds each ConnectorError's own specific hint into `detail` (see
+ * connector_routes.py's _as_http_error), so appending "use a different file
+ * or the demo dataset" to "HubSpot rejected that access token" both
+ * contradicts it and points at a file the user never chose. Connector calls
+ * pass null. */
+async function callDatasetApi(promise, { fallbackHint = GENERIC_HINT } = {}) {
   try {
     return await promise;
   } catch (err) {
@@ -273,7 +282,7 @@ async function callDatasetApi(promise) {
     const detail = err.response?.data?.detail;
     throw new DatasetError(
       typeof detail === 'string' ? detail : 'Something went wrong while handling your dataset.',
-      GENERIC_HINT
+      fallbackHint
     );
   }
 }
@@ -401,21 +410,31 @@ export const datasetService = {
 // one dataset on the backend, ready for the same validate -> map -> predict
 // path. There is deliberately no separate CRM pipeline.
 
+// A connector error already arrives with its own specific hint baked into the
+// message by the backend -- see callDatasetApi's `fallbackHint` note.
+const CONNECTOR_ERROR_OPTIONS = { fallbackHint: null };
+
 export const connectorService = {
   /** Providers and their connect-form fields. `status` is honest: 'available'
    * really connects, 'coming_soon' will refuse rather than fake a session. */
   async listConnectors() {
-    return callDatasetApi(apiClient.get('/connectors'));
+    return callDatasetApi(apiClient.get('/connectors'), CONNECTOR_ERROR_OPTIONS);
   },
 
   async testConnection(providerId, credentials) {
-    return callDatasetApi(apiClient.post(`/connectors/${providerId}/test`, { credentials }));
+    return callDatasetApi(
+      apiClient.post(`/connectors/${providerId}/test`, { credentials }),
+      CONNECTOR_ERROR_OPTIONS
+    );
   },
 
   /** The selectable record collections inside the provider (a CRM object,
    * a report, an endpoint). */
   async listSources(providerId, credentials) {
-    return callDatasetApi(apiClient.post(`/connectors/${providerId}/sources`, { credentials }));
+    return callDatasetApi(
+      apiClient.post(`/connectors/${providerId}/sources`, { credentials }),
+      CONNECTOR_ERROR_OPTIONS
+    );
   },
 
   /** Pulls records and registers them as the active dataset. Returns the same
@@ -427,7 +446,8 @@ export const connectorService = {
         `/connectors/${providerId}/import`,
         { credentials, sourceId, limit },
         { timeout: 120000 }
-      )
+      ),
+      CONNECTOR_ERROR_OPTIONS
     );
   },
 };

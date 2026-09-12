@@ -100,7 +100,11 @@ export default function CrmConnectStep({ onBack, onImported }) {
       const res = await connectorService.listSources(provider.id, credentials);
       const list = res.sources || [];
       setSources(list);
-      setSourceId(list[0]?.id || 'default');
+      // Contacts, when the provider offers them, is the right default record
+      // type: it's the level churn is actually measured at. Falls back to
+      // whatever the connector lists first for providers with no such source.
+      const preferred = list.find((s) => s.id === 'contacts');
+      setSourceId(preferred?.id || list[0]?.id || 'default');
       setPhase(PHASE.SOURCE);
     } catch (err) {
       setFormError({ message: err.message, hint: err.hint });

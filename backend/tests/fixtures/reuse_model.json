@@ -1,0 +1,40 @@
+{
+  "autoOutreach": {
+    "done": 0,
+    "queued": 0,
+    "skipped": 0,
+    "state": "running",
+    "total": 11
+  },
+  "cleaning": [],
+  "customersProcessed": 40,
+  "datasetId": "<volatile>",
+  "extraColumnsSkipped": [],
+  "extraColumnsUsed": [],
+  "fieldsMapped": 3,
+  "labelledChurnCount": null,
+  "mappedFields": [
+    "contract_type",
+    "customer_id",
+    "tenure"
+  ],
+  "reusedModel": {
+    "driftState": "moderate",
+    "trainedAt": "2026-09-12T12:25:31.115991+00:00"
+  },
+  "source": {
+    "detail": "reuse.csv",
+    "kind": "upload",
+    "label": "Uploaded file",
+    "provider": null
+  },
+  "status": "completed",
+  "trainingMetrics": {
+    "accuracy": 0.2222222222222222,
+    "f1": 0.36363636363636365,
+    "precision": 0.2222222222222222,
+    "recall": 1.0,
+    "rocAuc": 0.7857142857142857
+  },
+  "trainingSource": "reused"
+}

@@ -12,6 +12,7 @@ fastapi
 uvicorn
 pydantic
 python-multipart
+requests
 langgraph
 langchain
 langchain-google-genai

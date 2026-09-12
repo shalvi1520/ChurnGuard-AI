@@ -1,0 +1,37 @@
+{
+  "autoOutreach": {
+    "done": 0,
+    "queued": 17,
+    "skipped": 0,
+    "state": "done",
+    "total": 0
+  },
+  "cleaning": [],
+  "customersProcessed": 60,
+  "datasetId": "<volatile>",
+  "extraColumnsSkipped": [],
+  "extraColumnsUsed": [],
+  "fieldsMapped": 4,
+  "labelledChurnCount": 18,
+  "mappedFields": [
+    "churn",
+    "contract_type",
+    "customer_id",
+    "tenure"
+  ],
+  "source": {
+    "detail": "cached_training_only.csv",
+    "kind": "upload",
+    "label": "Uploaded file",
+    "provider": null
+  },
+  "status": "completed",
+  "trainingMetrics": {
+    "accuracy": 0.2222222222222222,
+    "f1": 0.36363636363636365,
+    "precision": 0.2222222222222222,
+    "recall": 1.0,
+    "rocAuc": 0.7857142857142857
+  },
+  "trainingSource": "cached"
+}

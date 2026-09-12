@@ -13,6 +13,7 @@ import needs no column guessing at all for the properties we know.
 """
 from typing import Any, Dict, List
 
+import numpy as np
 import pandas as pd
 import requests
 
@@ -21,6 +22,15 @@ from .base import Connector, ConnectorError, CredentialField, DataSource, FetchR
 API_ROOT = "https://api.hubapi.com"
 REQUEST_TIMEOUT_SECONDS = 30
 PAGE_SIZE = 100
+
+# Every HubSpot lifecycle stage that means the relationship is still alive --
+# including `evangelist`, the most engaged stage of all. See
+# HubSpotConnector._derive_churned(): only `other` counts as churned, and a
+# blank stage is left unlabelled rather than guessed.
+ACTIVE_LIFECYCLE_STAGES = {
+    "subscriber", "lead", "marketingqualifiedlead", "salesqualifiedlead",
+    "opportunity", "customer", "evangelist",
+}
 
 # HubSpot object -> (properties to request, label)
 _OBJECTS = {
@@ -36,6 +46,7 @@ _OBJECTS = {
         [
             "hs_object_id", "email", "firstname", "lastname", "lifecyclestage",
             "hs_lead_status", "createdate", "hs_analytics_num_visits",
+            "tenure_months", "monthly_charges", "contract_type", "support_tickets_count",
         ],
         "Contacts",
         "Individual contact records.",
@@ -76,7 +87,9 @@ class HubSpotConnector(Connector):
         "type": "contract_type",
         "pipeline": "contract_type",
         "industry": "service_tier",
-        "lifecyclestage": "service_tier",
+        # `lifecyclestage` is deliberately NOT renamed to service_tier: it is a
+        # pipeline stage, not a product tier. _derive_churned() below reads it
+        # under its original name, then drops it so it can't leak the label.
     }
 
     def _headers(self, credentials: Dict[str, str]) -> Dict[str, str]:
@@ -129,7 +142,7 @@ class HubSpotConnector(Connector):
     def test_connection(self, credentials: Dict[str, str]) -> Dict[str, Any]:
         require_credentials(self, credentials)
         self.require_available()
-        payload = self._get(credentials, "/crm/v3/objects/companies", {"limit": 1})
+        payload = self._get(credentials, "/crm/v3/objects/contacts", {"limit": 1})
         return {
             "connected": True,
             "account": "HubSpot portal",
@@ -152,6 +165,49 @@ class HubSpotConnector(Connector):
         # HubSpot echoes these back on every object and they carry no churn
         # signal -- dropping them keeps the mapping review free of noise.
         return frame.drop(columns=[c for c in ("hs_lastmodifieddate", "hs_createdate") if c in frame.columns])
+
+    @staticmethod
+    def _derive_churned(frame: pd.DataFrame) -> pd.DataFrame:
+        """Builds the churn outcome from `lifecyclestage`:
+
+          - a stage in ACTIVE_LIFECYCLE_STAGES -> churned = 0
+          - `other`                            -> churned = 1
+          - blank/missing                      -> left UNLABELLED (empty)
+
+        A blank stage is not evidence of churn, so it is not guessed at. Those
+        rows keep their place in the dataset but carry no label, which is
+        exactly what dataset_routes.py's _clean_model_frame() already excludes
+        from training -- and reports honestly in the cleaning summary, so the
+        user is told how many rows it cost them.
+
+        `lifecyclestage` itself is dropped here, immediately after being used.
+        Left in, it would reach the trainer as an ordinary feature and leak the
+        label perfectly (churned is a pure function of it), producing a model
+        that scores near-perfectly in training and is worthless in production.
+        Dropped in the connector rather than via the global leakage-token list
+        because the column is only a leak *here*, where churn is derived from
+        it -- a lifecyclestage column in an uploaded CSV that nothing derives
+        from is a legitimate feature.
+
+        Runs on the normalized frame before it reaches
+        ingest.register_dataframe(). Static for the same reason normalize() is:
+        unit-testable without a network call.
+        """
+        if "lifecyclestage" not in frame.columns:
+            return frame
+
+        raw = frame["lifecyclestage"]
+        stage = raw.astype(str).str.strip().str.lower()
+        # str() turns a real null into the literal "nan"/"none"; treat those,
+        # and an empty cell, as "no stage recorded".
+        blank = raw.isna() | stage.isin({"", "nan", "none"})
+
+        churned = pd.Series("", index=frame.index, dtype=object)
+        churned.loc[~blank] = np.where(stage.loc[~blank].isin(ACTIVE_LIFECYCLE_STAGES), 0, 1)
+
+        frame = frame.copy()
+        frame["churned"] = churned
+        return frame.drop(columns=["lifecyclestage"])
 
     def fetch(self, credentials: Dict[str, str], source_id: str, limit: int) -> FetchResult:
         require_credentials(self, credentials)
@@ -186,11 +242,12 @@ class HubSpotConnector(Connector):
             )
 
         return FetchResult(
-            records=self.normalize(collected),
+            records=self._derive_churned(self.normalize(collected)),
             source_label=f"HubSpot {label}",
             detail=f"{len(collected):,} {label.lower()} imported",
             notes=[
-                "HubSpot has no churn field of its own — map one of your own properties to the churn outcome "
-                "if you track cancellations there."
+                "HubSpot has no churn field of its own, so the churn outcome was derived from each record's "
+                "lifecycle stage: 'other' counts as churned, every active stage as retained. Contacts with no "
+                "lifecycle stage set are left unlabelled and excluded from training."
             ],
         )
