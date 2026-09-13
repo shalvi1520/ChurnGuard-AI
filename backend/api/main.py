@@ -51,6 +51,31 @@ app.add_middleware(
 app.include_router(dataset_router)
 app.include_router(connector_router)
 
+@app.on_event("startup")
+async def _widen_sync_threadpool() -> None:
+    """FastAPI runs every plain `def` endpoint (as opposed to `async def`) in
+    Starlette/anyio's shared worker thread pool -- capped at 40 threads by
+    default. `/predict` (a multi-minute Optuna retrain) and the auto-outreach
+    background loop (per-customer SHAP + an LLM draft, also potentially
+    minutes) are both sync functions, so each one occupies a thread from that
+    same shared pool for its *entire* run, not just while touching a database
+    or calling an API. After a long testing session with several of those
+    stacked up, a plain, fast, unrelated request -- GET /datasets/history,
+    or even the auth check every other request depends on -- can end up
+    silently queued waiting for a free thread, indistinguishable from a real
+    hang: no error, no log line, until the client's own timeout gives up.
+    A verified-healthy, instant, isolated database connection (see
+    test_db_connection.py) while the app itself still "hangs" is the
+    signature of exactly this, not a database or network problem. Raising
+    the ceiling well past anything this app's own concurrent slow calls will
+    ever need means a fast endpoint is never left waiting behind a slow one
+    for a free thread.
+    """
+    from anyio import to_thread
+
+    limiter = to_thread.current_default_thread_limiter()
+    limiter.total_tokens = 200
+
 # --- optional routers -------------------------------------------------------
 
 OPTIONAL_ROUTERS_SKIPPED = {}
