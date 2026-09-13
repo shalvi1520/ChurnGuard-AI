@@ -4,6 +4,7 @@
 
 import { createContext, useContext, useReducer, useCallback, useEffect } from 'react';
 import { useAuth } from './AuthContext';
+import { startDbKeepAlive, stopDbKeepAlive } from '../services/api';
 import {
   DEFAULT_THEME,
   applyResolvedTheme,
@@ -137,6 +138,21 @@ export function AppProvider({ children }) {
       dispatch({ type: 'SET_DATASET_SETUP', payload: null });
     }
   }, [authLoading, isAuthenticated, userKey]);
+
+  // Keeps Neon's compute warm while someone is actively signed in and using
+  // the app -- see services/api.js's startDbKeepAlive for why this exists
+  // (the free tier's fixed 5-minute auto-suspend, and how much of the
+  // "History randomly won't load" pain in this app turned out to just be
+  // that). Stopped on sign-out so a logged-out tab doesn't keep pinging an
+  // authenticated endpoint in the background forever.
+  useEffect(() => {
+    if (isAuthenticated) {
+      startDbKeepAlive();
+    } else {
+      stopDbKeepAlive();
+    }
+    return () => stopDbKeepAlive();
+  }, [isAuthenticated]);
 
   // ---------------------------------------------------------- appearance --
   //
