@@ -217,10 +217,15 @@ export const DATASET_UPLOAD = {
  * `message` says what is wrong, `hint` says what to do about it.
  */
 export class DatasetError extends Error {
-  constructor(message, hint) {
+  constructor(message, hint, status = null) {
     super(message);
     this.name = 'DatasetError';
     this.hint = hint;
+    // The backend's HTTP status, when there was a real response (null for
+    // timeouts/unreachable) -- callers that need to tell "needs reconnect"
+    // (409) apart from "server is down" or "something broke" read this
+    // instead of poking at the now-discarded axios error underneath.
+    this.status = status;
   }
 }
 
@@ -275,7 +280,8 @@ async function callDatasetApi(promise, { fallbackHint = GENERIC_HINT } = {}) {
     const detail = err.response?.data?.detail;
     throw new DatasetError(
       typeof detail === 'string' ? detail : 'Something went wrong while handling your dataset.',
-      fallbackHint
+      fallbackHint,
+      err.response?.status ?? null
     );
   }
 }
@@ -302,6 +308,46 @@ export async function checkBackendHealth({ force = false } = {}) {
   }
   healthCache = { checkedAt: Date.now(), value };
   return value;
+}
+
+/** A genuine, tiny database round trip -- unlike checkBackendHealth() above,
+ * which only proves the backend process is running, not that Neon is warm.
+ * Neon's free tier suspends its compute after 5 minutes idle (fixed, not
+ * configurable on this plan) and the next real query pays a cold-start
+ * delay of anywhere from a couple of seconds to several tens of seconds.
+ * startDbKeepAlive() below calls this every few minutes while someone is
+ * actively using the app so that delay is already paid for in the
+ * background, long before a real click needs the data -- never surfaced
+ * to the user, and safe to fail silently since it's purely a warm-up. */
+async function pingDatabase() {
+  try {
+    await apiClient.get('/health/db', { timeout: 15000 });
+  } catch {
+    // Silent on purpose -- a missed keep-alive just means the next real
+    // request might pay a cold-start delay, not something to alarm the
+    // user about mid-session.
+  }
+}
+
+const DB_KEEPALIVE_INTERVAL_MS = 3 * 60 * 1000; // under Neon's fixed 5-minute free-tier suspend window
+let dbKeepAliveTimer = null;
+
+/** Starts the periodic keep-alive ping. Safe to call more than once --
+ * an existing timer is cleared first, so re-calling this (e.g. on every
+ * sign-in) never stacks up duplicate intervals. Call stopDbKeepAlive() on
+ * sign-out so a logged-out session doesn't keep pinging an authenticated
+ * endpoint. */
+export function startDbKeepAlive() {
+  stopDbKeepAlive();
+  pingDatabase();
+  dbKeepAliveTimer = setInterval(pingDatabase, DB_KEEPALIVE_INTERVAL_MS);
+}
+
+export function stopDbKeepAlive() {
+  if (dbKeepAliveTimer) {
+    clearInterval(dbKeepAliveTimer);
+    dbKeepAliveTimer = null;
+  }
 }
 
 export const datasetService = {
@@ -367,8 +413,21 @@ export const datasetService = {
    * only IndexedDB list, which remembers the file for a quick reconnect but
    * nothing across devices. Requires sign-in; 503s if the server has no
    * database configured. */
+  // Neon's free tier suspends its compute after a few minutes idle, so the
+  // first request after a while can include a real cold-start wake-up on
+  // top of the query itself -- the default 30s timeout occasionally isn't
+  // enough for that, and the honest fix is a longer timeout, not a shorter
+  // wait that reports "took too long" for what is just Neon waking up.
   async getHistory() {
-    return callDatasetApi(apiClient.get('/datasets/history'));
+    return callDatasetApi(apiClient.get('/datasets/history', { timeout: 45000 }));
+  },
+
+  /** Instant one-click reopen of a server-side history row -- no re-upload,
+   * no retrain. Only succeeds when that row's training run was fully cached
+   * (predictionsAvailable from getHistory()); the backend 409s otherwise so
+   * the caller can fall back to the ordinary reconnect-the-file flow. */
+  async reopenHistory(datasetRowId) {
+    return callDatasetApi(apiClient.post(`/datasets/history/${datasetRowId}/reopen`, null, { timeout: 45000 }));
   },
 
   /** The dataset the backend currently holds, or null if there is none.

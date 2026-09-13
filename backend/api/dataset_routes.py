@@ -21,6 +21,9 @@ import numpy as np
 import pandas as pd
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel
+from sqlalchemy.exc import OperationalError
+from sqlalchemy import func
+from sqlalchemy import text as sqlalchemy_text
 
 from ..agents import business_rules  # pure Python, no optional deps -- safe to import eagerly
 from ..generic import artifact_registry
@@ -221,6 +224,31 @@ def health() -> Dict[str, Any]:
         "schemaVersion": schema.SCHEMA_VERSION,
         "dataset": entry.summary() if entry else None,
     }
+
+
+@router.get("/health/db")
+def health_db() -> Dict[str, Any]:
+    """A genuine, tiny database round trip -- unlike /health, which never
+    touches Neon at all (it only reads the in-memory store) and therefore
+    can't stop Neon's free-tier compute from suspending after 5 minutes
+    idle (a fixed, non-configurable delay on the free plan -- see
+    https://neon.com/docs/introduction/auto-suspend). The frontend pings
+    this every few minutes while someone is actively using the app, purely
+    so the compute is already awake by the time a real request needs it --
+    trading a small, constant background query for never surfacing a 5-30s
+    cold-start delay as a scary "couldn't load" error in the middle of a
+    session. Never raises: a keep-alive ping failing is not something the
+    user should ever see."""
+    if not DB_AVAILABLE:
+        return {"status": "no_database"}
+    db = SessionLocal()
+    try:
+        db.execute(sqlalchemy_text("SELECT 1"))
+        return {"status": "ok"}
+    except Exception:  # noqa: BLE001 -- a keep-alive ping never fails loudly
+        return {"status": "unreachable"}
+    finally:
+        db.close()
 
 
 @router.get("/dataset")
@@ -1672,52 +1700,97 @@ def dataset_history(current_user=Depends(get_current_user)):
     if not DB_AVAILABLE:
         raise HTTPException(503, "Dataset history needs a database, which isn't configured on this server.")
 
-    db = SessionLocal()
-    try:
-        rows = (
-            db.query(DatasetRow)
-            .filter(DatasetRow.user_id == current_user.id)
-            .order_by(DatasetRow.uploaded_at.desc())
-            .limit(50)
-            .all()
-        )
-        out = []
-        for row in rows:
-            latest_model = (
-                db.query(TrainedModel)
-                .filter(TrainedModel.dataset_id == row.id)
-                .order_by(TrainedModel.trained_at.desc())
-                .first()
+    # Two attempts, each on a fresh connection: Neon can drop a pooled
+    # connection that's been idle for a while (see database.py's
+    # pool_recycle comment) in the gap pre_ping can't quite close. This
+    # endpoint is pure reads, so retrying once on a clean connection is
+    # always safe -- there's no partial write to worry about undoing.
+    last_error: Optional[OperationalError] = None
+    for attempt in (1, 2):
+        db = SessionLocal()
+        try:
+            rows = (
+                db.query(DatasetRow)
+                .filter(DatasetRow.user_id == current_user.id)
+                .order_by(DatasetRow.uploaded_at.desc())
+                .limit(50)
+                .all()
             )
-            out.append({
-                "id": row.id,
-                "filename": row.filename,
-                "sourceKind": row.source_kind,
-                "sourceProvider": row.source_provider,
-                "rowCount": row.row_count,
-                "columnCount": row.column_count,
-                "fingerprint": row.fingerprint,
-                "uploadedAt": row.uploaded_at.isoformat() if row.uploaded_at else None,
-                "trained": latest_model is not None,
-                "trainedAt": latest_model.trained_at.isoformat() if latest_model else None,
-                "metrics": (
-                    {
-                        "accuracy": latest_model.report.get("test_metrics", {}).get("accuracy"),
-                        "recall": latest_model.report.get("test_metrics", {}).get("recall"),
-                        "rocAuc": latest_model.report.get("test_metrics", {}).get("roc_auc"),
-                    }
-                    if latest_model
-                    else None
-                ),
-                # Whether GET /datasets/history/{id}/predictions has anything
-                # to return -- lets the frontend show/hide a "view
-                # predictions" action per row without a second round trip.
-                "predictionsAvailable": bool(latest_model and latest_model.predictions),
-                "customersProcessed": len(latest_model.predictions) if latest_model and latest_model.predictions else None,
-            })
-        return {"datasets": out}
-    finally:
-        db.close()
+
+            # One query for every trained model across all 50 datasets, instead
+            # of the N+1 pattern this used to be (a separate round-trip to Neon
+            # per row) -- but restricted to only the columns this endpoint
+            # actually reads. `predictions` and `full_result_extra` hold a full
+            # per-customer record (including raw SHAP feature values) for every
+            # customer in that training run; pulling those in full for every
+            # trained model this account has (21, in this case) was silently
+            # transferring and deserializing many megabytes of JSON on every
+            # single History load -- easily enough on its own to make this
+            # "simple" endpoint far slower than a plain SELECT has any right to
+            # be, independent of Neon/network latency. `json_array_length`
+            # gets the customer count directly from Postgres without ever
+            # pulling the array itself across the wire.
+            dataset_ids = [row.id for row in rows]
+            latest_by_dataset: Dict[str, Any] = {}
+            if dataset_ids:
+                models = (
+                    db.query(
+                        TrainedModel.dataset_id,
+                        TrainedModel.trained_at,
+                        TrainedModel.report,
+                        TrainedModel.predictions.isnot(None).label("has_predictions"),
+                        func.json_array_length(TrainedModel.predictions).label("prediction_count"),
+                    )
+                    .filter(TrainedModel.dataset_id.in_(dataset_ids))
+                    .order_by(TrainedModel.dataset_id, TrainedModel.trained_at.desc())
+                    .all()
+                )
+                for model in models:
+                    # First one seen per dataset_id is the latest, thanks to the
+                    # order_by above -- never overwritten by an older run.
+                    latest_by_dataset.setdefault(model.dataset_id, model)
+            break
+        except OperationalError as exc:
+            last_error = exc
+            rows = []
+            latest_by_dataset = {}
+            continue
+        finally:
+            db.close()
+    else:
+        raise HTTPException(503, "Couldn't reach the database. Please try again in a moment.") from last_error
+
+    out = []
+    for row in rows:
+        latest_model = latest_by_dataset.get(row.id)
+        out.append({
+            "id": row.id,
+            "filename": row.filename,
+            "sourceKind": row.source_kind,
+            "sourceProvider": row.source_provider,
+            "rowCount": row.row_count,
+            "columnCount": row.column_count,
+            "fingerprint": row.fingerprint,
+            "uploadedAt": row.uploaded_at.isoformat() if row.uploaded_at else None,
+            "trained": latest_model is not None,
+            "trainedAt": latest_model.trained_at.isoformat() if latest_model else None,
+            "metrics": (
+                {
+                    "accuracy": latest_model.report.get("test_metrics", {}).get("accuracy"),
+                    "recall": latest_model.report.get("test_metrics", {}).get("recall"),
+                    "rocAuc": latest_model.report.get("test_metrics", {}).get("roc_auc"),
+                }
+                if latest_model
+                else None
+            ),
+            # Whether GET /datasets/history/{id}/predictions has anything
+            # to return -- lets the frontend show/hide a "view
+            # predictions" action per row without a second round trip.
+            "predictionsAvailable": bool(latest_model and latest_model.has_predictions),
+            "customersProcessed": latest_model.prediction_count if latest_model and latest_model.has_predictions else None,
+        })
+    return {"datasets": out}
+
 
 
 @router.get("/datasets/history/{dataset_row_id}/predictions")
@@ -1753,6 +1826,117 @@ def dataset_history_predictions(dataset_row_id: str, current_user=Depends(get_cu
             "filename": dataset_row.filename,
             "trainedAt": latest_model.trained_at.isoformat(),
             "customers": latest_model.predictions,
+        }
+    finally:
+        db.close()
+
+
+@router.post("/datasets/history/{dataset_row_id}/reopen")
+def reopen_dataset_history(dataset_row_id: str, current_user=Depends(get_current_user)):
+    """One click, no re-upload, no retrain: rebuilds the in-memory
+    DatasetEntry for a past history row directly from what /predict already
+    persisted (TrainedModel.predictions + .full_result_extra), and makes it
+    the active dataset. /dashboard, /customers and /customers/{id} all read
+    off entry.customers / entry.raw_features_by_id, so they work immediately
+    -- this never re-reads the original file and never touches raw_df, which
+    is why it can skip upload/validate/map-columns/predict entirely.
+
+    409s (not a broken reopen) when there is nothing full enough to reopen --
+    an older run from before full_result_extra existed, or one made on a
+    different machine whose model artifacts aren't on this one. The frontend
+    should fall back to the ordinary reconnect-the-file flow in that case.
+    """
+    if not DB_AVAILABLE:
+        raise HTTPException(503, "Dataset history needs a database, which isn't configured on this server.")
+
+    db = SessionLocal()
+    try:
+        dataset_row = (
+            db.query(DatasetRow)
+            .filter(DatasetRow.id == dataset_row_id, DatasetRow.user_id == current_user.id)
+            .first()
+        )
+        if dataset_row is None:
+            raise HTTPException(404, "That dataset history entry doesn't exist, or isn't yours.")
+
+        latest_model = (
+            db.query(TrainedModel)
+            .filter(TrainedModel.dataset_id == dataset_row.id)
+            .order_by(TrainedModel.trained_at.desc())
+            .first()
+        )
+        if latest_model is None or not latest_model.predictions or not latest_model.full_result_extra:
+            raise HTTPException(
+                409,
+                "This dataset wasn't fully cached (an older run, or one made before instant-reopen "
+                "existed). Reconnect the original file to open it.",
+            )
+        if not generic_artifacts.is_trained(latest_model.fingerprint):
+            raise HTTPException(
+                409,
+                "The trained model behind this dataset isn't available on this server (e.g. it was "
+                "trained on a different machine). Reconnect the original file to retrain.",
+            )
+
+        extra = dict(latest_model.full_result_extra)
+        customers = latest_model.predictions
+        report = dict(latest_model.report)
+
+        entry = DatasetEntry(
+            id=dataset_row.id,
+            filename=dataset_row.filename,
+            size=0,
+            # Setup-only routes (validate/map-columns/derive-churn) are the
+            # only things that ever touch raw_df, and a reopened entry never
+            # goes through them -- an empty frame is enough to satisfy the
+            # dataclass without pretending we still have the original rows.
+            raw_df=pd.DataFrame(),
+            profile={"rowCount": dataset_row.row_count, "columnCount": dataset_row.column_count},
+            source=DatasetSource(
+                kind=dataset_row.source_kind or "upload",
+                label={"upload": "Uploaded file", "demo": "Demo data", "crm": "CRM"}.get(
+                    dataset_row.source_kind or "upload", "Uploaded file"
+                ),
+                provider=dataset_row.source_provider,
+            ),
+            mappings=dataset_row.mappings,
+        )
+        entry.customers = customers
+        entry.customers_by_id = {c["id"]: c for c in customers}
+        entry.raw_features_by_id = extra.get("rawFeaturesById", {})
+        entry.training_report = report
+        entry.trained = True
+        entry.cleaning = extra.get("cleaning", [])
+        entry.fingerprint = latest_model.fingerprint
+        entry.top_drivers = extra.get("topDrivers")
+
+        restored_drafts = latest_model.outreach_drafts or []
+        entry.outreach_drafts = restored_drafts
+        entry.auto_outreach_state = "done"
+        entry.auto_outreach_queued = len(restored_drafts)
+        entry.auto_outreach_skipped = max(
+            0, sum(1 for c in customers if c["riskTier"] in ("high", "critical")) - len(restored_drafts)
+        )
+
+        store.create_dataset(entry)
+
+        return {
+            "datasetId": entry.id,
+            "status": "completed",
+            "source": entry.source.as_dict(),
+            "filename": dataset_row.filename,
+            "rows": dataset_row.row_count,
+            "columns": dataset_row.column_count,
+            "customersProcessed": len(customers),
+            "mappedFields": entry.mapped_field_keys(),
+            "cleaning": entry.cleaning,
+            "extraColumnsUsed": extra.get("extraColumnsUsed", []),
+            "trainingMetrics": {
+                "accuracy": report.get("test_metrics", {}).get("accuracy"),
+                "recall": report.get("test_metrics", {}).get("recall"),
+                "rocAuc": report.get("test_metrics", {}).get("roc_auc"),
+            },
+            "trainingSource": "reopened",
         }
     finally:
         db.close()

@@ -1,47 +1,28 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import {
-  AlertTriangle,
-  ChevronDown,
-  Database,
-  FileSpreadsheet,
-  Plug,
-  RotateCcw,
-  Sparkles,
-  Trash2,
-} from 'lucide-react';
+import { AlertTriangle, Database, FileSpreadsheet, Plug, RotateCcw, Sparkles, Zap } from 'lucide-react';
 import Card from '../components/ui/Card';
 import Button from '../components/ui/Button';
 import Badge from '../components/ui/Badge';
-import Modal from '../components/ui/Modal';
 import EmptyState from '../components/ui/EmptyState';
 import Skeleton from '../components/ui/Skeleton';
 import { InfoTip } from '../components/ui/Tooltip';
-import datasetHistory, { HISTORY_STATUS, UNAVAILABLE_MESSAGE } from '../services/datasetHistory';
+import { datasetService } from '../services/api';
 import { useApp } from '../context/AppContext';
-import { useAuth } from '../context/AuthContext';
 import { formatDate, formatNumber, formatRelativeDate } from '../utils/helpers';
 
 /**
- * Datasets this user has connected before, and a one-click way back to any of
- * them.
+ * Datasets this signed-in account has trained before, read straight from
+ * Neon (GET /datasets/history) -- not the browser. That is what makes this
+ * list the same on every device and after clearing site data, unlike the
+ * old IndexedDB-only version of this page.
  *
- * The problem it solves: the backend holds one dataset in process memory, so
- * before this page existed, coming back tomorrow meant finding the same export
- * on disk and uploading it again. History keeps the file in the browser's
- * IndexedDB and hands it straight back to the normal ingestion pipeline — the
- * user never opens a file picker twice for the same data.
- *
- * What it is NOT: a second customer database. It stores dataset metadata and
- * the original file, never customer records, scores or dashboards — those
- * belong to the active dataset and would be stale copies here.
- *
- * The honest part: reconnecting genuinely re-registers the file, because a
- * previous session's *in-memory* dataset does not survive a backend restart.
- * Training itself is skipped when signed in and this exact data (same
- * columns, same values) was already trained on this account — see
- * backend/api/dataset_routes.py's fingerprint cache — otherwise it retrains
- * for real. The page says so rather than promising either behaviour blindly.
+ * Clicking a row that was fully cached (predictionsAvailable) calls
+ * POST /datasets/history/{id}/reopen and jumps straight to the dashboard --
+ * no re-upload, no re-validate/map-columns, no retrain. A row that predates
+ * that cache (older runs, or ones whose model artifacts live on a different
+ * machine) says so plainly and sends the user to Data Management to
+ * reconnect the original file instead of pretending it can be one-clicked.
  */
 
 const SOURCE_META = {
@@ -66,23 +47,20 @@ function Fact({ label, value }) {
   return (
     <div className="min-w-0">
       <dt className="text-[11px] text-text-tertiary">{label}</dt>
-      <dd className="text-xs font-medium text-text-primary mt-0.5 truncate tabular-nums">
-        {value}
-      </dd>
+      <dd className="text-xs font-medium text-text-primary mt-0.5 truncate tabular-nums">{value}</dd>
     </div>
   );
 }
 
-function DatasetRow({ record, isActive, onUse, onDelete, expanded, onToggle }) {
+function DatasetRow({ record, isActive, onOpen, opening }) {
   const meta = SOURCE_META[record.sourceKind] || SOURCE_META.upload;
   const Icon = meta.icon;
-  const restorable = record.status === HISTORY_STATUS.restorable;
+  const instant = record.predictionsAvailable;
 
-  // Status is a labelled badge plus a sentence — never colour on its own.
   const status = isActive
     ? { variant: 'active', text: 'Active' }
-    : restorable
-      ? { variant: 'accent', text: 'Ready to reuse' }
+    : instant
+      ? { variant: 'accent', text: 'Opens instantly' }
       : { variant: 'medium', text: 'Needs the original file' };
 
   return (
@@ -93,13 +71,9 @@ function DatasetRow({ record, isActive, onUse, onDelete, expanded, onToggle }) {
             <Icon size={17} className="text-text-secondary" aria-hidden="true" />
           </div>
           <div className="min-w-0">
-            <h3 className="text-sm font-semibold text-text-primary break-all">{record.name}</h3>
+            <h3 className="text-sm font-semibold text-text-primary break-all">{record.filename}</h3>
             <p className="text-xs text-text-tertiary mt-0.5">
-              {meta.label}
-              {record.sourceDetail && record.sourceDetail !== record.name
-                ? ` · ${record.sourceDetail}`
-                : ''}{' '}
-              · last used {formatRelativeDate(record.lastUsedAt)}
+              {meta.label} · last trained {formatRelativeDate(record.trainedAt || record.uploadedAt)}
             </p>
           </div>
         </div>
@@ -110,126 +84,86 @@ function DatasetRow({ record, isActive, onUse, onDelete, expanded, onToggle }) {
 
       <dl className="grid grid-cols-2 sm:grid-cols-4 gap-4 mt-4">
         <Fact label="Rows" value={record.rowCount != null ? formatNumber(record.rowCount) : '—'} />
-        <Fact
-          label="Columns"
-          value={record.columnCount != null ? formatNumber(record.columnCount) : '—'}
-        />
-        <Fact
-          label="Required fields"
-          value={
-            record.requiredFieldCount != null && record.requiredTotal
-              ? `${record.requiredFieldCount} of ${record.requiredTotal}`
-              : '—'
-          }
-        />
-        <Fact label="First connected" value={formatDate(record.createdAt)} />
+        <Fact label="Columns" value={record.columnCount != null ? formatNumber(record.columnCount) : '—'} />
+        <Fact label="Recall" value={record.metrics?.recall != null ? `${(record.metrics.recall * 100).toFixed(0)}%` : '—'} />
+        <Fact label="First uploaded" value={formatDate(record.uploadedAt)} />
       </dl>
 
-      {!restorable && (
+      {!instant && (
         <p className="text-xs text-risk-medium mt-3 leading-relaxed">
-          {record.unavailableReason || UNAVAILABLE_MESSAGE}
+          {record.trained
+            ? 'Trained before instant reopen was added, or its model lives on a different machine — reconnect the file to open it.'
+            : 'This upload never finished training — reconnect the file to try again.'}
         </p>
       )}
 
       <div className="flex flex-wrap items-center gap-2 mt-4">
         <Button
           size="sm"
-          // A disabled accent button reads as an unavailable primary action;
-          // "in use" is a state, so it renders as one.
           variant={isActive ? 'secondary' : 'primary'}
-          onClick={() => onUse(record)}
-          disabled={!restorable || isActive}
-          icon={RotateCcw}
+          onClick={() => onOpen(record)}
+          disabled={isActive || opening}
+          loading={opening}
+          icon={instant ? Zap : RotateCcw}
         >
-          {isActive ? 'In use' : 'Use dataset'}
-        </Button>
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={onToggle}
-          aria-expanded={expanded}
-          aria-controls={`history-details-${record.id}`}
-        >
-          <ChevronDown
-            size={14}
-            className={`mr-1 transition-transform ${expanded ? 'rotate-180' : ''}`}
-            aria-hidden="true"
-          />
-          {expanded ? 'Hide details' : 'View details'}
-        </Button>
-        <Button
-          variant="ghost"
-          size="sm"
-          className="text-text-tertiary hover:text-risk-critical ml-auto"
-          onClick={() => onDelete(record)}
-          icon={Trash2}
-        >
-          Delete
+          {isActive ? 'In use' : instant ? 'Open instantly' : 'Reconnect file'}
         </Button>
       </div>
-
-      {expanded && (
-        <div
-          id={`history-details-${record.id}`}
-          className="mt-4 pt-4 border-t border-border grid grid-cols-1 sm:grid-cols-2 gap-4"
-        >
-          <div>
-            <p className="text-[11px] text-text-tertiary">ChurnGuard fields mapped</p>
-            <p className="text-xs text-text-secondary mt-1 leading-relaxed">
-              {record.mappedFields?.length ? record.mappedFields.join(', ') : 'Not recorded'}
-            </p>
-          </div>
-          <div>
-            <p className="text-[11px] text-text-tertiary">Saved copy</p>
-            <p className="text-xs text-text-secondary mt-1 leading-relaxed">
-              {record.file
-                ? `${record.file.name} · ${(record.file.size / 1024).toFixed(0)} KB, kept in this browser`
-                : 'No file kept — this entry is metadata only.'}
-            </p>
-          </div>
-        </div>
-      )}
     </Card>
   );
 }
 
 export default function HistoryPage() {
   const navigate = useNavigate();
-  const { user } = useAuth();
-  const { activeDataset, addToast } = useApp();
-  const userKey = user?.email || null;
+  const { activeDataset, addToast, completeDatasetSetup } = useApp();
 
   const [records, setRecords] = useState(null); // null = still loading
-  const [storageError, setStorageError] = useState(null);
-  const [expandedId, setExpandedId] = useState(null);
-  const [pendingDelete, setPendingDelete] = useState(null);
-  const [deleting, setDeleting] = useState(false);
-  // Bumped after a delete to re-read the store — the effect below is the one
-  // place that reads it, so there is a single load path.
-  const [reloadToken, setReloadToken] = useState(0);
+  const [loadError, setLoadError] = useState(null);
+  const [openingId, setOpeningId] = useState(null);
 
-  useEffect(() => {
-    let cancelled = false;
-    datasetHistory
-      .list(userKey)
-      .then((saved) => {
-        if (cancelled) return;
-        setRecords(saved);
-        setStorageError(null);
-      })
-      .catch((err) => {
-        if (cancelled) return;
+  const load = useCallback(() => {
+    setRecords(null);
+    setLoadError(null);
+    datasetService
+      .getHistory()
+      .then((data) => setRecords(data.datasets || []))
+      .catch(async (err) => {
+        // A timeout here is very often just Neon's free-tier compute
+        // waking up from being idle (a fixed 5-minute auto-suspend on this
+        // plan -- see services/api.js's keep-alive) rather than a real
+        // failure: the very first request in a session, or one right after
+        // a long gap, can pay that cold-start cost even with the keep-alive
+        // running, since the keep-alive can only prevent it from happening
+        // AGAIN once it's had a chance to run -- not the very first time.
+        // Neon's own guidance for exactly this is to retry once rather
+        // than surface a cold compute as a broken app, so a timeout gets
+        // one silent retry a few seconds later (compute is normally awake
+        // by then) before this ever becomes a visible error.
+        const isTimeout = err?.message?.toLowerCase().includes('took too long');
+        if (isTimeout) {
+          await new Promise((resolve) => setTimeout(resolve, 4000));
+          try {
+            const data = await datasetService.getHistory();
+            setRecords(data.datasets || []);
+            return;
+          } catch (retryErr) {
+            err = retryErr; // fall through to showing this as a real error
+          }
+        }
         setRecords([]);
-        setStorageError(
-          err?.message || 'This browser would not let ChurnGuard read its saved datasets.'
+        setLoadError(
+          err?.status === 503
+            ? "Dataset history needs sign-in and a configured database — this server doesn't have one."
+            : err?.message || 'Could not load dataset history from the server.'
         );
       });
-    return () => {
-      cancelled = true;
-    };
-  }, [userKey, reloadToken]);
+  }, []);
 
-  const activeHistoryId = activeDataset?.historyId || null;
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const activeDatasetId = activeDataset?.datasetId || null;
 
   const mostRecent = records?.[0] || null;
 
@@ -238,12 +172,9 @@ export default function HistoryPage() {
       {
         label: 'Saved datasets',
         value: records ? formatNumber(records.length) : '—',
-        help: 'Datasets you have connected in this browser. They are stored locally and are not uploaded anywhere.',
+        help: 'Every dataset this account has trained, stored in ChurnGuard\u2019s database — the same list on any device.',
       },
-      {
-        label: 'Most recently used',
-        value: mostRecent ? mostRecent.name : 'None yet',
-      },
+      { label: 'Most recently used', value: mostRecent ? mostRecent.filename : 'None yet' },
       {
         label: 'Current dataset',
         value: activeDataset?.filename || 'None connected',
@@ -253,68 +184,78 @@ export default function HistoryPage() {
     [records, mostRecent, activeDataset]
   );
 
-  const handleUse = useCallback(
-    (record) => {
-      // Restoration runs through the normal Data Management pipeline — there is
-      // deliberately no second ingestion path.
-      navigate(`/data-management?restore=${encodeURIComponent(record.id)}`);
+  const handleOpen = useCallback(
+    async (record) => {
+      if (!record.predictionsAvailable) {
+        // Nothing cached to reopen -- the honest path is a real reconnect,
+        // not a fake instant open. Data Management still handles this file.
+        navigate('/data-management');
+        return;
+      }
+      setOpeningId(record.id);
+      try {
+        const result = await datasetService.reopenHistory(record.id);
+        completeDatasetSetup({
+          source: result.source,
+          isDemo: result.source?.kind === 'demo',
+          filename: result.filename,
+          datasetId: result.datasetId,
+          rows: result.customersProcessed ?? result.rows,
+          datasetRows: result.rows,
+          columns: result.columns,
+          fieldsMapped: result.mappedFields?.length ?? null,
+          mappedColumns: result.mappedFields ?? [],
+          cleaning: result.cleaning ?? [],
+          additionalColumns: result.extraColumnsUsed?.length ?? 0,
+          trainingMetrics: result.trainingMetrics ?? null,
+        });
+        addToast({ type: 'success', message: `${record.filename} is open — nothing was retrained.` });
+        navigate('/dashboard');
+      } catch (err) {
+        if (err?.status === 409) {
+          addToast({
+            type: 'info',
+            message: err.message || 'This dataset needs to be reconnected to open.',
+          });
+          navigate('/data-management');
+        } else {
+          addToast({ type: 'error', message: 'Could not reopen that dataset. Try again in a moment.' });
+        }
+      } finally {
+        setOpeningId(null);
+      }
     },
-    [navigate]
+    [navigate, completeDatasetSetup, addToast]
   );
-
-  const handleDelete = useCallback(async () => {
-    if (!pendingDelete) return;
-    setDeleting(true);
-    try {
-      await datasetHistory.remove(pendingDelete.id);
-      addToast({ type: 'info', message: `Removed ${pendingDelete.name} from history` });
-      setReloadToken((t) => t + 1);
-    } catch {
-      addToast({ type: 'error', message: 'That dataset could not be removed from this browser' });
-    }
-    setDeleting(false);
-    setPendingDelete(null);
-  }, [pendingDelete, addToast]);
-
-  const deletingActive = pendingDelete && pendingDelete.id === activeHistoryId;
 
   return (
     <div className="space-y-6">
       <header className="max-w-2xl">
         <h1 className="text-xl font-bold text-text-primary tracking-tight">Dataset history</h1>
         <p className="text-sm text-text-secondary mt-1.5 leading-relaxed">
-          Reconnect to previously used datasets without uploading them again. ChurnGuard keeps a
-          copy in this browser and hands it back to the same setup pipeline — retraining for real,
-          unless you're signed in and this exact data was already trained on your account, in which
-          case the existing model is reused instead of retrained.
+          Every dataset this account has trained, stored on ChurnGuard&apos;s server. A dataset that was
+          fully processed before opens instantly — no re-upload, no retraining.
         </p>
       </header>
 
-      {/* ---------- Summary ---------- */}
       <div className="rounded-xl border border-border bg-bg-card grid grid-cols-1 sm:grid-cols-3 divide-y sm:divide-y-0 sm:divide-x divide-border">
         {summary.map((tile) => (
           <SummaryTile key={tile.label} {...tile} />
         ))}
       </div>
 
-      {storageError && (
+      {loadError && (
         <Card role="alert" className="border-risk-medium/30 bg-risk-medium/[0.05]">
           <div className="flex items-start gap-2.5">
             <AlertTriangle size={16} className="text-risk-medium mt-0.5 shrink-0" />
             <div>
-              <h2 className="text-sm font-semibold text-text-primary">
-                Saved datasets are unavailable in this browser
-              </h2>
-              <p className="text-xs text-text-secondary mt-1 leading-relaxed">
-                {storageError} Private-browsing windows and blocked site data both do this. You can
-                still connect data normally from Data Management.
-              </p>
+              <h2 className="text-sm font-semibold text-text-primary">Couldn&apos;t load dataset history</h2>
+              <p className="text-xs text-text-secondary mt-1 leading-relaxed">{loadError}</p>
             </div>
           </div>
         </Card>
       )}
 
-      {/* ---------- The list ---------- */}
       {records === null ? (
         <div className="space-y-4" aria-busy="true">
           <span className="sr-only">Loading saved datasets</span>
@@ -330,8 +271,8 @@ export default function HistoryPage() {
         <Card padding={false}>
           <EmptyState
             icon={Database}
-            title="No saved datasets yet"
-            description="Datasets you connect will appear here so you can reuse them without uploading again."
+            title="No trained datasets yet"
+            description="Datasets you connect and train will appear here so you can reopen them instantly next time."
             actionLabel="Connect data"
             action={() => navigate('/data-management')}
           />
@@ -342,49 +283,13 @@ export default function HistoryPage() {
             <DatasetRow
               key={record.id}
               record={record}
-              isActive={record.id === activeHistoryId}
-              onUse={handleUse}
-              onDelete={setPendingDelete}
-              expanded={expandedId === record.id}
-              onToggle={() => setExpandedId(expandedId === record.id ? null : record.id)}
+              isActive={record.id === activeDatasetId}
+              onOpen={handleOpen}
+              opening={openingId === record.id}
             />
           ))}
-          <p className="text-[11px] text-text-tertiary leading-relaxed max-w-2xl">
-            Saved datasets live in this browser only, under your signed-in account. They are not
-            uploaded to ChurnGuard&apos;s backend or shared between devices, and clearing site data
-            removes them.
-          </p>
         </div>
       )}
-
-      {/* ---------- Delete confirmation ---------- */}
-      <Modal
-        isOpen={Boolean(pendingDelete)}
-        onClose={() => (deleting ? null : setPendingDelete(null))}
-        title="Delete this saved dataset?"
-        size="sm"
-      >
-        <p className="text-sm text-text-secondary leading-relaxed">
-          <span className="font-medium text-text-primary">{pendingDelete?.name}</span> and its
-          saved copy will be removed from this browser. You will need the original file to use it
-          again.
-        </p>
-        {deletingActive && (
-          <p className="text-xs text-risk-medium mt-3 leading-relaxed" role="alert">
-            This is the dataset ChurnGuard is currently running on. Deleting its saved copy does
-            not disconnect it — Portfolio & Risk and your customers stay exactly as they are — but you
-            will not be able to bring it back from History later.
-          </p>
-        )}
-        <div className="flex flex-wrap gap-2 mt-5">
-          <Button variant="danger" onClick={handleDelete} loading={deleting} icon={Trash2}>
-            Delete
-          </Button>
-          <Button variant="ghost" onClick={() => setPendingDelete(null)} disabled={deleting}>
-            Keep it
-          </Button>
-        </div>
-      </Modal>
     </div>
   );
 }
