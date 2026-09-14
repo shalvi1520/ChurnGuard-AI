@@ -833,6 +833,10 @@ _IDENTITY_TOKENS = {
     "name", "surname", "lastname", "firstname", "fullname", "forename",
     "givenname", "middlename", "maidenname", "nickname",
 }
+_METADATA_TOKENS = {
+    "lastmodifieddate", "modifieddate", "updatedat", "updated", "lastupdated",
+    "createdat", "createddate", "timestamp",
+}
 
 
 def _select_extra_columns(df: pd.DataFrame, mapped_and_special: set) -> tuple[List[str], List[Dict[str, str]]]:
@@ -860,9 +864,35 @@ def _select_extra_columns(df: pd.DataFrame, mapped_and_special: set) -> tuple[Li
                 "column": col,
                 "reason": "this looks like a person's name, not a predictive feature",
             })
+        elif tokens & _METADATA_TOKENS:
+            skipped.append({
+                "column": col,
+                "reason": "this is a record-modification timestamp, not a predictive feature -- its "
+                          "values are close to unique per row and change whenever any field is edited",
+            })                  
         else:
             kept.append(col)
     return kept, skipped
+
+
+_EMAIL_COLUMN_CANDIDATES = {"email", "e-mail", "emailaddress", "email_address", "contactemail"}
+
+
+def _extract_contact_emails(df: pd.DataFrame) -> Dict[str, str]:
+    """customer_id -> email, read straight off the canonicalized frame.
+    _canonicalize_columns() only renames MAPPED fields, so an unmapped
+    email-like column (HubSpot's 'email', or a CSV's 'Email') keeps its
+    original name here -- no dependence on entry.raw_df, which is why this
+    works identically for a live run, a cache hit, and a reopened history
+    entry once the result carrying it is persisted."""
+    if "customer_id" not in df.columns:
+        return {}
+    email_col = next((c for c in df.columns if c.strip().lower() in _EMAIL_COLUMN_CANDIDATES), None)
+    if not email_col:
+        return {}
+    ids = df["customer_id"].astype(str).str.strip()
+    emails = df[email_col].astype(str).str.strip()
+    return dict(zip(ids, emails))
 
 
 def _dedupe_preserving_order(names: List[str]) -> List[str]:
@@ -1096,6 +1126,7 @@ def _persist_predictions(
     cleaning: List[Dict[str, Any]],
     extra_columns_used: List[str],
     extra_columns_skipped: List[Dict[str, str]],
+    contact_emails_by_id: Dict[str, str],
 ) -> None:
     """Stores this run's full results against the TrainedModel row for
     `fingerprint`, so a signed-in user's dataset history shows real past
@@ -1127,6 +1158,7 @@ def _persist_predictions(
             "cleaning": cleaning,
             "extraColumnsUsed": extra_columns_used,
             "extraColumnsSkipped": extra_columns_skipped,
+            "contactEmailsById": contact_emails_by_id,
         })
         db.commit()
     except Exception:  # noqa: BLE001 -- best-effort persistence, see docstring
@@ -1183,6 +1215,7 @@ def _score_with_reused_model(
     feature_cols: List[str],
     registry_entry,
     drift_state: str,
+    contact_emails_by_id: Dict[str, str],
 ) -> TrainingResult:
     """REUSE_MODEL scoring (see resolve_training_eligibility()): this connect
     has no churn column, but a model trained on the same canonical field
@@ -1287,6 +1320,7 @@ def _score_with_reused_model(
         # fingerprint context, so its drafts are not persisted.
         outreach_persist_context=False,
         reused_model={"trainedAt": registry_entry.trained_at, "driftState": drift_state},
+        contact_emails_by_id=contact_emails_by_id,
     )
 
 
@@ -1310,6 +1344,7 @@ def train_and_score(entry: DatasetEntry, current_user) -> TrainingResult:
         raise TrainingError(f"{schema.pretty_feature_name('customer_id')} must be mapped before predicting.")
 
     df, displaced_columns = _canonicalize_columns(entry.raw_df, field_to_col)
+    contact_emails_by_id = _extract_contact_emails(df)
 
     present_optional = [f for f in OPTIONAL_FEATURE_KEYS if f in field_to_col]
     feature_cols = MODEL_FEATURE_KEYS + present_optional
@@ -1327,7 +1362,8 @@ def train_and_score(entry: DatasetEntry, current_user) -> TrainingResult:
         state, extra = resolve_training_eligibility(entry, field_to_col, entry.profile, mapping.analyze(entry.profile))
         if state == "REUSE_MODEL":
             return _score_with_reused_model(
-                entry, df, field_to_col, feature_cols, extra["registryEntry"], extra.get("driftState", "none")
+                entry, df, field_to_col, feature_cols, extra["registryEntry"], extra.get("driftState", "none"),
+                contact_emails_by_id,
             )
         if state == "DERIVE_LABEL":
             raise NeedsDerivedLabel(
@@ -1442,6 +1478,7 @@ def train_and_score(entry: DatasetEntry, current_user) -> TrainingResult:
             },
             eligible_count=eligible_count,
             restored_drafts=restored,
+            contact_emails_by_id=extra.get("contactEmailsById", {}),
         )
 
     cached_report = _load_cached_training(current_user, fingerprint) if DB_AVAILABLE else None
@@ -1556,6 +1593,7 @@ def train_and_score(entry: DatasetEntry, current_user) -> TrainingResult:
         _persist_predictions(
             current_user, fingerprint, customers, raw_features_by_id,
             top_drivers, cleaning, extra_columns_used, extra_columns_skipped,
+            contact_emails_by_id,
         )
 
     eligible_count = sum(1 for c in customers if c["riskTier"] in ("high", "critical"))
@@ -1593,6 +1631,7 @@ def train_and_score(entry: DatasetEntry, current_user) -> TrainingResult:
         },
         eligible_count=eligible_count,
         restored_drafts=restored,
+        contact_emails_by_id=contact_emails_by_id,
     )
 
 
@@ -1605,6 +1644,7 @@ def apply_result_to_entry(entry: DatasetEntry, result: TrainingResult) -> bool:
     """
     entry.customers = result.customers
     entry.customers_by_id = {c["id"]: c for c in result.customers}
+    entry.contact_emails_by_id = result.contact_emails_by_id
     entry.raw_features_by_id = result.raw_features_by_id
     entry.training_report = result.report
     entry.trained = True
@@ -1904,6 +1944,7 @@ def reopen_dataset_history(dataset_row_id: str, current_user=Depends(get_current
         entry.customers = customers
         entry.customers_by_id = {c["id"]: c for c in customers}
         entry.raw_features_by_id = extra.get("rawFeaturesById", {})
+        entry.contact_emails_by_id = extra.get("contactEmailsById", {})
         entry.training_report = report
         entry.trained = True
         entry.cleaning = extra.get("cleaning", [])
@@ -2353,9 +2394,10 @@ def _run_auto_outreach(
                     "customerId": customer["id"],
                     "customerName": customer["id"],
                     "contactName": None,
-                    "contactEmail": None,
+                    "contactEmail": entry.contact_emails_by_id.get(customer["id"]),
                     "subject": result["draft"]["subject"],
                     "body": result["draft"]["body"],
+                    "cta": result["draft"].get("cta"),
                     "status": "draft",
                     "tone": "professional",
                     "auto": True,  # drafted by the pipeline, not a click -- see CompleteStep-style badges
@@ -2515,9 +2557,10 @@ def generate_outreach(customer_id: str, current_user=Depends(get_current_user_op
         "customerId": customer_id,
         "customerName": customer_id,
         "contactName": None,
-        "contactEmail": None,
+        "contactEmail": entry.contact_emails_by_id.get(customer_id),
         "subject": result["subject"],
         "body": result["message"],
+        "cta": result.get("cta"),
         "status": "draft",
         "tone": "professional",
         "auto": False,  # requested on demand, not by the automatic post-training pipeline
@@ -2593,16 +2636,47 @@ def approve_outreach(email_id: str, current_user=Depends(get_current_user_option
     return {"id": email_id, "status": "approved"}
 
 
+class SendOutreachRequest(BaseModel):
+    recipientEmail: Optional[str] = None
+
+
 @router.post("/outreach/{email_id}/send")
-def send_outreach(email_id: str, current_user=Depends(get_current_user_optional)):
-    """ChurnGuard has no email delivery integration: this records that *you*
-    sent it from your own tools. It never contacts a customer."""
+def send_outreach(
+    email_id: str, body: SendOutreachRequest, current_user=Depends(get_current_user_optional)
+):
+    """Delivers the draft over the project's own SMTP account when EMAIL_USER
+    / EMAIL_APP_PASSWORD are configured and a recipient email is known.
+    Falls back to the original record-only behaviour otherwise, so a
+    deployment without SMTP set up (or a dataset with no email column)
+    keeps working exactly as before -- this never silently claims delivery
+    that didn't happen."""
     entry = _current_or_404()
     draft = _find_draft(entry, email_id)
+
+    if body.recipientEmail:
+        draft["contactEmail"] = body.recipientEmail
+
+    from ..llm import email_sender
+
+    if email_sender.is_configured() and draft.get("contactEmail"):
+        try:
+            email_sender.send_outreach_email(draft["contactEmail"], draft["subject"], draft["body"], draft.get("cta"))
+        except email_sender.EmailDeliveryError as exc:
+            draft["auditTrail"].append(
+                {"action": f"Send failed: {exc}", "user": "You", "timestamp": datetime.now(timezone.utc).isoformat()}
+            )
+            if DB_AVAILABLE:
+                _persist_outreach_drafts(current_user, entry.fingerprint, entry.outreach_drafts)
+            raise HTTPException(502, f"Could not deliver the email: {exc}") from exc
+        draft["auditTrail"].append(
+            {"action": f"Sent to {draft['contactEmail']}", "user": "You", "timestamp": datetime.now(timezone.utc).isoformat()}
+        )
+    else:
+        draft["auditTrail"].append(
+            {"action": "Marked as sent", "user": "You", "timestamp": datetime.now(timezone.utc).isoformat()}
+        )
+
     draft["status"] = "sent"
-    draft["auditTrail"].append(
-        {"action": "Marked as sent", "user": "You", "timestamp": datetime.now(timezone.utc).isoformat()}
-    )
     if DB_AVAILABLE:
         _persist_outreach_drafts(current_user, entry.fingerprint, entry.outreach_drafts)
     return {"id": email_id, "status": "sent"}

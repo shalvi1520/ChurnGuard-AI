@@ -25,7 +25,7 @@ SERVICE_COLS = [
 
 # Notebook Cell 8
 BACKGROUND_KMEANS_K = 15
-SHAP_NSAMPLES_DEFAULT = 50
+SHAP_NSAMPLES_DEFAULT = 2048
 SHAP_SEED_DEFAULT = 42
 
 BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))

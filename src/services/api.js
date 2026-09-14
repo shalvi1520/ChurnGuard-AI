@@ -184,8 +184,8 @@ export const outreachService = {
   async approveEmail(emailId) {
     return apiClient.post(`/outreach/${emailId}/approve`);
   },
-  async sendEmail(emailId) {
-    return apiClient.post(`/outreach/${emailId}/send`);
+  async sendEmail(emailId, recipientEmail) {
+    return apiClient.post(`/outreach/${emailId}/send`, { recipientEmail: recipientEmail || null });
   },
   /** Progress of the automatic post-training outreach pipeline (drafts
    * high/critical-risk accounts in the background, right after training --

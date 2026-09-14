@@ -1,10 +1,11 @@
 """
 Ties providers.py and prompts.py together: takes a customer_id + SHAP
 explanation (human-readable top drivers) and returns a drafted outreach
-email -- subject and body -- plus which provider generated it.
+email -- subject, body, and a CTA button phrase -- plus which provider
+generated it.
 
-The LLM writes only the subject line and the body's core message (see
-prompts.SYSTEM_PROMPT); the greeting and signature are appended here, in
+The LLM writes only the subject line, the body's core message, and the CTA
+(see prompts.SYSTEM_PROMPT); the greeting and signature are appended here, in
 code, deliberately -- letting the model invent a sender's name or job title
 would be fabricating a person who doesn't exist, and there is no real
 contact name in the connected dataset to greet the customer by (see
@@ -16,25 +17,30 @@ from typing import List, Tuple
 from . import prompts, providers
 
 DEFAULT_SUBJECT = "A quick check-in about your account"
+DEFAULT_CTA = "Talk to our team"
 GREETING = "Hi there,"
 DEFAULT_SIGNATURE = "Best regards,\nThe Customer Success Team"
 
-_RESPONSE_PATTERN = re.compile(r"SUBJECT:\s*(.*?)\s*\n+BODY:\s*(.*)", re.DOTALL | re.IGNORECASE)
+_RESPONSE_PATTERN = re.compile(
+    r"SUBJECT:\s*(.*?)\s*\n+BODY:\s*(.*?)\s*\n+CTA:\s*(.*)", re.DOTALL | re.IGNORECASE
+)
 
 
-def _parse_response(text: str) -> Tuple[str, str]:
-    """Splits the model's `SUBJECT: ... BODY: ...` response. Falls back to
-    treating the whole response as the body rather than losing a draft
-    outright if the model didn't follow the format exactly."""
+def _parse_response(text: str) -> Tuple[str, str, str]:
+    """Splits the model's `SUBJECT: ... BODY: ... CTA: ...` response. Falls
+    back to treating the whole response as the body (with default subject/
+    CTA) rather than losing a draft outright if the model didn't follow the
+    format exactly."""
     match = _RESPONSE_PATTERN.search(text)
     if not match:
-        return DEFAULT_SUBJECT, text.strip()
+        return DEFAULT_SUBJECT, text.strip(), DEFAULT_CTA
     subject = match.group(1).strip().strip('"')
     body = match.group(2).strip()
-    return (subject or DEFAULT_SUBJECT), (body or text.strip())
+    cta = match.group(3).strip().strip('"')
+    return (subject or DEFAULT_SUBJECT), (body or text.strip()), (cta or DEFAULT_CTA)
 
 
-def _build_template_message(risk_score: float, drivers: List[dict]) -> Tuple[str, str]:
+def _build_template_message(risk_score: float, drivers: List[dict]) -> Tuple[str, str, str]:
     """Deterministic fallback used only when every configured LLM provider
     fails (rate limit, quota exhaustion, no key configured, network down).
     References only the real SHAP-derived drivers actually passed in --
@@ -57,7 +63,7 @@ def _build_template_message(risk_score: float, drivers: List[dict]) -> Tuple[str
             "We wanted to check in and see how things are going with your account. "
             "If there's anything we can do to improve your experience, we'd love to hear from you."
         )
-    return "Checking in on your account", body
+    return "Checking in on your account", body, DEFAULT_CTA
 
 
 def generate_outreach_message(
@@ -78,10 +84,10 @@ def generate_outreach_message(
     messages = prompts.build_messages(customer_id, risk_score, drivers)
     try:
         text, provider = providers.invoke_with_fallback(messages)
-        subject, body_core = _parse_response(text)
+        subject, body_core, cta = _parse_response(text)
     except RuntimeError:
-        subject, body_core = _build_template_message(risk_score, drivers)
+        subject, body_core, cta = _build_template_message(risk_score, drivers)
         provider = "template"
     signature = f"Best regards,\n{organization_name}" if organization_name else DEFAULT_SIGNATURE
     body = f"{GREETING}\n\n{body_core}\n\n{signature}"
-    return {"customer_id": customer_id, "subject": subject, "message": body, "provider": provider}
+    return {"customer_id": customer_id, "subject": subject, "message": body, "cta": cta, "provider": provider}

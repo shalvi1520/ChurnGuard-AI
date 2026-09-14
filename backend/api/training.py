@@ -100,3 +100,9 @@ class TrainingResult:
     outreach_persist_context: bool = True
     # REUSE_MODEL only: the model came from a different, earlier connect.
     reused_model: Optional[Dict[str, Any]] = field(default=None)
+    # customer_id -> contact email, read from an unmapped email-like column
+    # in the connected data (see dataset_routes._extract_contact_emails()).
+    # Empty for data with no such column, or for a row persisted before this
+    # field existed -- outreach simply keeps asking for the address manually
+    # in that case, exactly as it always has.
+    contact_emails_by_id: Dict[str, str] = field(default_factory=dict)

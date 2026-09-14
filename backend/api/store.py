@@ -73,6 +73,7 @@ class DatasetEntry:
     top_drivers: Optional[List[Dict[str, Any]]] = None
 
     outreach_drafts: List[Dict[str, Any]] = field(default_factory=list)
+    contact_emails_by_id: Dict[str, str] = field(default_factory=dict)
 
     # Progress of the automatic post-training outreach pipeline
     # (backend/agents/outreach_workflow.py), which runs in a FastAPI

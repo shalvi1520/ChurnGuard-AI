@@ -104,7 +104,7 @@ def _generate_email_node(state: OutreachState) -> dict:
     except (RuntimeError, ImportError) as exc:
         return {"draft": None, "status": "failed", "reason": str(exc)}
     return {
-        "draft": {"subject": result["subject"], "body": result["message"], "provider": result["provider"]}
+        "draft": {"subject": result["subject"], "body": result["message"], "cta": result.get("cta"), "provider": result["provider"]}
     }
 
 
