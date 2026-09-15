@@ -1983,6 +1983,57 @@ def reopen_dataset_history(dataset_row_id: str, current_user=Depends(get_current
         db.close()
 
 
+@router.delete("/datasets/history/{dataset_row_id}")
+def delete_dataset_history(dataset_row_id: str, current_user=Depends(get_current_user)):
+    """Permanently removes one dataset history row -- unlike DELETE /dataset
+    above, which only ever clears the in-memory *active* session and never
+    touches Neon. Ownership is checked the same way as every other
+    /datasets/history* route: knowing a row's id is never enough on its own
+    to reach another user's data.
+
+    Every TrainedModel row for this dataset goes with it: Dataset.trained_models
+    is declared cascade="all, delete-orphan" (see db/models.py), so deleting
+    the ORM-loaded `dataset_row` here is enough -- SQLAlchemy loads and
+    deletes its trained models as part of the same flush, leaving nothing
+    orphaned.
+    """
+    if not DB_AVAILABLE:
+        raise HTTPException(503, "Dataset history needs a database, which isn't configured on this server.")
+
+    db = SessionLocal()
+    try:
+        dataset_row = (
+            db.query(DatasetRow)
+            .filter(DatasetRow.id == dataset_row_id, DatasetRow.user_id == current_user.id)
+            .first()
+        )
+        if dataset_row is None:
+            raise HTTPException(404, "That dataset history entry doesn't exist, or isn't yours.")
+
+        fingerprint = dataset_row.fingerprint
+        db.delete(dataset_row)
+        db.commit()
+    finally:
+        db.close()
+
+    # If this history row is (or backs) the dataset currently active in
+    # memory, drop that too -- otherwise the UI would keep showing data for
+    # something that no longer exists in history. Matched two ways: by id,
+    # which covers a row reopened via POST .../reopen (store.create_dataset()
+    # there sets entry.id to the dataset row's own id), and by fingerprint,
+    # which covers a dataset that was just uploaded and trained in this same
+    # session -- its in-memory entry.id is a fresh "DS-<timestamp>" from
+    # ingest.register_dataframe(), unrelated to any database row, but its
+    # content fingerprint matches the row _persist_training() wrote.
+    current = store.get_current()
+    if current is not None and (
+        current.id == dataset_row_id or (current.fingerprint and current.fingerprint == fingerprint)
+    ):
+        store.reset()
+
+    return {"status": "deleted", "id": dataset_row_id}
+
+
 # ----------------------------------------------------------------- dashboard
 
 def _dataset_context(entry: DatasetEntry) -> Dict[str, Any]:

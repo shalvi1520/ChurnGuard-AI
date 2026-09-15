@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -128,8 +128,50 @@ export default function AppLayout({ children }) {
   const { sidebarCollapsed, presentationMode, demoMode, unreadCount, dispatch, searchOpen, datasetSetupComplete } = useApp();
   const [notifOpen, setNotifOpen] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [profileMenuOpen, setProfileMenuOpen] = useState(false);
+  const profileCloseTimer = useRef(null);
   const location = useLocation();
   const navigate = useNavigate();
+
+  // A short close delay so moving the cursor from the avatar down into the
+  // dropdown (a diagonal move, not a straight vertical one) doesn't cross
+  // the gap between them and close the menu before it's reached -- the same
+  // reason most hover menus need one. Cleared on unmount so a pending close
+  // never fires against an unmounted component.
+  const openProfileMenu = useCallback(() => {
+    if (profileCloseTimer.current) {
+      clearTimeout(profileCloseTimer.current);
+      profileCloseTimer.current = null;
+    }
+    setProfileMenuOpen(true);
+  }, []);
+
+  const scheduleCloseProfileMenu = useCallback(() => {
+    profileCloseTimer.current = setTimeout(() => setProfileMenuOpen(false), 200);
+  }, []);
+
+  const closeProfileMenuNow = useCallback(() => {
+    if (profileCloseTimer.current) {
+      clearTimeout(profileCloseTimer.current);
+      profileCloseTimer.current = null;
+    }
+    setProfileMenuOpen(false);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (profileCloseTimer.current) clearTimeout(profileCloseTimer.current);
+    };
+  }, []);
+
+  // Matches Modal/NotificationPanel/Tooltip: Escape closes whatever overlay
+  // is open.
+  useEffect(() => {
+    if (!profileMenuOpen) return undefined;
+    const onKey = (e) => { if (e.key === 'Escape') closeProfileMenuNow(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [profileMenuOpen, closeProfileMenuNow]);
 
   useEffect(() => {
     setMobileMenuOpen(false);
@@ -397,17 +439,66 @@ export default function AppLayout({ children }) {
                 <NotificationPanel isOpen={notifOpen} onClose={() => setNotifOpen(false)} />
               </div>
               <div className="w-px h-6 bg-border mx-2" />
-              <button
-                onClick={() => navigate('/settings')}
-                aria-label={`Account settings for ${user?.name || 'your account'}`}
-                className="flex items-center gap-2.5 px-2 py-1 rounded-lg hover:bg-bg-tertiary transition-colors cursor-pointer"
+              <div
+                className="relative"
+                onMouseEnter={openProfileMenu}
+                onMouseLeave={scheduleCloseProfileMenu}
               >
-                <Avatar name={user?.name} size="sm" />
-                <div className="text-left hidden xl:block">
-                  <div className="text-xs font-medium text-text-primary">{user?.name}</div>
-                  <div className="text-[10px] text-text-tertiary">{user?.company || 'ChurnGuard'}</div>
-                </div>
-              </button>
+                <button
+                  onClick={() => navigate('/settings')}
+                  onFocus={openProfileMenu}
+                  aria-label={`Account settings for ${user?.name || 'your account'}`}
+                  aria-haspopup="menu"
+                  aria-expanded={profileMenuOpen}
+                  className="flex items-center gap-2.5 px-2 py-1 rounded-lg hover:bg-bg-tertiary transition-colors cursor-pointer"
+                >
+                  <Avatar name={user?.name} size="sm" />
+                  <div className="text-left hidden xl:block">
+                    <div className="text-xs font-medium text-text-primary">{user?.name}</div>
+                    <div className="text-[10px] text-text-tertiary">{user?.company || 'ChurnGuard'}</div>
+                  </div>
+                </button>
+                <AnimatePresence>
+                  {profileMenuOpen && (
+                    <motion.div
+                      initial={{ opacity: 0, y: -8, scale: 0.96 }}
+                      animate={{ opacity: 1, y: 0, scale: 1 }}
+                      exit={{ opacity: 0, y: -8, scale: 0.96 }}
+                      transition={{ duration: 0.15 }}
+                      role="menu"
+                      aria-label="Account menu"
+                      className="absolute top-full right-0 mt-2 w-44 rounded-xl border border-border bg-bg-secondary shadow-2xl z-40 overflow-hidden"
+                    >
+                      <button
+                        role="menuitem"
+                        onFocus={openProfileMenu}
+                        onBlur={scheduleCloseProfileMenu}
+                        onClick={() => {
+                          closeProfileMenuNow();
+                          navigate('/settings');
+                        }}
+                        className="flex items-center gap-2.5 px-4 py-2.5 w-full text-left text-sm text-text-secondary hover:text-text-primary hover:bg-bg-tertiary/50 transition-colors cursor-pointer"
+                      >
+                        <Settings size={15} aria-hidden="true" />
+                        Settings
+                      </button>
+                      <button
+                        role="menuitem"
+                        onFocus={openProfileMenu}
+                        onBlur={scheduleCloseProfileMenu}
+                        onClick={() => {
+                          closeProfileMenuNow();
+                          handleLogout();
+                        }}
+                        className="flex items-center gap-2.5 px-4 py-2.5 w-full text-left text-sm text-text-tertiary hover:text-risk-critical hover:bg-bg-tertiary/50 transition-colors cursor-pointer border-t border-border"
+                      >
+                        <LogOut size={15} aria-hidden="true" />
+                        Sign out
+                      </button>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
             </div>
           </div>
         </header>

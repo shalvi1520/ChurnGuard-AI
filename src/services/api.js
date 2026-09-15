@@ -487,6 +487,14 @@ export const datasetService = {
     return callDatasetApi(apiClient.post(`/datasets/history/${datasetRowId}/reopen`, null, { timeout: 45000 }));
   },
 
+  /** Permanently deletes one server-side history row (and its trained
+   * models) -- unlike clearDataset() below, which only drops the in-memory
+   * *active* session and never touches Neon. 404s if the row doesn't exist
+   * or isn't this account's. */
+  async deleteHistoryEntry(datasetRowId) {
+    return callDatasetApi(apiClient.delete(`/datasets/history/${datasetRowId}`, { timeout: 45000 }));
+  },
+
   /** The dataset the backend currently holds, or null if there is none.
    * Lets the app tell "backend down" apart from "nothing connected yet". */
   async getCurrent() {

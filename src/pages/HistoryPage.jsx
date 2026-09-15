@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { AlertTriangle, Database, FileSpreadsheet, Plug, RotateCcw, Sparkles, Zap } from 'lucide-react';
+import { AlertTriangle, Database, FileSpreadsheet, Plug, RotateCcw, Sparkles, Trash2, Zap } from 'lucide-react';
 import Card from '../components/ui/Card';
 import Button from '../components/ui/Button';
 import Badge from '../components/ui/Badge';
 import EmptyState from '../components/ui/EmptyState';
 import Skeleton from '../components/ui/Skeleton';
+import Modal from '../components/ui/Modal';
 import { InfoTip } from '../components/ui/Tooltip';
 import { datasetService } from '../services/api';
 import { useApp } from '../context/AppContext';
@@ -52,7 +53,7 @@ function Fact({ label, value }) {
   );
 }
 
-function DatasetRow({ record, isActive, onOpen, opening }) {
+function DatasetRow({ record, isActive, onOpen, opening, onDelete, deleting }) {
   const meta = SOURCE_META[record.sourceKind] || SOURCE_META.upload;
   const Icon = meta.icon;
   const instant = record.predictionsAvailable;
@@ -108,6 +109,17 @@ function DatasetRow({ record, isActive, onOpen, opening }) {
         >
           {isActive ? 'In use' : instant ? 'Open instantly' : 'Reconnect file'}
         </Button>
+        <Button
+          size="sm"
+          variant="danger"
+          onClick={() => onDelete(record)}
+          disabled={deleting}
+          loading={deleting}
+          icon={Trash2}
+          aria-label={`Delete ${record.filename} from history`}
+        >
+          Delete
+        </Button>
       </div>
     </Card>
   );
@@ -115,11 +127,13 @@ function DatasetRow({ record, isActive, onOpen, opening }) {
 
 export default function HistoryPage() {
   const navigate = useNavigate();
-  const { activeDataset, addToast, completeDatasetSetup } = useApp();
+  const { activeDataset, addToast, completeDatasetSetup, resetDatasetSetup } = useApp();
 
   const [records, setRecords] = useState(null); // null = still loading
   const [loadError, setLoadError] = useState(null);
   const [openingId, setOpeningId] = useState(null);
+  const [confirmDelete, setConfirmDelete] = useState(null); // record pending confirmation, or null
+  const [deletingId, setDeletingId] = useState(null);
 
   const load = useCallback(() => {
     setRecords(null);
@@ -228,6 +242,36 @@ export default function HistoryPage() {
     [navigate, completeDatasetSetup, addToast]
   );
 
+  const handleDeleteClick = useCallback((record) => {
+    setConfirmDelete(record);
+  }, []);
+
+  const handleCancelDelete = useCallback(() => {
+    setConfirmDelete(null);
+  }, []);
+
+  const handleConfirmDelete = useCallback(async () => {
+    const record = confirmDelete;
+    if (!record) return;
+    setDeletingId(record.id);
+    try {
+      await datasetService.deleteHistoryEntry(record.id);
+      setRecords((prev) => (prev ? prev.filter((r) => r.id !== record.id) : prev));
+      // The row just deleted was what the app was actively running on --
+      // reflect "no active dataset" the same way "Replace dataset" does,
+      // rather than leaving the UI pointing at data that no longer exists.
+      if (record.id === activeDatasetId) {
+        resetDatasetSetup();
+      }
+      addToast({ type: 'success', message: `${record.filename} was deleted from history.` });
+      setConfirmDelete(null);
+    } catch (err) {
+      addToast({ type: 'error', message: err?.message || 'Could not delete that dataset. Try again in a moment.' });
+    } finally {
+      setDeletingId(null);
+    }
+  }, [confirmDelete, activeDatasetId, resetDatasetSetup, addToast]);
+
   return (
     <div className="space-y-6">
       <header className="max-w-2xl">
@@ -286,10 +330,39 @@ export default function HistoryPage() {
               isActive={record.id === activeDatasetId}
               onOpen={handleOpen}
               opening={openingId === record.id}
+              onDelete={handleDeleteClick}
+              deleting={deletingId === record.id}
             />
           ))}
         </div>
       )}
+
+      <Modal
+        isOpen={Boolean(confirmDelete)}
+        onClose={deletingId ? undefined : handleCancelDelete}
+        title="Delete this dataset?"
+        size="sm"
+      >
+        <p className="text-sm text-text-secondary leading-relaxed">
+          This permanently removes <span className="text-text-primary font-medium">{confirmDelete?.filename}</span>{' '}
+          and its trained model from ChurnGuard&apos;s history. This can&apos;t be undone.
+        </p>
+        <div className="flex justify-end gap-2 mt-5">
+          <Button variant="secondary" size="sm" onClick={handleCancelDelete} disabled={Boolean(deletingId)}>
+            Cancel
+          </Button>
+          <Button
+            variant="danger"
+            size="sm"
+            icon={Trash2}
+            onClick={handleConfirmDelete}
+            loading={Boolean(deletingId)}
+            disabled={Boolean(deletingId)}
+          >
+            Delete
+          </Button>
+        </div>
+      </Modal>
     </div>
   );
 }
