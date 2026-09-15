@@ -1,7 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import DashboardPage from './DashboardPage';
+import { dashboardService } from '../services/api';
 
 // Portfolio & Risk is an analysis page whose job here is to hand the user off
 // to the right set of accounts. These tests are about those destinations, not
@@ -28,6 +29,12 @@ vi.mock('../services/api', () => ({
       ],
       byTenure: [{ segment: '0-6 months', total: 40, atRisk: 20, avgRisk: 61 }],
       byServiceTier: [],
+    })),
+    getModelHealth: vi.fn(async () => ({
+      trainedAt: '2026-01-01T00:00:00Z',
+      metrics: { accuracy: 0.82, recall: 0.79, rocAuc: 0.88 },
+      drift: { applicable: false, state: null, note: 'Trained fresh on the data currently connected.' },
+      retrain: { latest: null, note: 'No scheduled retrain has run for this account yet.' },
     })),
   },
 }));
@@ -71,5 +78,39 @@ describe('Portfolio & Risk — drill-downs into Customers', () => {
   it('names the count in the closing call to action', async () => {
     renderDashboard();
     expect(await screen.findByRole('button', { name: /view 53 at-risk customers/i })).toBeInTheDocument();
+  });
+});
+
+describe('Portfolio & Risk — a dataset still training', () => {
+  it('shows a friendly, self-refreshing state on a 409, not the broken-page error', async () => {
+    // Shaped like the raw axios error dashboardService's calls throw (they
+    // don't go through datasetService's DatasetError wrapping) -- see
+    // backend's _trained_or_409, which is exactly what a brand-new dataset
+    // still being trained returns from every one of this page's endpoints.
+    dashboardService.getMetrics.mockRejectedValueOnce({
+      response: { status: 409, data: { detail: "This dataset hasn't been processed yet." } },
+    });
+
+    renderDashboard();
+
+    expect(await screen.findByText(/still being processed/i)).toBeInTheDocument();
+    expect(screen.queryByText(/we couldn't load portfolio & risk/i)).not.toBeInTheDocument();
+  });
+
+  it('still shows the real page once training finishes on its own', async () => {
+    // "Check now" reuses the same load path a background retry would --
+    // asserting on it is how this test observes recovery without waiting
+    // out the real 5s auto-retry timer.
+    dashboardService.getMetrics.mockRejectedValueOnce({
+      response: { status: 409, data: { detail: "This dataset hasn't been processed yet." } },
+    });
+
+    renderDashboard();
+
+    const checkNow = await screen.findByRole('button', { name: /check now/i });
+    fireEvent.click(checkNow);
+
+    expect(await screen.findByRole('link', { name: /view at-risk customers/i })).toBeInTheDocument();
+    expect(screen.queryByText(/still being processed/i)).not.toBeInTheDocument();
   });
 });

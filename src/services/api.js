@@ -184,6 +184,14 @@ export const dashboardService = {
   async getSegmentation() {
     return apiClient.get('/dashboard/segmentation');
   },
+  /** When the active model was last trained, whether the connected data has
+   * drifted from what it was trained on, and the most recent scheduled
+   * retrain decision for this account, if any. Every field is honestly
+   * reported as absent rather than guessed at -- see the backend route's
+   * docstring. */
+  async getModelHealth() {
+    return apiClient.get('/model-health');
+  },
 };
 
 // ============================================
@@ -206,6 +214,15 @@ export const customerService = {
 export const explainabilityService = {
   async getSHAPExplanation(customerId) {
     return apiClient.get(`/customers/${customerId}/explanation`);
+  },
+  /** Re-scores this customer with one or more feature values hypothetically
+   * changed -- the What-If panel on Customer Detail. `overrides` is
+   * `{ [rawFeatureKey]: hypotheticalValue }`, keyed by the `key` field on
+   * each item from getSHAPExplanation(). Cheap (no retraining), but does run
+   * a real SHAP pass, so callers should debounce rather than call this on
+   * every slider tick. */
+  async whatIf(customerId, overrides) {
+    return apiClient.post(`/customers/${customerId}/what-if`, { overrides });
   },
 };
 
@@ -250,6 +267,19 @@ export const outreachService = {
    * | 'done'. Safe to poll: cheap, in-memory read on the backend. */
   async getAutoStatus() {
     return apiClient.get('/outreach/auto-status');
+  },
+};
+
+// ============================================
+// Activity Services
+// ============================================
+
+export const activityService = {
+  /** This account's activity feed, most recent first -- who trained a
+   * model, and who drafted/edited/approved/sent outreach, and when.
+   * Requires sign-in; 503s if the server has no database configured. */
+  async getActivity() {
+    return apiClient.get('/activity');
   },
 };
 

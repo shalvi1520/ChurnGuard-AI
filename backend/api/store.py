@@ -72,6 +72,14 @@ class DatasetEntry:
     # Computed once, right after training, on a capped sample.
     top_drivers: Optional[List[Dict[str, Any]]] = None
 
+    # Set only when this run scored against a REUSE_MODEL candidate (see
+    # resolve_training_eligibility() in dataset_routes.py): {trainedAt,
+    # driftState}. None for a model trained fresh on this exact data, since
+    # drift is a measure of how different newly-connected data is from a
+    # model's own training baseline -- comparing training data to itself has
+    # nothing meaningful to report. Read by GET /model-health.
+    reused_model: Optional[Dict[str, Any]] = None
+
     outreach_drafts: List[Dict[str, Any]] = field(default_factory=list)
     contact_emails_by_id: Dict[str, str] = field(default_factory=dict)
 

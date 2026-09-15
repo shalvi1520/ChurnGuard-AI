@@ -24,6 +24,7 @@ from pydantic import BaseModel
 from sqlalchemy.exc import OperationalError
 from sqlalchemy import func
 from sqlalchemy import text as sqlalchemy_text
+from sqlalchemy.orm import Session
 
 from ..agents import business_rules  # pure Python, no optional deps -- safe to import eagerly
 from ..generic import artifact_registry
@@ -68,10 +69,15 @@ _outreach_fingerprints_in_progress: set = set()
 # DB_AVAILABLE and wrapped so a database hiccup degrades to "train normally",
 # never to a broken /predict.
 try:
-    from ..db.database import SessionLocal
+    from ..db.database import SessionLocal, get_db
+    from ..db.models import ActivityEvent, CrmConnection, RetrainEvent
     from ..db.models import Dataset as DatasetRow
     from ..db.models import TrainedModel
-    from .auth_routes import get_current_user, get_current_user_optional
+    from .auth_routes import (
+        get_current_user_fast,
+        get_current_user_optional,
+        get_current_user_optional_fast,
+    )
 
     DB_AVAILABLE = True
 except Exception:  # noqa: BLE001 -- optional extra, see comment above
@@ -80,7 +86,10 @@ except Exception:  # noqa: BLE001 -- optional extra, see comment above
     def get_current_user_optional():
         return None
 
-    def get_current_user():
+    def get_current_user_optional_fast():
+        return None
+
+    def get_current_user_fast():
         raise HTTPException(503, "Accounts need a database, which isn't configured on this server.")
 
 # Kept modest so the synchronous /predict request (Optuna tuning + a stacked
@@ -1056,13 +1065,28 @@ def _safe_close(db) -> None:
         logger.warning("Failed to close database session cleanly", exc_info=True)
 
 
-def _load_cached_training(current_user, fingerprint: str) -> Optional[dict]:
-    """A previous successful training run for this exact data, scoped to the
-    signed-in user -- or None if there isn't one, the caller isn't signed in,
-    or the artifacts it points at are no longer on disk (never trust a DB row
-    over what's actually there to load)."""
+def _load_cached_state(current_user, fingerprint: str) -> Dict[str, Any]:
+    """Replaces what used to be up to THREE round trips
+    (_load_cached_full_result(), _load_cached_training() and
+    _load_cached_outreach_drafts()) with one: all three queried the exact
+    same TrainedModel row, just read different columns off it, so a cache
+    hit -- re-uploading data ChurnGuard has already scored, arguably the
+    case a user most expects to be instant -- was paying for the same row
+    three separate times, sequentially. Every database round trip on the
+    shared Neon instance costs roughly 1.5-2s regardless of query complexity
+    (measured directly against the running server), so round-trip *count* is
+    what /predict's non-training latency actually depends on.
+
+    Returns {"full": <shape _load_cached_full_result used to return> | None,
+    "report": <shape _load_cached_training used to return> | None,
+    "outreach_drafts": <shape _load_cached_outreach_drafts used to return> |
+    None}. Same "never trust a DB row over what's actually there to load"
+    rule the originals followed: `full` is never populated unless the fitted
+    model for `fingerprint` is still on disk.
+    """
+    empty: Dict[str, Any] = {"full": None, "report": None, "outreach_drafts": None}
     if current_user is None or not generic_artifacts.is_trained(fingerprint):
-        return None
+        return empty
     db = SessionLocal()
     try:
         row = (
@@ -1072,21 +1096,52 @@ def _load_cached_training(current_user, fingerprint: str) -> Optional[dict]:
             .order_by(TrainedModel.trained_at.desc())
             .first()
         )
-        return dict(row.report) if row else None
-    except Exception:  # noqa: BLE001 -- a DB hiccup means "train normally", never a broken /predict
-        return None
+        if row is None:
+            return empty
+        report = dict(row.report)
+        full = None
+        if row.predictions and row.full_result_extra:
+            full = {"report": report, "customers": row.predictions, "extra": dict(row.full_result_extra)}
+        outreach_drafts = list(row.outreach_drafts) if row.outreach_drafts is not None else None
+        return {"full": full, "report": report, "outreach_drafts": outreach_drafts}
+    except Exception:  # noqa: BLE001 -- a DB hiccup means "compute normally", never a broken /predict
+        return empty
     finally:
         _safe_close(db)
 
 
-def _persist_training(current_user, entry: DatasetEntry, fingerprint: str, report: dict) -> None:
-    """Records this upload + training result for the signed-in user's
-    history, and so a future upload of the identical data can skip training
-    (see _load_cached_training). Best-effort: a DB write failure here must
-    never fail an otherwise-successful /predict call -- but it is now
-    logged, not silently discarded, after a real bug (numpy.int64 in
-    `report` breaking JSON serialization) went unnoticed for a while because
-    the previous bare except-and-continue gave no trace of it anywhere."""
+def _persist_training_and_predictions(
+    current_user,
+    entry: DatasetEntry,
+    fingerprint: str,
+    report: dict,
+    customers: List[Dict[str, Any]],
+    raw_features_by_id: Dict[str, Dict[str, Any]],
+    top_drivers: List[Dict[str, Any]],
+    cleaning: List[Dict[str, Any]],
+    extra_columns_used: List[str],
+    extra_columns_skipped: List[Dict[str, str]],
+    contact_emails_by_id: Dict[str, str],
+) -> None:
+    """Writes a fresh training run's Dataset/TrainedModel row AND its full
+    predictions in one round trip instead of two. The original two-call
+    version (a _persist_training() then a separate _persist_predictions())
+    needed a second *query* purely to re-find the row the first call had
+    just created moments earlier in the SAME request -- wasted work once
+    both writes happen in one session, since the ORM object from the INSERT
+    is still right here to update directly, no re-query needed.
+
+    Only for a genuinely fresh training run. A training-only cache hit (the
+    Optuna fit was skipped, but this account has never had this exact data
+    fully scored+explained before) has no new report to write and still
+    needs _persist_predictions()'s find-then-update below -- there is no
+    freshly-created row in THAT request to reuse.
+
+    Best-effort, same as every persistence helper in this file: a DB write
+    failure here must never fail an otherwise-successful /predict call.
+    """
+    if current_user is None:
+        return
     db = SessionLocal()
     try:
         dataset_row = DatasetRow(
@@ -1101,17 +1156,24 @@ def _persist_training(current_user, entry: DatasetEntry, fingerprint: str, repor
         )
         db.add(dataset_row)
         db.flush()
-        db.add(
-            TrainedModel(
-                dataset_id=dataset_row.id,
-                fingerprint=fingerprint,
-                artifact_dir=generic_artifacts.artifact_dir(fingerprint),
-                report=_json_safe(report),
-            )
-        )
+        db.add(TrainedModel(
+            dataset_id=dataset_row.id,
+            fingerprint=fingerprint,
+            artifact_dir=generic_artifacts.artifact_dir(fingerprint),
+            report=_json_safe(report),
+            predictions=_json_safe(customers),
+            full_result_extra=_json_safe({
+                "rawFeaturesById": raw_features_by_id,
+                "topDrivers": top_drivers,
+                "cleaning": cleaning,
+                "extraColumnsUsed": extra_columns_used,
+                "extraColumnsSkipped": extra_columns_skipped,
+                "contactEmailsById": contact_emails_by_id,
+            }),
+        ))
         db.commit()
     except Exception:  # noqa: BLE001 -- best-effort persistence, see docstring
-        logger.warning("Failed to persist training history for fingerprint %s", fingerprint, exc_info=True)
+        logger.warning("Failed to persist training+predictions for fingerprint %s", fingerprint, exc_info=True)
         db.rollback()
     finally:
         _safe_close(db)
@@ -1128,13 +1190,14 @@ def _persist_predictions(
     extra_columns_skipped: List[Dict[str, str]],
     contact_emails_by_id: Dict[str, str],
 ) -> None:
-    """Stores this run's full results against the TrainedModel row for
-    `fingerprint`, so a signed-in user's dataset history shows real past
-    predictions, AND so a later re-upload of the identical data can skip
-    inference and SHAP entirely, not just the Optuna/StackingClassifier
-    training step _load_cached_training() already skips (see
-    _load_cached_full_result()). Best-effort and logged on failure, same
-    pattern as _persist_training()."""
+    """Stores this run's full results against an EXISTING TrainedModel row --
+    the training-only-cache-hit path, where _persist_training_and_predictions()
+    above doesn't apply because there is no fresh INSERT in this request to
+    attach predictions to. So a signed-in user's dataset history shows real
+    past predictions, AND a later re-upload of the identical data can skip
+    inference and SHAP entirely too, not just the Optuna/StackingClassifier
+    fit _load_cached_state() already skips. Best-effort and logged on
+    failure, same pattern as every persistence helper in this file."""
     if current_user is None:
         return
     db = SessionLocal()
@@ -1164,46 +1227,6 @@ def _persist_predictions(
     except Exception:  # noqa: BLE001 -- best-effort persistence, see docstring
         logger.warning("Failed to persist predictions for fingerprint %s", fingerprint, exc_info=True)
         db.rollback()
-    finally:
-        _safe_close(db)
-
-
-def _load_cached_full_result(current_user, fingerprint: str) -> Optional[Dict[str, Any]]:
-    """A previous full /predict result for this exact data -- or None if
-    there isn't one, the caller isn't signed in, or an earlier run only got
-    as far as _persist_training() (no `predictions`/`full_result_extra` yet,
-    e.g. rows from before this feature existed). Returning None here just
-    means run_prediction() falls back to the narrower training-only cache
-    (or a full retrain) exactly as if this function didn't exist -- never a
-    correctness issue, only a speed one.
-
-    Also None when the fitted model for `fingerprint` isn't on disk. The
-    cached scores live in the (shared, remote) database, but the artifacts
-    are local and git-ignored -- so on another machine, or after they were
-    cleaned up, a DB row alone would restore scores for a model that can't be
-    loaded, and every per-customer explanation, recommendation and outreach
-    draft would then fail with 503. Same rule _load_cached_training() follows:
-    never trust a DB row over what's actually there to load."""
-    if current_user is None or not generic_artifacts.is_trained(fingerprint):
-        return None
-    db = SessionLocal()
-    try:
-        row = (
-            db.query(TrainedModel)
-            .join(DatasetRow, TrainedModel.dataset_id == DatasetRow.id)
-            .filter(DatasetRow.user_id == current_user.id, TrainedModel.fingerprint == fingerprint)
-            .order_by(TrainedModel.trained_at.desc())
-            .first()
-        )
-        if row is None or not row.predictions or not row.full_result_extra:
-            return None
-        return {
-            "report": dict(row.report),
-            "customers": row.predictions,
-            "extra": dict(row.full_result_extra),
-        }
-    except Exception:  # noqa: BLE001 -- a DB hiccup means "compute normally", never a broken /predict
-        return None
     finally:
         _safe_close(db)
 
@@ -1437,7 +1460,12 @@ def train_and_score(entry: DatasetEntry, current_user) -> TrainingResult:
     # generic_predictor/generic_explainer lazily reload their artifacts by
     # fingerprint from disk on demand (see predictor.py's _ensure_loaded()),
     # independent of whether predict() ran during this request.
-    cached_full = _load_cached_full_result(current_user, fingerprint) if DB_AVAILABLE else None
+    cached_state = (
+        _load_cached_state(current_user, fingerprint)
+        if DB_AVAILABLE
+        else {"full": None, "report": None, "outreach_drafts": None}
+    )
+    cached_full = cached_state["full"]
     logger.warning("CACHE-DEBUG /predict: full_result_cache_hit=%s", cached_full is not None)
     if cached_full is not None:
         report = cached_full["report"]
@@ -1455,7 +1483,9 @@ def train_and_score(entry: DatasetEntry, current_user) -> TrainingResult:
         # bulk. Instead, any drafts a previous run already generated and
         # persisted for this exact fingerprint (see _persist_outreach_drafts)
         # are restored directly -- no redundant SHAP/LLM work either way.
-        restored = _load_cached_outreach_drafts(current_user, fingerprint)
+        # Read straight off cached_state -- same TrainedModel row, no extra
+        # round trip (see _load_cached_state's docstring).
+        restored = cached_state["outreach_drafts"]
 
         return TrainingResult(
             fingerprint=fingerprint,
@@ -1481,9 +1511,10 @@ def train_and_score(entry: DatasetEntry, current_user) -> TrainingResult:
             contact_emails_by_id=extra.get("contactEmailsById", {}),
         )
 
-    cached_report = _load_cached_training(current_user, fingerprint) if DB_AVAILABLE else None
+    cached_report = cached_state["report"]
     logger.warning("CACHE-DEBUG /predict: training_only_cache_hit=%s", cached_report is not None)
-    if cached_report is not None:
+    fresh_train = cached_report is None
+    if not fresh_train:
         report = cached_report
     else:
         try:
@@ -1492,8 +1523,11 @@ def train_and_score(entry: DatasetEntry, current_user) -> TrainingResult:
             )
         except ValueError as exc:
             raise TrainingError(str(exc)) from exc
-        if DB_AVAILABLE and current_user is not None:
-            _persist_training(current_user, entry, fingerprint, report)
+        # Not persisted here -- unlike the old _persist_training() call this
+        # replaced, the Dataset/TrainedModel INSERT now happens together with
+        # predictions/full_result_extra in ONE round trip once those are
+        # ready below (_persist_training_and_predictions()), instead of two
+        # separate round trips to the same row a few dozen lines apart.
 
         # Also register this training under its canonical *schema* shape
         # (schema_hash.py), not just its exact data-content fingerprint --
@@ -1590,11 +1624,21 @@ def train_and_score(entry: DatasetEntry, current_user) -> TrainingResult:
     top_drivers = _compute_top_drivers(model_df, all_feature_cols, fingerprint)
 
     if DB_AVAILABLE:
-        _persist_predictions(
-            current_user, fingerprint, customers, raw_features_by_id,
-            top_drivers, cleaning, extra_columns_used, extra_columns_skipped,
-            contact_emails_by_id,
-        )
+        # A fresh train has no row yet -- write it and its predictions
+        # together (one round trip). A training-only cache hit already has a
+        # row from whenever it first trained; only its predictions are new.
+        if fresh_train:
+            _persist_training_and_predictions(
+                current_user, entry, fingerprint, report, customers, raw_features_by_id,
+                top_drivers, cleaning, extra_columns_used, extra_columns_skipped,
+                contact_emails_by_id,
+            )
+        else:
+            _persist_predictions(
+                current_user, fingerprint, customers, raw_features_by_id,
+                top_drivers, cleaning, extra_columns_used, extra_columns_skipped,
+                contact_emails_by_id,
+            )
 
     eligible_count = sum(1 for c in customers if c["riskTier"] in ("high", "critical"))
 
@@ -1603,9 +1647,12 @@ def train_and_score(entry: DatasetEntry, current_user) -> TrainingResult:
     # inference/SHAP/outreach. Restoring previously drafted outreach for this
     # exact data avoids paying to redraft it; a miss (None) just means no
     # prior run ever finished persisting drafts, and the caller queues a
-    # fresh run exactly as before.
+    # fresh run exactly as before. Read straight off cached_state -- same
+    # TrainedModel row already fetched above, no extra round trip -- valid
+    # here since nothing in between wrote to that row's outreach_drafts
+    # column (_persist_predictions only touches predictions/full_result_extra).
     restored = (
-        _load_cached_outreach_drafts(current_user, fingerprint)
+        cached_state["outreach_drafts"]
         if (cached_report is not None and DB_AVAILABLE)
         else None
     )
@@ -1654,6 +1701,7 @@ def apply_result_to_entry(entry: DatasetEntry, result: TrainingResult) -> bool:
     entry.ai_explanations = {}
     entry.fingerprint = result.fingerprint
     entry.top_drivers = result.top_drivers
+    entry.reused_model = result.reused_model
 
     if result.restored_drafts is not None:
         entry.outreach_drafts = result.restored_drafts
@@ -1715,6 +1763,11 @@ def run_prediction(
 
     should_queue_outreach = apply_result_to_entry(entry, result)
 
+    _log_activity(
+        current_user, "model_trained", entity_type="dataset", entity_id=dataset_id,
+        detail=f"Trained a model on {entry.filename} ({len(result.customers)} customers, {result.training_source}).",
+    )
+
     # Eligible customers (see business_rules.MIN_RISK_TIER_FOR_AUTO_OUTREACH)
     # get outreach drafted automatically, in the background, so the queue is
     # already populated by the time anyone opens Outreach -- not triggered by
@@ -1728,77 +1781,85 @@ def run_prediction(
     return _build_predict_response(dataset_id, entry, result)
 
 
+def _dataset_history_query(db: Session, user_id: str) -> tuple[List[DatasetRow], Dict[str, Any]]:
+    """The actual reads behind GET /datasets/history, factored out so both
+    the fast (shared-session) path and its fresh-connection retry below can
+    run the exact same query."""
+    rows = (
+        db.query(DatasetRow)
+        .filter(DatasetRow.user_id == user_id)
+        .order_by(DatasetRow.uploaded_at.desc())
+        .limit(50)
+        .all()
+    )
+
+    # One query for every trained model across all 50 datasets, instead
+    # of the N+1 pattern this used to be (a separate round-trip to Neon
+    # per row) -- but restricted to only the columns this endpoint
+    # actually reads. `predictions` and `full_result_extra` hold a full
+    # per-customer record (including raw SHAP feature values) for every
+    # customer in that training run; pulling those in full for every
+    # trained model this account has (21, in this case) was silently
+    # transferring and deserializing many megabytes of JSON on every
+    # single History load -- easily enough on its own to make this
+    # "simple" endpoint far slower than a plain SELECT has any right to
+    # be, independent of Neon/network latency. `json_array_length`
+    # gets the customer count directly from Postgres without ever
+    # pulling the array itself across the wire.
+    dataset_ids = [row.id for row in rows]
+    latest_by_dataset: Dict[str, Any] = {}
+    if dataset_ids:
+        models = (
+            db.query(
+                TrainedModel.dataset_id,
+                TrainedModel.trained_at,
+                TrainedModel.report,
+                TrainedModel.predictions.isnot(None).label("has_predictions"),
+                func.json_array_length(TrainedModel.predictions).label("prediction_count"),
+            )
+            .filter(TrainedModel.dataset_id.in_(dataset_ids))
+            .order_by(TrainedModel.dataset_id, TrainedModel.trained_at.desc())
+            .all()
+        )
+        for model in models:
+            # First one seen per dataset_id is the latest, thanks to the
+            # order_by above -- never overwritten by an older run.
+            latest_by_dataset.setdefault(model.dataset_id, model)
+    return rows, latest_by_dataset
+
+
 @router.get("/datasets/history")
-def dataset_history(current_user=Depends(get_current_user)):
+def dataset_history(current_user=Depends(get_current_user_fast), db: Session = Depends(get_db)):
     """Every dataset this account has trained before, most recent first --
     the persisted counterpart to the frontend's browser-only IndexedDB
     history (src/services/datasetHistory.js), which remembers the file
     itself for a quick reconnect but knows nothing across devices or after
     the browser's storage is cleared. Requires sign-in; a database that
     isn't configured (see main.py's _auth_router) reports plainly rather
-    than pretending there's no history."""
+    than pretending there's no history.
+
+    Uses get_current_user_fast + its own `db: Session = Depends(get_db)`:
+    both resolve to the same request-scoped session, so the sign-in check
+    and this endpoint's own query share one database round trip instead of
+    two -- see get_current_user_fast's docstring. If that shared connection
+    was the unlucky one dropped in the narrow gap pool_pre_ping can't quite
+    close, the query below retries exactly once on a fresh, independent
+    connection rather than failing outright; a second failure means Neon is
+    genuinely unreachable right now.
+    """
     if not DB_AVAILABLE:
         raise HTTPException(503, "Dataset history needs a database, which isn't configured on this server.")
 
-    # Two attempts, each on a fresh connection: Neon can drop a pooled
-    # connection that's been idle for a while (see database.py's
-    # pool_recycle comment) in the gap pre_ping can't quite close. This
-    # endpoint is pure reads, so retrying once on a clean connection is
-    # always safe -- there's no partial write to worry about undoing.
-    last_error: Optional[OperationalError] = None
-    for attempt in (1, 2):
-        db = SessionLocal()
+    try:
+        rows, latest_by_dataset = _dataset_history_query(db, current_user.id)
+    except OperationalError:
+        retry_db = SessionLocal()
         try:
-            rows = (
-                db.query(DatasetRow)
-                .filter(DatasetRow.user_id == current_user.id)
-                .order_by(DatasetRow.uploaded_at.desc())
-                .limit(50)
-                .all()
-            )
-
-            # One query for every trained model across all 50 datasets, instead
-            # of the N+1 pattern this used to be (a separate round-trip to Neon
-            # per row) -- but restricted to only the columns this endpoint
-            # actually reads. `predictions` and `full_result_extra` hold a full
-            # per-customer record (including raw SHAP feature values) for every
-            # customer in that training run; pulling those in full for every
-            # trained model this account has (21, in this case) was silently
-            # transferring and deserializing many megabytes of JSON on every
-            # single History load -- easily enough on its own to make this
-            # "simple" endpoint far slower than a plain SELECT has any right to
-            # be, independent of Neon/network latency. `json_array_length`
-            # gets the customer count directly from Postgres without ever
-            # pulling the array itself across the wire.
-            dataset_ids = [row.id for row in rows]
-            latest_by_dataset: Dict[str, Any] = {}
-            if dataset_ids:
-                models = (
-                    db.query(
-                        TrainedModel.dataset_id,
-                        TrainedModel.trained_at,
-                        TrainedModel.report,
-                        TrainedModel.predictions.isnot(None).label("has_predictions"),
-                        func.json_array_length(TrainedModel.predictions).label("prediction_count"),
-                    )
-                    .filter(TrainedModel.dataset_id.in_(dataset_ids))
-                    .order_by(TrainedModel.dataset_id, TrainedModel.trained_at.desc())
-                    .all()
-                )
-                for model in models:
-                    # First one seen per dataset_id is the latest, thanks to the
-                    # order_by above -- never overwritten by an older run.
-                    latest_by_dataset.setdefault(model.dataset_id, model)
-            break
+            rows, latest_by_dataset = _dataset_history_query(retry_db, current_user.id)
         except OperationalError as exc:
-            last_error = exc
-            rows = []
-            latest_by_dataset = {}
-            continue
+            raise HTTPException(503, "Couldn't reach the database. Please try again in a moment.") from exc
         finally:
-            db.close()
-    else:
-        raise HTTPException(503, "Couldn't reach the database. Please try again in a moment.") from last_error
+            _safe_close(retry_db)
 
     out = []
     for row in rows:
@@ -1834,45 +1895,49 @@ def dataset_history(current_user=Depends(get_current_user)):
 
 
 @router.get("/datasets/history/{dataset_row_id}/predictions")
-def dataset_history_predictions(dataset_row_id: str, current_user=Depends(get_current_user)):
+def dataset_history_predictions(
+    dataset_row_id: str, current_user=Depends(get_current_user_fast), db: Session = Depends(get_db)
+):
     """The detail view behind one row of dataset_history(): every
     customer-level score from that dataset's most recent training run.
     Ownership is checked via the Dataset row's user_id -- knowing a row's id
-    is never sufficient on its own to read another user's data."""
+    is never sufficient on its own to read another user's data.
+
+    get_current_user_fast + its own `Depends(get_db)` share one database
+    round trip for the sign-in check and this endpoint's own query -- see
+    get_current_user_fast's docstring."""
     if not DB_AVAILABLE:
         raise HTTPException(503, "Dataset history needs a database, which isn't configured on this server.")
 
-    db = SessionLocal()
-    try:
-        dataset_row = (
-            db.query(DatasetRow)
-            .filter(DatasetRow.id == dataset_row_id, DatasetRow.user_id == current_user.id)
-            .first()
-        )
-        if dataset_row is None:
-            raise HTTPException(404, "That dataset history entry doesn't exist, or isn't yours.")
+    dataset_row = (
+        db.query(DatasetRow)
+        .filter(DatasetRow.id == dataset_row_id, DatasetRow.user_id == current_user.id)
+        .first()
+    )
+    if dataset_row is None:
+        raise HTTPException(404, "That dataset history entry doesn't exist, or isn't yours.")
 
-        latest_model = (
-            db.query(TrainedModel)
-            .filter(TrainedModel.dataset_id == dataset_row.id)
-            .order_by(TrainedModel.trained_at.desc())
-            .first()
-        )
-        if latest_model is None or not latest_model.predictions:
-            raise HTTPException(404, "No stored predictions for this dataset yet.")
+    latest_model = (
+        db.query(TrainedModel)
+        .filter(TrainedModel.dataset_id == dataset_row.id)
+        .order_by(TrainedModel.trained_at.desc())
+        .first()
+    )
+    if latest_model is None or not latest_model.predictions:
+        raise HTTPException(404, "No stored predictions for this dataset yet.")
 
-        return {
-            "datasetId": dataset_row.id,
-            "filename": dataset_row.filename,
-            "trainedAt": latest_model.trained_at.isoformat(),
-            "customers": latest_model.predictions,
-        }
-    finally:
-        db.close()
+    return {
+        "datasetId": dataset_row.id,
+        "filename": dataset_row.filename,
+        "trainedAt": latest_model.trained_at.isoformat(),
+        "customers": latest_model.predictions,
+    }
 
 
 @router.post("/datasets/history/{dataset_row_id}/reopen")
-def reopen_dataset_history(dataset_row_id: str, current_user=Depends(get_current_user)):
+def reopen_dataset_history(
+    dataset_row_id: str, current_user=Depends(get_current_user_fast), db: Session = Depends(get_db)
+):
     """One click, no re-upload, no retrain: rebuilds the in-memory
     DatasetEntry for a past history row directly from what /predict already
     persisted (TrainedModel.predictions + .full_result_extra), and makes it
@@ -1885,136 +1950,164 @@ def reopen_dataset_history(dataset_row_id: str, current_user=Depends(get_current
     an older run from before full_result_extra existed, or one made on a
     different machine whose model artifacts aren't on this one. The frontend
     should fall back to the ordinary reconnect-the-file flow in that case.
+
+    get_current_user_fast + its own `Depends(get_db)` share one database
+    round trip for the sign-in check and this endpoint's own query -- see
+    get_current_user_fast's docstring.
     """
     if not DB_AVAILABLE:
         raise HTTPException(503, "Dataset history needs a database, which isn't configured on this server.")
 
-    db = SessionLocal()
-    try:
-        dataset_row = (
-            db.query(DatasetRow)
-            .filter(DatasetRow.id == dataset_row_id, DatasetRow.user_id == current_user.id)
-            .first()
+    dataset_row = (
+        db.query(DatasetRow)
+        .filter(DatasetRow.id == dataset_row_id, DatasetRow.user_id == current_user.id)
+        .first()
+    )
+    if dataset_row is None:
+        raise HTTPException(404, "That dataset history entry doesn't exist, or isn't yours.")
+
+    latest_model = (
+        db.query(TrainedModel)
+        .filter(TrainedModel.dataset_id == dataset_row.id)
+        .order_by(TrainedModel.trained_at.desc())
+        .first()
+    )
+    if latest_model is None or not latest_model.predictions or not latest_model.full_result_extra:
+        raise HTTPException(
+            409,
+            "This dataset wasn't fully cached (an older run, or one made before instant-reopen "
+            "existed). Reconnect the original file to open it.",
         )
-        if dataset_row is None:
-            raise HTTPException(404, "That dataset history entry doesn't exist, or isn't yours.")
-
-        latest_model = (
-            db.query(TrainedModel)
-            .filter(TrainedModel.dataset_id == dataset_row.id)
-            .order_by(TrainedModel.trained_at.desc())
-            .first()
+    if not generic_artifacts.is_trained(latest_model.fingerprint):
+        raise HTTPException(
+            409,
+            "The trained model behind this dataset isn't available on this server (e.g. it was "
+            "trained on a different machine). Reconnect the original file to retrain.",
         )
-        if latest_model is None or not latest_model.predictions or not latest_model.full_result_extra:
-            raise HTTPException(
-                409,
-                "This dataset wasn't fully cached (an older run, or one made before instant-reopen "
-                "existed). Reconnect the original file to open it.",
-            )
-        if not generic_artifacts.is_trained(latest_model.fingerprint):
-            raise HTTPException(
-                409,
-                "The trained model behind this dataset isn't available on this server (e.g. it was "
-                "trained on a different machine). Reconnect the original file to retrain.",
-            )
 
-        extra = dict(latest_model.full_result_extra)
-        customers = latest_model.predictions
-        report = dict(latest_model.report)
+    extra = dict(latest_model.full_result_extra)
+    customers = latest_model.predictions
+    report = dict(latest_model.report)
 
-        entry = DatasetEntry(
-            id=dataset_row.id,
-            filename=dataset_row.filename,
-            size=0,
-            # Setup-only routes (validate/map-columns/derive-churn) are the
-            # only things that ever touch raw_df, and a reopened entry never
-            # goes through them -- an empty frame is enough to satisfy the
-            # dataclass without pretending we still have the original rows.
-            raw_df=pd.DataFrame(),
-            profile={"rowCount": dataset_row.row_count, "columnCount": dataset_row.column_count},
-            source=DatasetSource(
-                kind=dataset_row.source_kind or "upload",
-                label={"upload": "Uploaded file", "demo": "Demo data", "crm": "CRM"}.get(
-                    dataset_row.source_kind or "upload", "Uploaded file"
-                ),
-                provider=dataset_row.source_provider,
+    entry = DatasetEntry(
+        id=dataset_row.id,
+        filename=dataset_row.filename,
+        size=0,
+        # Setup-only routes (validate/map-columns/derive-churn) are the
+        # only things that ever touch raw_df, and a reopened entry never
+        # goes through them -- an empty frame is enough to satisfy the
+        # dataclass without pretending we still have the original rows.
+        raw_df=pd.DataFrame(),
+        profile={"rowCount": dataset_row.row_count, "columnCount": dataset_row.column_count},
+        source=DatasetSource(
+            kind=dataset_row.source_kind or "upload",
+            label={"upload": "Uploaded file", "demo": "Demo data", "crm": "CRM"}.get(
+                dataset_row.source_kind or "upload", "Uploaded file"
             ),
-            mappings=dataset_row.mappings,
-        )
-        entry.customers = customers
-        entry.customers_by_id = {c["id"]: c for c in customers}
-        entry.raw_features_by_id = extra.get("rawFeaturesById", {})
-        entry.contact_emails_by_id = extra.get("contactEmailsById", {})
-        entry.training_report = report
-        entry.trained = True
-        entry.cleaning = extra.get("cleaning", [])
-        entry.fingerprint = latest_model.fingerprint
-        entry.top_drivers = extra.get("topDrivers")
+            provider=dataset_row.source_provider,
+        ),
+        mappings=dataset_row.mappings,
+    )
+    entry.customers = customers
+    entry.customers_by_id = {c["id"]: c for c in customers}
+    entry.raw_features_by_id = extra.get("rawFeaturesById", {})
+    entry.contact_emails_by_id = extra.get("contactEmailsById", {})
+    entry.training_report = report
+    entry.trained = True
+    entry.cleaning = extra.get("cleaning", [])
+    entry.fingerprint = latest_model.fingerprint
+    entry.top_drivers = extra.get("topDrivers")
 
-        restored_drafts = latest_model.outreach_drafts or []
-        entry.outreach_drafts = restored_drafts
-        entry.auto_outreach_state = "done"
-        entry.auto_outreach_queued = len(restored_drafts)
-        entry.auto_outreach_skipped = max(
-            0, sum(1 for c in customers if c["riskTier"] in ("high", "critical")) - len(restored_drafts)
-        )
+    restored_drafts = latest_model.outreach_drafts or []
+    entry.outreach_drafts = restored_drafts
+    entry.auto_outreach_state = "done"
+    entry.auto_outreach_queued = len(restored_drafts)
+    entry.auto_outreach_skipped = max(
+        0, sum(1 for c in customers if c["riskTier"] in ("high", "critical")) - len(restored_drafts)
+    )
 
-        store.create_dataset(entry)
+    store.create_dataset(entry)
 
-        return {
-            "datasetId": entry.id,
-            "status": "completed",
-            "source": entry.source.as_dict(),
-            "filename": dataset_row.filename,
-            "rows": dataset_row.row_count,
-            "columns": dataset_row.column_count,
-            "customersProcessed": len(customers),
-            "mappedFields": entry.mapped_field_keys(),
-            "cleaning": entry.cleaning,
-            "extraColumnsUsed": extra.get("extraColumnsUsed", []),
-            "trainingMetrics": {
-                "accuracy": report.get("test_metrics", {}).get("accuracy"),
-                "recall": report.get("test_metrics", {}).get("recall"),
-                "rocAuc": report.get("test_metrics", {}).get("roc_auc"),
-            },
-            "trainingSource": "reopened",
-        }
-    finally:
-        db.close()
+    return {
+        "datasetId": entry.id,
+        "status": "completed",
+        "source": entry.source.as_dict(),
+        "filename": dataset_row.filename,
+        "rows": dataset_row.row_count,
+        "columns": dataset_row.column_count,
+        "customersProcessed": len(customers),
+        "mappedFields": entry.mapped_field_keys(),
+        "cleaning": entry.cleaning,
+        "extraColumnsUsed": extra.get("extraColumnsUsed", []),
+        "trainingMetrics": {
+            "accuracy": report.get("test_metrics", {}).get("accuracy"),
+            "recall": report.get("test_metrics", {}).get("recall"),
+            "rocAuc": report.get("test_metrics", {}).get("roc_auc"),
+        },
+        "trainingSource": "reopened",
+    }
 
 
 @router.delete("/datasets/history/{dataset_row_id}")
-def delete_dataset_history(dataset_row_id: str, current_user=Depends(get_current_user)):
+def delete_dataset_history(
+    dataset_row_id: str, current_user=Depends(get_current_user_fast), db: Session = Depends(get_db)
+):
     """Permanently removes one dataset history row -- unlike DELETE /dataset
     above, which only ever clears the in-memory *active* session and never
     touches Neon. Ownership is checked the same way as every other
     /datasets/history* route: knowing a row's id is never enough on its own
     to reach another user's data.
 
-    Every TrainedModel row for this dataset goes with it: Dataset.trained_models
-    is declared cascade="all, delete-orphan" (see db/models.py), so deleting
-    the ORM-loaded `dataset_row` here is enough -- SQLAlchemy loads and
-    deletes its trained models as part of the same flush, leaving nothing
-    orphaned.
+    Every TrainedModel row for this dataset goes with it. This uses two
+    explicit bulk DELETE statements (trained_models first, then the dataset
+    row -- there's no DB-level ON DELETE CASCADE on that foreign key, only
+    the ORM relationship's cascade="all, delete-orphan", which is what the
+    bulk statements below replace) rather than `Session.delete(dataset_row)`,
+    on purpose: that ORM path tracks the object and, at flush, asserts
+    exactly one row matched its DELETE -- which is exactly what a second,
+    racing request for the same row (a double click, a retried request) used
+    to violate, logging `SAWarning: DELETE statement ... expected to delete
+    1 row(s); 0 were matched` for both tables while still reporting success.
+    A plain bulk DELETE ... WHERE has no such expectation: matching zero rows
+    is a normal, silent outcome, and its returned row count is what this
+    function uses below to tell "I deleted it" apart from "it was already
+    gone" -- both are reported as a clean, definite result, never a warning.
+
+    Both statements run against the SAME session and commit together, so a
+    process crash (or anything else) between them can't leave an orphaned
+    trained_models row with no dataset to point at.
+
+    get_current_user_fast + its own `Depends(get_db)` share one database
+    round trip for the sign-in check and this endpoint's own query/delete --
+    see get_current_user_fast's docstring.
+
+    The response's `activeDatasetCleared` tells the frontend, authoritatively,
+    whether the row just deleted was the dataset currently active in this
+    session -- see the comment above the store.get_current() check below for
+    why the frontend cannot always re-derive this itself.
     """
     if not DB_AVAILABLE:
         raise HTTPException(503, "Dataset history needs a database, which isn't configured on this server.")
 
-    db = SessionLocal()
-    try:
-        dataset_row = (
-            db.query(DatasetRow)
-            .filter(DatasetRow.id == dataset_row_id, DatasetRow.user_id == current_user.id)
-            .first()
-        )
-        if dataset_row is None:
-            raise HTTPException(404, "That dataset history entry doesn't exist, or isn't yours.")
+    dataset_row = (
+        db.query(DatasetRow)
+        .filter(DatasetRow.id == dataset_row_id, DatasetRow.user_id == current_user.id)
+        .first()
+    )
+    if dataset_row is None:
+        raise HTTPException(404, "That dataset history entry doesn't exist, or isn't yours.")
 
-        fingerprint = dataset_row.fingerprint
-        db.delete(dataset_row)
-        db.commit()
-    finally:
-        db.close()
+    fingerprint = dataset_row.fingerprint
+
+    # Child rows first (the FK has no DB-level cascade), then the dataset
+    # row itself -- both bulk statements, both in this one transaction.
+    db.query(TrainedModel).filter(TrainedModel.dataset_id == dataset_row_id).delete(synchronize_session=False)
+    deleted_datasets = (
+        db.query(DatasetRow)
+        .filter(DatasetRow.id == dataset_row_id, DatasetRow.user_id == current_user.id)
+        .delete(synchronize_session=False)
+    )
+    db.commit()
 
     # If this history row is (or backs) the dataset currently active in
     # memory, drop that too -- otherwise the UI would keep showing data for
@@ -2024,14 +2117,37 @@ def delete_dataset_history(dataset_row_id: str, current_user=Depends(get_current
     # which covers a dataset that was just uploaded and trained in this same
     # session -- its in-memory entry.id is a fresh "DS-<timestamp>" from
     # ingest.register_dataframe(), unrelated to any database row, but its
-    # content fingerprint matches the row _persist_training() wrote.
+    # content fingerprint matches the row _persist_training_and_predictions()
+    # wrote. Checked unconditionally, even on the already-deleted branch
+    # below -- the row is confirmed gone from the database either way (the
+    # SELECT above proved it existed and was this user's), so the in-memory
+    # entry should never be left pointing at it regardless of which of two
+    # racing requests actually performed the physical DELETE.
+    active_dataset_cleared = False
     current = store.get_current()
     if current is not None and (
         current.id == dataset_row_id or (current.fingerprint and current.fingerprint == fingerprint)
     ):
         store.reset()
+        active_dataset_cleared = True
 
-    return {"status": "deleted", "id": dataset_row_id}
+    if deleted_datasets == 0:
+        # Existed at the SELECT above but was already gone by the time this
+        # DELETE ran -- a concurrent request for this same row got there
+        # first. The end state the caller wants (this row gone from
+        # history) is already true, so this is a success, not an error --
+        # just an honest, distinct one from "I was the request that deleted
+        # it," rather than a silent SAWarning papering over the difference.
+        return {"status": "already_deleted", "id": dataset_row_id, "activeDatasetCleared": active_dataset_cleared}
+
+    # `activeDatasetCleared` lets the frontend know, authoritatively, whether
+    # the dataset it just deleted from history was the one currently active
+    # in the session -- rather than trying to re-derive that itself from an
+    # id it may not have (see HistoryPage.jsx: a freshly trained dataset's
+    # in-memory id and its history row's database id are different values,
+    # and /predict's response never surfaces the database id for the
+    # frontend to compare against).
+    return {"status": "deleted", "id": dataset_row_id, "activeDatasetCleared": active_dataset_cleared}
 
 
 # ----------------------------------------------------------------- dashboard
@@ -2199,6 +2315,100 @@ def get_segmentation():
     }
 
 
+_DRIFT_NOTES = {
+    "none": "This dataset still looks like what the model was trained on — no retraining needed.",
+    "moderate": "This data has drifted somewhat from what the model was trained on. Scores are still "
+                "usable, but treat them with a bit more caution.",
+    "high": "This data has drifted substantially from what the model was trained on. Reconnect and "
+            "retrain rather than trusting these scores.",
+}
+
+
+@router.get("/model-health")
+def get_model_health(
+    current_user=Depends(get_current_user_optional_fast), db: Session = Depends(get_db)
+):
+    """When this model was last trained, whether the data currently connected
+    still looks like what it was trained on, and the most recent scheduled-
+    retrain decision for this account, if any.
+
+    Nothing here is invented to fill a gap. `drift` only reports something
+    when this run actually scored against a reused model (see
+    resolve_training_eligibility()'s REUSE_MODEL case, and entry.reused_model
+    set in apply_result_to_entry()) -- a model trained fresh on the data it's
+    currently showing has nothing to be "drifted" from, so that case is
+    reported plainly as not applicable rather than shown as "no drift".
+    `retrain` reports the most recent RetrainEvent across this account's CRM
+    connections, when it has any -- honestly reported as empty rather than
+    guessed at when no scheduled retrain has run yet.
+
+    get_current_user_optional_fast + its own `Depends(get_db)` share one
+    database round trip for the sign-in check and the retrain lookup below
+    -- see get_current_user_fast's docstring. (A signed-out caller still
+    opens one otherwise-idle connection via `Depends(get_db)` here that the
+    old two-call version wouldn't have -- a small, worthwhile trade for
+    halving the round trips on every signed-in dashboard load, which is the
+    overwhelming majority of real traffic to this route.)
+    """
+    entry = _trained_or_409(_current_or_404())
+
+    training_report = entry.training_report or {}
+    test_metrics = training_report.get("test_metrics", {})
+
+    if entry.reused_model is not None:
+        state = entry.reused_model.get("driftState") or "none"
+        drift = {
+            "applicable": True,
+            "state": state,
+            "note": _DRIFT_NOTES.get(state, _DRIFT_NOTES["none"]),
+        }
+    else:
+        drift = {
+            "applicable": False,
+            "state": None,
+            "note": "This model was trained directly on the data currently connected, so there's nothing "
+                    "to compare it against yet. Drift tracking applies once a dataset reuses an existing "
+                    "model instead of training fresh.",
+        }
+
+    retrain: Dict[str, Any] = {
+        "latest": None,
+        "note": "No scheduled retrain has run for this account yet.",
+    }
+    if DB_AVAILABLE and current_user is not None:
+        try:
+            event = (
+                db.query(RetrainEvent)
+                .join(CrmConnection, RetrainEvent.connection_id == CrmConnection.id)
+                .filter(CrmConnection.user_id == current_user.id)
+                .order_by(RetrainEvent.triggered_at.desc())
+                .first()
+            )
+            if event is not None:
+                retrain = {
+                    "latest": {
+                        "triggeredAt": event.triggered_at.isoformat(),
+                        "reason": event.trigger_reason,
+                        "outcome": event.outcome,
+                        "maxPsi": event.max_psi,
+                    },
+                    "note": None,
+                }
+        except Exception:  # noqa: BLE001 -- a DB hiccup means "no retrain history to show", never a broken card
+            logger.warning("Failed to load retrain history for model health", exc_info=True)
+
+    return {
+        "trainedAt": training_report.get("trained_at"),
+        "metrics": {
+            "accuracy": test_metrics.get("accuracy"),
+            "recall": test_metrics.get("recall"),
+            "rocAuc": test_metrics.get("roc_auc"),
+        },
+        "drift": drift,
+        "retrain": retrain,
+    }
+
+
 # ----------------------------------------------------------------- customers
 
 def _matches_segment(value: Any, wanted: str) -> bool:
@@ -2319,11 +2529,56 @@ def _compute_pretty_drivers(entry: DatasetEntry, customer_id: str) -> List[Dict[
     ]
 
 
+def _actor_label(current_user) -> str:
+    """Who a user-triggered action gets attributed to in a draft's own
+    auditTrail. The account's name (falling back to its email) when signed
+    in, or a plain "Guest" label for the signed-out session these routes
+    still have to support (see get_current_user_optional's docstring) --
+    never the literal "You"/"System" placeholders this replaced, which
+    attributed every edit/approval/send to the same fake identity regardless
+    of who was actually signed in."""
+    if current_user is None:
+        return "Guest"
+    return current_user.name or current_user.email
+
+
+def _log_activity(
+    current_user,
+    action_type: str,
+    *,
+    entity_type: Optional[str] = None,
+    entity_id: Optional[str] = None,
+    detail: Optional[str] = None,
+) -> None:
+    """Best-effort append to the signed-in account's activity feed (see GET
+    /activity). Never raises -- a logging failure must not break the action
+    it describes, same rule as every other best-effort DB write in this
+    file. A no-op when signed out or the database isn't configured: an
+    activity feed needs an account to attach rows to."""
+    if not DB_AVAILABLE or current_user is None:
+        return
+    db = SessionLocal()
+    try:
+        db.add(ActivityEvent(
+            user_id=current_user.id,
+            action_type=action_type,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            detail=detail,
+        ))
+        db.commit()
+    except Exception:  # noqa: BLE001 -- best-effort, see docstring
+        logger.warning("Failed to log activity event %s", action_type, exc_info=True)
+        db.rollback()
+    finally:
+        _safe_close(db)
+
+
 def _persist_outreach_drafts(current_user, fingerprint: str, drafts: List[Dict[str, Any]]) -> None:
     """Stores this run's auto-drafted outreach messages against the
     TrainedModel row for `fingerprint`, once _run_auto_outreach() finishes --
-    so a later cache hit on this exact data (see _load_cached_outreach_drafts)
-    can restore them instead of leaving Outreach empty, or worse, re-running
+    so a later cache hit on this exact data (see _load_cached_state's
+    "outreach_drafts" field) can restore them instead of leaving Outreach empty, or worse, re-running
     the same expensive per-customer SHAP + LLM drafting loop a cache hit is
     specifically meant to skip. Best-effort and logged on failure, same
     pattern as _persist_predictions()."""
@@ -2345,33 +2600,6 @@ def _persist_outreach_drafts(current_user, fingerprint: str, drafts: List[Dict[s
     except Exception:  # noqa: BLE001 -- best-effort persistence, see docstring
         logger.warning("Failed to persist outreach drafts for fingerprint %s", fingerprint, exc_info=True)
         db.rollback()
-    finally:
-        _safe_close(db)
-
-
-def _load_cached_outreach_drafts(current_user, fingerprint: str) -> Optional[List[Dict[str, Any]]]:
-    """Previously auto-drafted outreach for this exact data -- or None if
-    there isn't any yet (no eligible customers last time, an older row from
-    before this column existed, or the background run never finished/was
-    never persisted). None here means "nothing to restore", not an error --
-    the caller falls back to the pre-existing "skipped" reporting exactly as
-    if this function didn't exist."""
-    if current_user is None:
-        return None
-    db = SessionLocal()
-    try:
-        row = (
-            db.query(TrainedModel)
-            .join(DatasetRow, TrainedModel.dataset_id == DatasetRow.id)
-            .filter(DatasetRow.user_id == current_user.id, TrainedModel.fingerprint == fingerprint)
-            .order_by(TrainedModel.trained_at.desc())
-            .first()
-        )
-        if row is None or row.outreach_drafts is None:
-            return None
-        return list(row.outreach_drafts)
-    except Exception:  # noqa: BLE001 -- a DB hiccup means "no cached drafts", never a broken /predict
-        return None
     finally:
         _safe_close(db)
 
@@ -2512,6 +2740,10 @@ def get_explanation(customer_id: str):
     top5 = drivers[:5]
     features_out = [
         {
+            # Raw snake_case column name -- not shown, but round-tripped back
+            # by POST /customers/{id}/what-if so it knows which stored raw
+            # feature each slider is actually overriding.
+            "key": d["feature"],
             "feature": schema.pretty_feature_name(d["feature"]),
             "value": str(d["value"]),
             "contribution": round(d["shap_value"], 4),
@@ -2545,6 +2777,92 @@ def get_explanation(customer_id: str):
         "baselineRisk": round(entry.explanation_base_value.get(customer_id, 0) * 100, 1),
         "features": features_out,
         "aiExplanation": entry.ai_explanations.get(customer_id),
+    }
+
+
+class WhatIfRequest(BaseModel):
+    # {rawFeatureKey: hypotheticalValue} -- keys come from GET .../explanation's
+    # `key` field, one entry per slider/input currently adjusted away from the
+    # customer's real stored value.
+    overrides: Dict[str, Any]
+
+
+@router.post("/customers/{customer_id}/what-if")
+def what_if(customer_id: str, body: WhatIfRequest):
+    """Re-scores one customer's churn probability, and refreshes their SHAP
+    drivers, with one or more feature values hypothetically changed -- the
+    What-If panel on Customer Detail.
+
+    Cheap and safe to call often: preprocess()/predict() are a cached-model
+    scaler transform + predict_proba call on one row, not a retrain.
+    explain_customer() is a real KernelExplainer SHAP re-run though (see its
+    docstring) -- bounded, but not free -- so the frontend calls this on
+    slider release/debounce, not on every drag tick.
+
+    Deliberately does not touch entry.raw_drivers / entry.explanation_base_value
+    (the cache backing GET .../explanation): those hold the customer's real,
+    unmodified explanation, and a hypothetical value must never leak into or
+    overwrite it.
+    """
+    entry = _trained_or_409(_current_or_404())
+    customer = entry.customers_by_id.get(customer_id)
+    if customer is None:
+        raise HTTPException(404, "Customer not found")
+
+    raw_features = entry.raw_features_by_id.get(customer_id)
+    if raw_features is None:
+        raise HTTPException(404, "Customer not found")
+    if entry.training_report is None or entry.fingerprint is None:
+        raise HTTPException(409, "This dataset hasn't been processed yet.")
+
+    unknown = [k for k in body.overrides if k not in raw_features]
+    if unknown:
+        raise HTTPException(400, f"Unknown feature(s): {', '.join(unknown)}.")
+
+    hypothetical = {**raw_features, **body.overrides}
+    raw_df = pd.DataFrame([hypothetical])
+
+    try:
+        scaled = generic_predictor.preprocess(raw_df, entry.fingerprint)
+        proba = float(generic_predictor.predict(raw_df, entry.fingerprint).iloc[0]["churn_probability"])
+        explanation = explain_customer(scaled, fingerprint=entry.fingerprint)
+    except FileNotFoundError as exc:
+        raise HTTPException(503, "The trained model is no longer available. Re-run data setup.") from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    metadata = entry.training_report
+    human_df = generic_preprocessing.select_and_order_features(raw_df, list(explanation.feature_names))
+    human_df = generic_preprocessing.impute_numeric(human_df, metadata["numeric_medians"])
+    human_df = generic_preprocessing.impute_categorical(
+        human_df, metadata["categorical_cols"], metadata["categorical_placeholder"]
+    )
+    human_row = human_df.iloc[0]
+
+    drivers = sorted(
+        [
+            {"feature": name, "value": _to_native(human_row[name]), "shap_value": float(v)}
+            for name, v in zip(explanation.feature_names, explanation.values[0])
+        ],
+        key=lambda d: abs(d["shap_value"]),
+        reverse=True,
+    )[:5]
+
+    return {
+        "customerId": customer_id,
+        "churnProbability": round(proba * 100, 1),
+        "baselineRisk": round(float(explanation.base_values[0]) * 100, 1),
+        "features": [
+            {
+                "key": d["feature"],
+                "feature": schema.pretty_feature_name(d["feature"]),
+                "value": str(d["value"]),
+                "contribution": round(d["shap_value"], 4),
+                "direction": "increases" if d["shap_value"] > 0 else "decreases",
+                "description": _driver_description(d["feature"], d["value"], d["shap_value"]),
+            }
+            for d in drivers
+        ],
     }
 
 
@@ -2632,7 +2950,7 @@ def generate_outreach(customer_id: str, current_user=Depends(get_current_user_op
                     if result["provider"] == "template"
                     else f"AI generated draft ({result['provider']})"
                 ),
-                "user": "System",
+                "user": _actor_label(current_user),
                 "timestamp": now,
             }
         ],
@@ -2640,6 +2958,10 @@ def generate_outreach(customer_id: str, current_user=Depends(get_current_user_op
     entry.outreach_drafts.insert(0, draft)
     if DB_AVAILABLE:
         _persist_outreach_drafts(current_user, entry.fingerprint, entry.outreach_drafts)
+    _log_activity(
+        current_user, "outreach_drafted", entity_type="outreach", entity_id=draft["id"],
+        detail=f"Drafted an outreach email for {customer_id}.",
+    )
     return draft
 
 
@@ -2667,10 +2989,14 @@ def update_outreach(email_id: str, body: UpdateOutreachRequest, current_user=Dep
     draft["status"] = "reviewed"
     draft["updatedAt"] = datetime.now(timezone.utc).isoformat()
     draft["auditTrail"].append(
-        {"action": "Edited", "user": "You", "timestamp": draft["updatedAt"]}
+        {"action": "Edited", "user": _actor_label(current_user), "timestamp": draft["updatedAt"]}
     )
     if DB_AVAILABLE:
         _persist_outreach_drafts(current_user, entry.fingerprint, entry.outreach_drafts)
+    _log_activity(
+        current_user, "outreach_edited", entity_type="outreach", entity_id=email_id,
+        detail=f"Edited the outreach draft for {draft.get('customerId')}.",
+    )
     return draft
 
 
@@ -2680,10 +3006,14 @@ def approve_outreach(email_id: str, current_user=Depends(get_current_user_option
     draft = _find_draft(entry, email_id)
     draft["status"] = "approved"
     draft["auditTrail"].append(
-        {"action": "Approved", "user": "You", "timestamp": datetime.now(timezone.utc).isoformat()}
+        {"action": "Approved", "user": _actor_label(current_user), "timestamp": datetime.now(timezone.utc).isoformat()}
     )
     if DB_AVAILABLE:
         _persist_outreach_drafts(current_user, entry.fingerprint, entry.outreach_drafts)
+    _log_activity(
+        current_user, "outreach_approved", entity_type="outreach", entity_id=email_id,
+        detail=f"Approved the outreach draft for {draft.get('customerId')}.",
+    )
     return {"id": email_id, "status": "approved"}
 
 
@@ -2714,20 +3044,81 @@ def send_outreach(
             email_sender.send_outreach_email(draft["contactEmail"], draft["subject"], draft["body"], draft.get("cta"))
         except email_sender.EmailDeliveryError as exc:
             draft["auditTrail"].append(
-                {"action": f"Send failed: {exc}", "user": "You", "timestamp": datetime.now(timezone.utc).isoformat()}
+                {"action": f"Send failed: {exc}", "user": _actor_label(current_user), "timestamp": datetime.now(timezone.utc).isoformat()}
             )
             if DB_AVAILABLE:
                 _persist_outreach_drafts(current_user, entry.fingerprint, entry.outreach_drafts)
+            _log_activity(
+                current_user, "outreach_send_failed", entity_type="outreach", entity_id=email_id,
+                detail=f"Tried to send the outreach email for {draft.get('customerId')}, but delivery failed: {exc}",
+            )
             raise HTTPException(502, f"Could not deliver the email: {exc}") from exc
         draft["auditTrail"].append(
-            {"action": f"Sent to {draft['contactEmail']}", "user": "You", "timestamp": datetime.now(timezone.utc).isoformat()}
+            {"action": f"Sent to {draft['contactEmail']}", "user": _actor_label(current_user), "timestamp": datetime.now(timezone.utc).isoformat()}
         )
     else:
         draft["auditTrail"].append(
-            {"action": "Marked as sent", "user": "You", "timestamp": datetime.now(timezone.utc).isoformat()}
+            {"action": "Marked as sent", "user": _actor_label(current_user), "timestamp": datetime.now(timezone.utc).isoformat()}
         )
 
     draft["status"] = "sent"
     if DB_AVAILABLE:
         _persist_outreach_drafts(current_user, entry.fingerprint, entry.outreach_drafts)
+    _log_activity(
+        current_user, "outreach_sent", entity_type="outreach", entity_id=email_id,
+        detail=f"Sent the outreach email for {draft.get('customerId')}.",
+    )
     return {"id": email_id, "status": "sent"}
+
+
+# ------------------------------------------------------------------ activity
+
+_ACTIVITY_LABELS = {
+    "model_trained": "Trained a model",
+    "outreach_drafted": "Drafted an outreach email",
+    "outreach_edited": "Edited an outreach draft",
+    "outreach_approved": "Approved an outreach email",
+    "outreach_sent": "Sent an outreach email",
+    "outreach_send_failed": "Outreach send attempt failed",
+}
+
+
+@router.get("/activity")
+def list_activity(
+    current_user=Depends(get_current_user_fast), limit: int = 50, db: Session = Depends(get_db)
+):
+    """This account's activity feed, most recent first -- who trained a
+    model, who drafted/edited/approved/sent an outreach email, and when. See
+    ActivityEvent in db/models.py, written by _log_activity() at each of
+    those action sites. Requires sign-in, same as dataset history: an
+    activity feed is meaningless with nobody to scope it to.
+
+    get_current_user_fast + its own `Depends(get_db)` share one database
+    round trip for the sign-in check and this endpoint's own query -- see
+    get_current_user_fast's docstring."""
+    if not DB_AVAILABLE:
+        raise HTTPException(503, "Activity history needs a database, which isn't configured on this server.")
+
+    limit = max(1, min(limit, 200))
+    rows = (
+        db.query(ActivityEvent)
+        .filter(ActivityEvent.user_id == current_user.id)
+        .order_by(ActivityEvent.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+
+    return {
+        "events": [
+            {
+                "id": row.id,
+                "actionType": row.action_type,
+                "label": _ACTIVITY_LABELS.get(row.action_type, row.action_type),
+                "entityType": row.entity_type,
+                "entityId": row.entity_id,
+                "detail": row.detail,
+                "createdAt": row.created_at.isoformat(),
+            }
+            for row in rows
+        ],
+    }

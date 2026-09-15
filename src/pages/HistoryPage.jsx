@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { AlertTriangle, Database, FileSpreadsheet, Plug, RotateCcw, Sparkles, Trash2, Zap } from 'lucide-react';
 import Card from '../components/ui/Card';
@@ -134,6 +134,15 @@ export default function HistoryPage() {
   const [openingId, setOpeningId] = useState(null);
   const [confirmDelete, setConfirmDelete] = useState(null); // record pending confirmation, or null
   const [deletingId, setDeletingId] = useState(null);
+  // A same-tick guard against a double-fired delete: `deletingId` (React
+  // state) only actually disables the confirm button once a re-render has
+  // happened, which is a moment behind the click itself. A fast double-click
+  // -- or two events already queued before that re-render lands -- can call
+  // handleConfirmDelete twice before `deletingId` has taken visible effect,
+  // sending the same DELETE request twice. A ref updates synchronously with
+  // no render in between, so checking it first makes the second call a
+  // guaranteed no-op regardless of render timing.
+  const deletingIdRef = useRef(null);
 
   const load = useCallback(() => {
     setRecords(null);
@@ -253,14 +262,26 @@ export default function HistoryPage() {
   const handleConfirmDelete = useCallback(async () => {
     const record = confirmDelete;
     if (!record) return;
+    // Same-tick guard: a second call (a fast double-click, or two events
+    // already queued before `deletingId` re-renders the button as disabled)
+    // for the SAME record is a no-op, not a second request. A different
+    // record's delete is still allowed through -- this only blocks a
+    // duplicate of the in-flight one.
+    if (deletingIdRef.current === record.id) return;
+    deletingIdRef.current = record.id;
     setDeletingId(record.id);
     try {
-      await datasetService.deleteHistoryEntry(record.id);
+      const result = await datasetService.deleteHistoryEntry(record.id);
       setRecords((prev) => (prev ? prev.filter((r) => r.id !== record.id) : prev));
-      // The row just deleted was what the app was actively running on --
-      // reflect "no active dataset" the same way "Replace dataset" does,
-      // rather than leaving the UI pointing at data that no longer exists.
-      if (record.id === activeDatasetId) {
+      // Whether the row just deleted was what the app was actively running
+      // on comes straight from the backend (`activeDatasetCleared`), not
+      // from comparing ids ourselves -- a freshly trained dataset's
+      // in-memory id and its history row's database id are different
+      // values, so that comparison silently missed this exact case. The
+      // backend already knows the answer authoritatively (it checks both
+      // id and content fingerprint), so trust it rather than re-deriving it
+      // here. Reflect "no active dataset" the same way "Replace dataset" does.
+      if (result?.activeDatasetCleared) {
         resetDatasetSetup();
       }
       addToast({ type: 'success', message: `${record.filename} was deleted from history.` });
@@ -268,9 +289,10 @@ export default function HistoryPage() {
     } catch (err) {
       addToast({ type: 'error', message: err?.message || 'Could not delete that dataset. Try again in a moment.' });
     } finally {
+      deletingIdRef.current = null;
       setDeletingId(null);
     }
-  }, [confirmDelete, activeDatasetId, resetDatasetSetup, addToast]);
+  }, [confirmDelete, resetDatasetSetup, addToast]);
 
   return (
     <div className="space-y-6">

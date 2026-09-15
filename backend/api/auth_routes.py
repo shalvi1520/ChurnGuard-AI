@@ -364,6 +364,76 @@ def get_current_user_optional(
     return user
 
 
+def _resolve_user_with_db(
+    db: Session, session_cookie: Optional[str], authorization: Optional[str]
+) -> Optional[User]:
+    """Same credential resolution as _resolve_user() above, but against an
+    already-open session instead of opening (and retrying on) its own
+    short-lived one -- for get_current_user_fast()/get_current_user_optional_fast()
+    below. No retry-on-OperationalError here: a route using this already
+    has `Depends(get_db)` of its own in its signature, so a dropped
+    connection surfaces as a normal 500 for that route to handle (or not),
+    same as any other query failure on a request-scoped session."""
+    if session_cookie:
+        row = sessions.lookup_session(db, session_cookie)
+        if row is not None:
+            _ = row.user.oauth_accounts
+            return row.user
+
+    if authorization and authorization.startswith("Bearer "):
+        user_id = security.decode_access_token(authorization.removeprefix("Bearer ").strip())
+        if user_id:
+            user = db.get(User, user_id)
+            if user is not None and user.is_active:
+                return user
+
+    return None
+
+
+def get_current_user_fast(
+    db: Session = Depends(get_db),
+    churnguard_session: Optional[str] = Cookie(None, alias=auth_config.SESSION_COOKIE_NAME),
+    authorization: Optional[str] = Header(None),
+) -> User:
+    """Required auth, same contract as get_current_user (401 if signed out) --
+    but for a route that ALSO takes its own `db: Session = Depends(get_db)`
+    for a quick query of its own. FastAPI caches a dependency's result per
+    request, so both `Depends(get_db)` calls resolve to the exact same
+    session: the sign-in check and the route's own query share one database
+    round trip instead of paying for two.
+
+    Every round trip to the shared Neon instance costs roughly 1.5-2s here,
+    regardless of query complexity (measured directly against the running
+    server) -- so a route that checks who is signed in and then runs its own
+    query was paying that fixed cost twice for no reason. get_current_user
+    deliberately avoids Depends(get_db) because a SLOW route (training, a
+    SHAP pass, an LLM draft) would hold that one connection checked out for
+    its whole duration, which is what emptied the pool before (see that
+    docstring). This is the opposite case: a route whose own work is fast,
+    so holding one connection for the whole request is cheap, not the
+    anti-pattern that motivated avoiding it there.
+
+    Do not reach for this on a route that does anything slow after the auth
+    check -- training, a SHAP pass, an outbound LLM/email call, or any other
+    unbounded external request. Use get_current_user there instead.
+    """
+    user = _resolve_user_with_db(db, churnguard_session, authorization)
+    if user is None:
+        raise HTTPException(401, "Sign in required.")
+    return user
+
+
+def get_current_user_optional_fast(
+    db: Session = Depends(get_db),
+    churnguard_session: Optional[str] = Cookie(None, alias=auth_config.SESSION_COOKIE_NAME),
+    authorization: Optional[str] = Header(None),
+) -> Optional[User]:
+    """The "fast" counterpart to get_current_user_optional -- see
+    get_current_user_fast's docstring for the tradeoff this makes and when
+    it's the right one."""
+    return _resolve_user_with_db(db, churnguard_session, authorization)
+
+
 @router.get("/me")
 def me(
     churnguard_session: Optional[str] = Cookie(None, alias=auth_config.SESSION_COOKIE_NAME),

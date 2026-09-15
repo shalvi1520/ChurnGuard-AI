@@ -1,10 +1,67 @@
 import { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { Users, AlertTriangle, DollarSign, TrendingUp, Shield, ArrowRight, Sparkles } from 'lucide-react';
+import { Users, AlertTriangle, DollarSign, TrendingUp, Shield, ArrowRight, PiggyBank } from 'lucide-react';
 import { PieChart, Pie, Cell, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ReferenceLine } from 'recharts';
 import Card from '../components/ui/Card';
 import { dashboardService, customerService } from '../services/api';
 import { formatCurrency, formatNumber, formatPercent, getRiskColor } from '../utils/helpers';
+
+// The default assumed retention rate for the illustrative estimate below --
+// a round, clearly-a-placeholder number, not a figure derived from any real
+// outreach-outcome data (ChurnGuard doesn't track those yet). Adjustable so a
+// stakeholder can plug in their own team's actual save rate instead.
+const DEFAULT_ASSUMED_RETENTION_RATE = 30;
+
+/** "If we act on this, what might it be worth?" -- deliberately kept apart
+ * from the KPI row above: those are real, computed figures; this section is
+ * always a labelled estimate built on top of one of them (Revenue at Risk),
+ * multiplied by a rate the viewer sets themselves. Never rendered as if it
+ * were a real, tracked number -- ChurnGuard has no record of which contacted
+ * customers actually stayed. */
+function RetentionEstimate({ revenueAtRisk, customersAtRisk }) {
+  const [rate, setRate] = useState(DEFAULT_ASSUMED_RETENTION_RATE);
+
+  if (revenueAtRisk === undefined || !customersAtRisk) return null;
+
+  const estimated = revenueAtRisk * (rate / 100);
+
+  return (
+    <Card>
+      <div className="flex items-center gap-2 mb-1">
+        <PiggyBank size={16} className="text-accent" aria-hidden="true" />
+        <h3 className="text-sm font-semibold text-text-primary">Retention Opportunity — an Estimate</h3>
+      </div>
+      <p className="text-xs text-text-tertiary mb-4 max-w-2xl leading-relaxed">
+        Not a forecast: ChurnGuard doesn&apos;t track which contacted customers actually stay, so this multiplies
+        the real Revenue at Risk figure above by a retention rate <em>you</em> set below, not one measured from
+        your outreach.
+      </p>
+      <div className="flex flex-col sm:flex-row sm:items-center gap-4 sm:gap-8">
+        <div className="flex-1 min-w-0">
+          <label htmlFor="assumed-retention-rate" className="flex items-center justify-between text-xs text-text-secondary mb-1.5">
+            <span>Assumed retention rate on contacted at-risk customers</span>
+            <span className="font-semibold text-text-primary tabular-nums">{rate}%</span>
+          </label>
+          <input
+            id="assumed-retention-rate"
+            type="range"
+            min={0}
+            max={100}
+            step={5}
+            value={rate}
+            onChange={(e) => setRate(Number(e.target.value))}
+            className="w-full accent-accent cursor-pointer"
+          />
+        </div>
+        <div className="sm:border-l sm:border-border sm:pl-8 shrink-0">
+          <p className="text-[11px] text-text-tertiary">Estimated revenue retained</p>
+          <p className="text-2xl font-bold text-accent tabular-nums tracking-tight mt-0.5">{formatCurrency(estimated)}</p>
+          <p className="text-[11px] text-text-tertiary mt-0.5">of {formatCurrency(revenueAtRisk)} at risk</p>
+        </div>
+      </div>
+    </Card>
+  );
+}
 
 export default function ExecutiveOverviewPage() {
   const [metrics, setMetrics] = useState(null);
@@ -197,6 +254,8 @@ export default function ExecutiveOverviewPage() {
           </table>
         </div>
       </Card>
+
+      <RetentionEstimate revenueAtRisk={metrics.kpis.revenueAtRisk?.value} customersAtRisk={metrics.kpis.customersAtRisk?.value} />
 
       {/* Footer */}
       <div className="text-center py-4">

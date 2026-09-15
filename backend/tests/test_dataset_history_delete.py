@@ -14,6 +14,7 @@ stacking run (see test_predict_characterization.py) costs real time per test.
 Run with: python -m pytest backend/tests/test_dataset_history_delete.py -v
 """
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import pandas as pd
 import pytest
@@ -154,6 +155,7 @@ def test_delete_clears_the_active_dataset_when_it_was_reopened_from_this_row(cli
 
     resp = client.delete(f"/api/datasets/history/{dataset_id}")
     assert resp.status_code == 200, resp.text
+    assert resp.json()["activeDatasetCleared"] is True
     assert store.get_current() is None
 
 
@@ -178,7 +180,75 @@ def test_delete_clears_the_active_dataset_when_it_matches_by_fingerprint(client)
 
     resp = client.delete(f"/api/datasets/history/{dataset_id}")
     assert resp.status_code == 200, resp.text
+    assert resp.json()["activeDatasetCleared"] is True
     assert store.get_current() is None
+
+
+def test_bulk_delete_of_an_already_gone_row_returns_zero_without_raising(client):
+    """The mechanism the race fix relies on: a bulk DELETE ... WHERE against
+    a row that no longer exists (or never existed) returns 0 matched rows as
+    a plain, silent outcome -- never the SAWarning that Session.delete(obj) +
+    flush raises when its "exactly one row" expectation is violated. This is
+    what lets the second of two racing DELETE requests for the same row
+    resolve to a clean "already gone" result instead of a warning."""
+    user = _signup(client, "bulk-idem")
+    dataset_id, _ = _seed_dataset_row(user["id"])
+
+    db = SessionLocal()
+    try:
+        never_existed = (
+            db.query(DatasetRow).filter(DatasetRow.id == "does-not-exist-at-all").delete(synchronize_session=False)
+        )
+        db.commit()
+        assert never_existed == 0
+
+        # Children first, same order and same reason as the endpoint: the FK
+        # has no DB-level cascade, and this test database enforces it strictly.
+        db.query(TrainedModel).filter(TrainedModel.dataset_id == dataset_id).delete(synchronize_session=False)
+        first = db.query(DatasetRow).filter(DatasetRow.id == dataset_id).delete(synchronize_session=False)
+        db.commit()
+        assert first == 1
+
+        # Same statements again, against a row this session just removed --
+        # exactly the shape of the second half of a race.
+        db.query(TrainedModel).filter(TrainedModel.dataset_id == dataset_id).delete(synchronize_session=False)
+        second = db.query(DatasetRow).filter(DatasetRow.id == dataset_id).delete(synchronize_session=False)
+        db.commit()
+        assert second == 0
+    finally:
+        db.close()
+
+
+def test_concurrent_deletes_for_the_same_row_never_500_and_leave_it_gone_exactly_once(client):
+    """Two requests for the SAME row's delete, fired as close to
+    simultaneously as real threads allow -- the scenario a double-click or a
+    duplicate frontend request produces. Neither may ever 500 (the old
+    Session.delete()-based version didn't 500 either, but it did log a
+    SAWarning while quietly reporting success for a delete that deleted
+    nothing); the row must end up gone exactly once, with its TrainedModel
+    row gone too and nothing orphaned."""
+    user = _signup(client, "concurrent")
+    dataset_id, model_id = _seed_dataset_row(user["id"])
+
+    def _delete():
+        return client.delete(f"/api/datasets/history/{dataset_id}")
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first, second = [f.result() for f in [pool.submit(_delete), pool.submit(_delete)]]
+
+    for resp in (first, second):
+        assert resp.status_code in (200, 404), resp.text
+        if resp.status_code == 200:
+            assert resp.json()["status"] in ("deleted", "already_deleted")
+
+    # Regardless of how the two requests interleaved, the end state is
+    # unambiguous: the row and its trained model are gone, exactly once.
+    db = SessionLocal()
+    try:
+        assert db.query(DatasetRow).filter(DatasetRow.id == dataset_id).first() is None
+        assert db.query(TrainedModel).filter(TrainedModel.id == model_id).first() is None
+    finally:
+        db.close()
 
 
 def test_delete_leaves_an_unrelated_active_dataset_alone(client):
@@ -200,6 +270,7 @@ def test_delete_leaves_an_unrelated_active_dataset_alone(client):
 
     resp = client.delete(f"/api/datasets/history/{dataset_id}")
     assert resp.status_code == 200, resp.text
+    assert resp.json()["activeDatasetCleared"] is False
     current = store.get_current()
     assert current is not None
     assert current.id == "DS-currently-active"

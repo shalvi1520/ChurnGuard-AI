@@ -13,8 +13,11 @@
 // `/history` is exempt on purpose: its whole job is to put a previously
 // connected dataset back, which is exactly what someone without a connected
 // dataset needs. Locking it would hide the shortcut behind the gate it opens.
+// `/activity` is account-level, not dataset-level -- what this account did
+// with a dataset it connected before (and may have since replaced) is still
+// worth being able to see while no dataset is currently connected.
 /** Authenticated paths reachable before a dataset is connected. */
-export const SETUP_EXEMPT_PATHS = ['/data-management', '/history', '/settings'];
+export const SETUP_EXEMPT_PATHS = ['/data-management', '/history', '/settings', '/activity'];
 
 export function requiresDatasetSetup(path) {
   return !SETUP_EXEMPT_PATHS.includes(path);

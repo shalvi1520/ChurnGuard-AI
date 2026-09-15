@@ -4,7 +4,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   LayoutDashboard, Users, Brain, Lightbulb, Mail,
   Database, Settings, ChevronLeft, Shield, Presentation, LogOut,
-  Search, Bell, Menu, X, Lock, Check, History
+  Search, Bell, Menu, X, Lock, Check, History, Clock
 } from 'lucide-react';
 import { cn } from '../utils/helpers';
 import { requiresDatasetSetup } from '../routes/accessRules';
@@ -50,6 +50,7 @@ const navGroups = [
 
 const bottomItems = [
   { to: '/executive', icon: Presentation, label: 'Executive View' },
+  { to: '/activity', icon: Clock, label: 'Activity' },
   { to: '/settings', icon: Settings, label: 'Settings' },
 ];
 

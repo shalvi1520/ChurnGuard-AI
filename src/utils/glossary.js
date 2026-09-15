@@ -22,22 +22,22 @@ export const METRICS = {
   totalCustomers: {
     label: 'Total Customers',
     description: 'Accounts currently monitored',
-    help: 'Every customer in the connected dataset, regardless of risk level.',
+    help: 'The full customer base every other number on this page is measured against — Customers at Risk, Revenue at Risk and Retention Rate are all slices of this total, not separate populations.',
   },
   customersAtRisk: {
     label: 'Customers at Risk',
-    description: 'High or critical churn risk',
-    help: 'Accounts with a churn probability of 60% or above. These are the ones worth acting on first.',
+    description: 'High or critical churn risk — work these first',
+    help: 'Accounts with a churn probability of 60% or higher. This is the action list: start in Recommendations or Outreach here before lower-risk accounts. If it climbs past roughly a quarter of your total customers, retention effort is falling behind churn, not ahead of it.',
   },
   retentionRate: {
     label: 'Retention Rate',
     description: 'Share of customers not already labelled churned',
-    help: 'Computed from your file\'s churn label, not a prediction. Only shown when your dataset had a churn column mapped.',
+    help: 'Computed from your file\'s own churn label, not a prediction — it says what already happened, not what\'s coming. Only shown when a churn column was mapped. If it sits well below "100% minus Customers at Risk," churn is already showing up in outcomes, not just in the forecast.',
   },
   revenueAtRisk: {
     label: 'Revenue at Risk',
-    description: 'Annual value of at-risk accounts',
-    help: 'Each at-risk account\'s annual charges (monthly charges × 12) weighted by its churn probability, added up. It is an expected loss, not a confirmed one.',
+    description: 'Annual value riding on the accounts above',
+    help: 'Each at-risk account\'s annual charges (monthly charges × 12) weighted by its churn probability, added up. It\'s an expected loss if nothing changes, not a confirmed one — the number to defend in a retention budget conversation.',
   },
 
   // ---------- Customer-level fields ----------
@@ -90,8 +90,8 @@ export const METRICS = {
   // ---------- Charts and analysis ----------
   riskDistribution: {
     label: 'Churn Risk Distribution',
-    description: 'See how your customers are spread across Low, Medium, High and Critical risk',
-    help: 'Shows the number and percentage of customers in each churn-risk tier. Every monitored customer falls into exactly one band, so these four numbers add up to your total customers.',
+    description: 'How exposed your book of business is right now',
+    help: 'Every monitored customer falls into exactly one tier, so the four slices add up to your total. A healthy portfolio is weighted toward Low; if High and Critical together make up a large wedge, that\'s active exposure, not a rounding error.',
   },
   churnTrend: {
     label: 'Churn Rate Trend',
@@ -105,8 +105,8 @@ export const METRICS = {
   },
   topDrivers: {
     label: 'Top Churn Drivers',
-    description: 'See which customer factors contribute most to predicted churn risk',
-    help: 'Drivers are ranked by their contribution to the model\'s churn predictions. Orange factors raise churn risk, green ones lower it, and a longer bar means a bigger effect either way. Drivers for one specific account live on the Explainability page.',
+    description: 'What\'s actually pushing churn risk up, ranked by impact',
+    help: 'Drivers are ranked by their real contribution to the model\'s predictions, not guesswork. Orange factors raise risk, green ones lower it, and a longer bar means a bigger effect. A driver dominating this list points to a structural fix — pricing, onboarding, a specific plan — rather than one-by-one outreach. Drivers for one specific account live on the Explainability page.',
   },
   shapContribution: {
     label: 'Feature Contributions',
@@ -115,18 +115,18 @@ export const METRICS = {
   },
   riskByPlan: {
     label: 'Risk by Contract Type',
-    description: 'Compare how much churn risk is concentrated in each contract group',
-    help: 'Shows total customers alongside customers classified as High or Critical risk. The percentage above each orange bar is that group\'s at-risk share — compare shares, not bar heights, since groups differ in size.',
+    description: 'Which contract types are quietly carrying the most risk',
+    help: 'Total customers alongside those at High or Critical risk, per contract type. Compare the percentage above each bar, not the bar heights — groups differ in size. A contract type running well above your portfolio-wide Customers-at-Risk share points to a plan-level fix (pricing, term length, onboarding), not just individual outreach.',
   },
   riskByTenure: {
     label: 'Risk by Customer Tenure',
-    description: 'See how average churn risk changes across customer tenure groups',
-    help: 'This compares customers at different tenure levels; it is not a historical churn trend. Each point takes the colour of the risk tier its average falls in.',
+    description: 'Whether risk looks like an onboarding problem or a renewal problem',
+    help: 'This compares customers at different tenure levels right now — a snapshot across cohorts, not a historical trend. Each point takes the colour of the risk tier its average falls in. High risk early points to onboarding; high risk late points to value or pricing fatigue near renewal.',
   },
   riskByServiceTier: {
     label: 'Risk by Service Tier',
-    description: 'Compare how much churn risk is concentrated in each service or product tier',
-    help: 'Shows total customers alongside customers classified as High or Critical risk for each tier. Only available when a service/product tier column was mapped during data setup.',
+    description: 'Which product tiers are carrying the most risk',
+    help: 'Total customers alongside those at High or Critical risk, per service or product tier. Only available when a tier column was mapped. If a higher-value tier shows risk equal to or above a lower one, you\'re not just losing volume — you\'re losing your most revenue-dense accounts.',
   },
 };
 

@@ -375,3 +375,45 @@ class RetrainEvent(Base):
     error: Mapped[str] = mapped_column(Text, nullable=True)
 
     connection: Mapped["CrmConnection"] = relationship(back_populates="retrain_events")
+
+
+class ActivityEvent(Base):
+    """One user-attributed action worth showing on an account's activity feed:
+    who trained a model, who drafted/edited/approved/sent an outreach email,
+    and when. Distinct from RetrainEvent above (a system-triggered drift-probe
+    decision -- no user_id at all, since nobody clicked anything) and from the
+    audit trail previously embedded only inside each outreach draft's own JSON
+    (backend/api/dataset_routes.py's `auditTrail` list on TrainedModel.
+    outreach_drafts) -- that trail is per-draft, not queryable across a user's
+    whole history, and was written with the literal string "You"/"System"
+    instead of the real signed-in user, which this table's `user_id` fixes.
+
+    `entity_id` is a plain string, not a foreign key: the entity it names (a
+    dataset id, a customer id, an outreach draft id) may live in another
+    table, in this process's in-memory store only, or already be deleted --
+    an activity log has to outlive the thing it once described.
+    """
+
+    __tablename__ = "activity_events"
+    __table_args__ = (
+        Index("ix_activity_events_user_created_at", "user_id", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    user_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("users.id"), nullable=False, index=True
+    )
+    # 'model_trained' | 'outreach_drafted' | 'outreach_edited' | 'outreach_approved' | 'outreach_sent' | 'outreach_send_failed'
+    action_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    # 'dataset' | 'customer' | 'outreach' -- what `entity_id` refers to.
+    entity_type: Mapped[str] = mapped_column(String(50), nullable=True)
+    entity_id: Mapped[str] = mapped_column(String(255), nullable=True)
+    # One plain-language sentence, e.g. "Trained a model on accounts.csv
+    # (142 customers)" -- rendered as-is, so the feed reads the same whether
+    # or not the entity behind entity_id still exists.
+    detail: Mapped[str] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.datetime.utcnow, index=True
+    )
+
+    user: Mapped["User"] = relationship()

@@ -1,7 +1,7 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import {
-  Users, AlertTriangle, TrendingUp, DollarSign, ArrowRight, ChevronRight,
+  Users, AlertTriangle, TrendingUp, DollarSign, ArrowRight, ChevronRight, Activity,
 } from 'lucide-react';
 import {
   PieChart, Pie, Cell, ResponsiveContainer, XAxis, YAxis,
@@ -13,11 +13,13 @@ import DataSourceBadge from '../components/data-setup/DataSourceBadge';
 import Card from '../components/ui/Card';
 import ChartCard from '../components/ui/ChartCard';
 import Button from '../components/ui/Button';
+import Badge from '../components/ui/Badge';
 import EmptyState from '../components/ui/EmptyState';
+import { InfoTip } from '../components/ui/Tooltip';
 import { SkeletonCard, SkeletonChart } from '../components/ui/Skeleton';
 import { dashboardService } from '../services/api';
 import { useApp } from '../context/AppContext';
-import { cn, formatNumber, getRiskColor, getRiskTier } from '../utils/helpers';
+import { cn, formatNumber, formatRelativeDate, getRiskColor, getRiskTier } from '../utils/helpers';
 import { metric } from '../utils/glossary';
 import { customersHref, useWorkflowNav } from '../utils/navigation';
 
@@ -116,13 +118,98 @@ function SectionHeading({ id, children }) {
   );
 }
 
+const DRIFT_BADGE = { none: 'low', moderate: 'medium', high: 'critical' };
+const DRIFT_LABEL = { none: 'Stable', moderate: 'Moderate drift', high: 'High drift' };
+
+// RetrainEvent.trigger_reason values, from backend/db/models.py — the scheduled
+// drift probe behind a CRM connection's auto-retrain, not a per-file upload.
+const RETRAIN_REASON_LABEL = {
+  drift: 'Triggered by data drift',
+  skipped_batch_too_small: 'Skipped — not enough new data yet',
+  skipped_cooldown: 'Skipped — too soon since the last retrain',
+  skipped_no_drift: 'Skipped — data still matched the model',
+  failed: 'Attempted, but failed',
+};
+
+/** Model-level status, distinct from the portfolio-level risk sections below:
+ * when the active model was trained, whether the connected data still looks
+ * like what it was trained on, and the most recent scheduled-retrain
+ * decision for this account. Every field the backend can't honestly compute
+ * is reported as "not applicable"/"no history yet" rather than guessed at —
+ * see GET /model-health's docstring. */
+function ModelHealthCard({ health }) {
+  if (!health) return null;
+  const { drift, retrain } = health;
+  const latest = retrain?.latest;
+
+  return (
+    <Card>
+      <div className="flex items-center gap-1.5 mb-3">
+        <Activity size={13} className="text-text-tertiary" aria-hidden="true" />
+        <h2 className="text-[11px] font-semibold uppercase tracking-wider text-text-tertiary">Model health</h2>
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <div>
+          <p className="text-[11px] text-text-tertiary">Last trained</p>
+          <p className="text-sm font-semibold text-text-primary mt-0.5">
+            {health.trainedAt ? formatRelativeDate(health.trainedAt) : 'Unknown'}
+          </p>
+        </div>
+        <div>
+          <p className="text-[11px] text-text-tertiary flex items-center gap-1">
+            Data drift
+            <InfoTip content={drift.note} label="About data drift" size={11} />
+          </p>
+          <div className="mt-1">
+            <Badge variant={drift.applicable ? (DRIFT_BADGE[drift.state] || 'default') : 'default'} size="sm">
+              {drift.applicable ? (DRIFT_LABEL[drift.state] || drift.state) : 'Not applicable'}
+            </Badge>
+          </div>
+        </div>
+        <div>
+          <p className="text-[11px] text-text-tertiary">Last retrain decision</p>
+          {latest ? (
+            <>
+              <p className="text-sm font-medium text-text-primary mt-0.5">{formatRelativeDate(latest.triggeredAt)}</p>
+              <p className="text-[11px] text-text-tertiary mt-0.5">
+                {RETRAIN_REASON_LABEL[latest.reason] || latest.reason}
+              </p>
+            </>
+          ) : (
+            <p className="text-sm font-medium text-text-primary mt-0.5">{retrain?.note || 'No retrain activity recorded yet.'}</p>
+          )}
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+// A brand-new dataset's model-health/dashboard data doesn't exist until
+// training actually finishes -- every one of this page's own endpoints
+// 409s ("This dataset hasn't been processed yet") until then. That is a
+// normal, expected state here, not a broken page: the store's *active*
+// dataset can change mid-navigation (e.g. a replacement upload started in
+// Data Management while this tab is still open elsewhere), so landing on
+// Portfolio & Risk while it's mid-training is a real, reachable situation,
+// not just a race at initial mount. Retried automatically, capped so a
+// genuinely stuck training run doesn't poll forever in a forgotten tab.
+const TRAINING_POLL_INTERVAL_MS = 5000;
+const MAX_TRAINING_POLL_ATTEMPTS = 12; // ~1 minute of automatic retries
+
 export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
+  // Distinct from `error`: a 409 means the data doesn't exist YET, not that
+  // something is broken -- same distinction HistoryPage's handleOpen()
+  // already makes for a 409 from POST .../reopen (an info toast, not an
+  // error one). Rendered as its own friendly, self-refreshing state rather
+  // than "We couldn't load Portfolio & Risk".
+  const [notReady, setNotReady] = useState(false);
   const [metrics, setMetrics] = useState(null);
   const [riskDistribution, setRiskDistribution] = useState([]);
   const [topDrivers, setTopDrivers] = useState([]);
   const [segmentation, setSegmentation] = useState(null);
+  const [modelHealth, setModelHealth] = useState(null);
   const [segmentView, setSegmentView] = useState(SEGMENT_VIEWS[0].id);
   const { resolvedTheme } = useApp();
   const { stateFrom, drill } = useWorkflowNav();
@@ -130,9 +217,12 @@ export default function DashboardPage() {
   // Retry bumps `reloadKey` from the click handler, which keeps the effect
   // itself free of synchronous state updates (`loading` already starts true).
   const [reloadKey, setReloadKey] = useState(0);
+  const pollAttemptsRef = useRef(0);
 
   useEffect(() => {
     let cancelled = false;
+    let retryTimer = null;
+
     async function load() {
       try {
         // One parallel round, each endpoint once, for every section below.
@@ -147,18 +237,56 @@ export default function DashboardPage() {
         setRiskDistribution(risk);
         setTopDrivers(drivers);
         setSegmentation(segments);
-      } catch {
-        if (!cancelled) setError(true);
+        setNotReady(false);
+        setLoading(false);
+        pollAttemptsRef.current = 0;
+
+        // Model Health is fetched only now, after the data above has
+        // confirmed this dataset is actually trained -- not in parallel
+        // with it. Firing it independently and unconditionally used to mean
+        // it made its own extra 409 whenever this page was reached mid-
+        // training, on top of the four calls above. Still off the page's
+        // loading gate (not awaited here): it needs its own, separately
+        // slow round trip (see get_current_user_fast's docstring), and the
+        // rest of this page has no reason to wait on it -- the card just
+        // fills in a moment later, same as before.
+        dashboardService.getModelHealth()
+          .then((health) => { if (!cancelled) setModelHealth(health); })
+          .catch(() => {
+            // Non-essential card -- the rest of Portfolio & Risk works fine without it.
+          });
+      } catch (err) {
+        if (cancelled) return;
+        if (err?.response?.status === 409) {
+          setNotReady(true);
+          setLoading(false);
+          if (pollAttemptsRef.current < MAX_TRAINING_POLL_ATTEMPTS) {
+            pollAttemptsRef.current += 1;
+            retryTimer = setTimeout(() => {
+              if (!cancelled) setReloadKey((k) => k + 1);
+            }, TRAINING_POLL_INTERVAL_MS);
+          }
+          // Past the cap: stop auto-retrying, but stay on the friendly
+          // "still processing" state rather than falling through to the
+          // generic error -- "Check now" below still works at any point.
+        } else {
+          setError(true);
+          setLoading(false);
+        }
       }
-      if (!cancelled) setLoading(false);
     }
     load();
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+      if (retryTimer) clearTimeout(retryTimer);
+    };
   }, [reloadKey]);
 
   const retry = () => {
     setLoading(true);
     setError(false);
+    setNotReady(false);
+    pollAttemptsRef.current = 0;
     setReloadKey((k) => k + 1);
   };
 
@@ -204,6 +332,7 @@ export default function DashboardPage() {
           <div className="h-7 w-56 bg-bg-tertiary rounded animate-pulse mb-2" />
           <div className="h-4 w-full max-w-xl bg-bg-tertiary rounded animate-pulse" />
         </div>
+        <div className="h-24 bg-bg-tertiary rounded-xl animate-pulse" />
         <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
           {Array.from({ length: 4 }).map((_, i) => <SkeletonCard key={i} />)}
         </div>
@@ -216,6 +345,18 @@ export default function DashboardPage() {
           <SkeletonChart />
         </div>
       </div>
+    );
+  }
+
+  if (notReady) {
+    return (
+      <EmptyState
+        icon={Activity}
+        title="Your dataset is still being processed"
+        description="Training is still running for the connected dataset. This page will refresh on its own once it's ready — no need to wait here."
+        actionLabel="Check now"
+        action={retry}
+      />
     );
   }
 
@@ -258,6 +399,8 @@ export default function DashboardPage() {
           </div>
         )}
       </header>
+
+      <ModelHealthCard health={modelHealth} />
 
       {/* 1. What is happening */}
       {kpis.length > 0 && (
