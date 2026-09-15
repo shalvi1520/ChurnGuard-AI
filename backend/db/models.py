@@ -35,13 +35,154 @@ class User(Base):
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
     email: Mapped[str] = mapped_column(String(255), unique=True, index=True, nullable=False)
-    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    # Nullable since OAuth arrived: an account created by signing in with
+    # Google has no password at all, and storing a placeholder
+    # hash for it would be strictly worse -- it would make such an account
+    # look password-capable to every `if user.password_hash` check in the
+    # codebase, including the login path. NULL states plainly that this user
+    # cannot authenticate by password, and login rejects it as such.
+    password_hash: Mapped[str] = mapped_column(String(255), nullable=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     company: Mapped[str] = mapped_column(String(255), nullable=True)
+    # A disabled account keeps its data and its history but can no longer
+    # sign in or hold a session. Checked on every credential path, not just
+    # at login, so deactivating someone takes effect on their next request
+    # rather than whenever their current session happens to expire.
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=datetime.datetime.utcnow)
+    updated_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow
+    )
     last_login_at: Mapped[datetime.datetime] = mapped_column(DateTime, nullable=True)
 
     datasets: Mapped[list["Dataset"]] = relationship(back_populates="user", cascade="all, delete-orphan")
+    oauth_accounts: Mapped[list["OAuthAccount"]] = relationship(
+        back_populates="user", cascade="all, delete-orphan"
+    )
+    sessions: Mapped[list["UserSession"]] = relationship(
+        back_populates="user", cascade="all, delete-orphan"
+    )
+
+
+# ---------------------------------------------------------------- auth ------
+#
+# Everything below backs backend/api/auth_routes.py. Three tables, each for a
+# thing a JWT alone could not do:
+#
+#   oauth_accounts        -- remembers that a provider identity maps
+#                            to this local user, keyed by the provider's own
+#                            stable subject rather than by email.
+#   user_sessions         -- makes sign-out real. A JWT stays valid until it
+#                            expires no matter what the server wants; a row
+#                            that can be deleted does not.
+#   password_reset_tokens -- single-use, expiring, stored only as a hash.
+#
+# The rule shared by the last two: the value handed to the user (a session
+# cookie, a link in an email) is never what is written down. Only its SHA-256
+# is stored, so a dump of this database yields nothing that can be replayed
+# against the running app.
+
+
+class OAuthAccount(Base):
+    """A provider identity linked to a local user.
+
+    `provider_account_id` is the provider's stable subject claim (`sub`) --
+    Google's opaque user id -- never the email. An
+    email can be changed at the provider, reassigned within a tenant, or (on
+    some providers) go unverified entirely, so matching on it would mean
+    anyone able to control a matching address could walk straight into the
+    account. The subject is the only identifier the provider promises is
+    stable and unique, so it is the only one used for lookup.
+
+    Unique on (provider, provider_account_id) rather than on either alone: the
+    same subject string from two different providers is two different people,
+    and one user may legitimately link more than one provider.
+    """
+
+    __tablename__ = "oauth_accounts"
+    __table_args__ = (
+        UniqueConstraint("provider", "provider_account_id", name="uq_oauth_provider_account"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    user_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    # 'google'
+    provider: Mapped[str] = mapped_column(String(50), nullable=False)
+    provider_account_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    # The email the provider asserted at link time, kept for display and
+    # support ("which Google account is this?") only. Never used for lookup --
+    # see the class docstring.
+    provider_email: Mapped[str] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.datetime.utcnow
+    )
+
+    user: Mapped["User"] = relationship(back_populates="oauth_accounts")
+
+
+class UserSession(Base):
+    """One signed-in browser.
+
+    This is what makes logout mean something. The previous design put a
+    7-day JWT in localStorage: signing out deleted the client's copy, but the
+    token itself stayed valid for the rest of the week, so anything that had
+    already captured it kept working and there was no server-side way to stop
+    it. A session row can simply be deleted, and the very next request fails.
+
+    `token_hash` is SHA-256 of the opaque token in the cookie, never the token
+    itself, for the same reason password_hash is not the password.
+
+    `expires_at` carries the Remember-me decision: the checkbox picks between
+    a short browser-session lifetime and a long persistent one, and since the
+    server enforces this row's expiry, a tampered-with cookie lifetime on the
+    client changes nothing.
+    """
+
+    __tablename__ = "user_sessions"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    user_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True, nullable=False)
+    expires_at: Mapped[datetime.datetime] = mapped_column(DateTime, nullable=False, index=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.datetime.utcnow
+    )
+    # Which sign-in produced this session: 'password' | 'google'.
+    # Reported by /api/auth/me so the UI can say how you are signed in, and
+    # useful when a user asks why a password change did not end a session.
+    auth_method: Mapped[str] = mapped_column(String(50), nullable=False, default="password")
+
+    user: Mapped["User"] = relationship(back_populates="sessions")
+
+
+class PasswordResetToken(Base):
+    """A single-use, expiring password-reset grant.
+
+    Three properties matter, and each is a column rather than a convention:
+    only the hash is stored (`token_hash`), it stops working at a deadline
+    (`expires_at`), and it stops working once spent (`used_at`). The row is
+    kept after use rather than deleted, so a replayed link can be answered
+    with a definite "already used" instead of an ambiguous "unknown token".
+    """
+
+    __tablename__ = "password_reset_tokens"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    user_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True, nullable=False)
+    expires_at: Mapped[datetime.datetime] = mapped_column(DateTime, nullable=False)
+    used_at: Mapped[datetime.datetime] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.datetime.utcnow
+    )
+
+    user: Mapped["User"] = relationship()
 
 
 class Dataset(Base):

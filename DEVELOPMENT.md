@@ -7,7 +7,7 @@ The application is highly configurable through standard mechanisms:
 - **Styling Config (`src/index.css`)**: Defines the core design system using CSS variables (`--color-bg-primary`, `--color-accent`, etc.). Tailwind CSS utility classes map to these variables. Modifying these variables will globally alter the application's appearance.
 - **Vite Config (`vite.config.js`)**: Standard Vite configuration with the `@vitejs/plugin-react` and `@tailwindcss/vite` plugins.
 - **Environment Variables (`.env`)**:
-  - `VITE_API_BASE_URL`: Base URL of the FastAPI + ML backend (`backend/`), default `http://localhost:8000/api`. There is no mock-data mode any more — the app always calls this backend for customers/dashboard/explainability/recommendations/outreach (see "Running the real backend" below). `authService` alone stays a local/prototype implementation (no backend user accounts exist).
+  - `VITE_API_BASE_URL`: Base URL of the FastAPI + ML backend (`backend/`), default `http://localhost:8000/api`. There is no mock-data mode any more — the app always calls this backend for customers/dashboard/explainability/recommendations/outreach (see "Running the real backend" below). `authService` calls the real backend too, as of session 17 — see "Authentication" below and AUTH_SETUP.md.
 
 ### Running the real backend
 
@@ -25,7 +25,7 @@ This starts the FastAPI app on `http://localhost:8000`. It needs a `backend/.env
 - **Missing Data**: Components like `CustomersPage` and `RecommendationsPage` utilize an `EmptyState` component to gracefully handle scenarios where arrays are empty.
 - **Loading States**: The application heavily relies on Skeleton loaders (`SkeletonCard`, `SkeletonChart`, `SkeletonTable`) to prevent layout shift and provide visual feedback during asynchronous data fetching.
 - **Form Validation**: `LoginPage` and `SignupPage` use `react-hook-form` and `zod` schema validation to handle invalid inputs (e.g., malformed emails, short passwords, password mismatch) before attempting authentication.
-- **API Failures**: *Known Limitation*: Currently, network failures when `VITE_USE_MOCK_API=false` are caught but not always surfaced comprehensively to the user beyond generic toast messages.
+- **API Failures**: *Known Limitation*: network failures are caught but not always surfaced comprehensively to the user beyond generic toast messages. (`VITE_USE_MOCK_API` no longer exists — there is no mock-data mode.)
 
 ## 3. Testing
 
@@ -39,10 +39,10 @@ Basic component tests are implemented in `src/components/ui/` (e.g., `Button.tes
 
 ## 4. Security Considerations
 
-- **Authentication**: Currently simulated via `AuthContext`. In a production environment with `VITE_USE_MOCK_API=false`, this must be backed by secure HTTP-only cookies or short-lived JWTs.
+- **Authentication**: Real, as of session 17. Passwords are bcrypt-hashed; a session is a row in `user_sessions` addressed by an opaque token in an **HttpOnly** cookie, stored only as its SHA-256. Signing out deletes the row, so it genuinely ends the session rather than discarding a token that stays valid. Google sign-in uses the authorization code flow with OIDC, entirely server-side, with `state`, PKCE and full ID-token verification. See AUTH_SETUP.md.
 - **Authorization**: Role-based access control (RBAC) is not strictly enforced in the UI routing.
-- **Input Validation**: Client-side validation is implemented via `Zod` on auth forms. 
-- **Secret Management**: No secrets are stored in the frontend repository. Environment variables are strictly for configuration (URLs, feature flags).
+- **Input Validation**: `Zod` on the auth forms, and the backend independently revalidates everything it is sent (email shape, password length, Terms acceptance) — a client-side check is an affordance, not a control, since the API is reachable directly.
+- **Secret Management**: No secrets in the frontend, ever. `VITE_*` variables are inlined into the bundle served to every visitor, so they hold configuration only (the API URL). The database URL, session secret, OAuth client secrets and SMTP credentials all live in `backend/.env`, which is gitignored and never reaches the browser.
 
 ## 5. Performance and Scalability
 
@@ -52,8 +52,8 @@ Basic component tests are implemented in `src/components/ui/` (e.g., `Button.tes
 
 ## 6. Known Limitations
 
-- **No backend user accounts.** `authService` (login/signup) is a local/prototype implementation — any email/password is accepted, session token lives in `localStorage`. Building real auth is a separate, larger feature.
-- **In-memory, single-tenant backend.** `backend/api/store.py` holds one active dataset at a time in process memory; restarting the backend clears it. There is no database.
+- **OAuth needs credentials you register.** The Google code path is complete, but it needs an OAuth application registered with Google and its client id/secret placed in `backend/.env` (AUTH_SETUP.md). Until then the button is disabled and says so — it never fakes a sign-in. Likewise password-reset email needs SMTP settings; without them the reset link is logged and the UI states plainly that delivery is not configured.
+- **One active dataset at a time.** `backend/api/store.py` holds the active dataset in process memory; restarting the backend clears it. (There *is* a database — Postgres, with SQLite equally supported — but it holds accounts, sessions, and dataset/training history, not the active dataset's rows.)
 - **No time-series data.** An uploaded dataset is a single snapshot — churn-trend and revenue-at-risk-over-time charts are honestly empty rather than fabricated (see `PROJECT_MEMORY.md`).
 - **Training runs synchronously in the request.** `POST /datasets/{id}/predict` blocks until training + prediction + a SHAP aggregate finish (tens of seconds to a couple of minutes depending on dataset size). No background job/websocket progress streaming exists yet.
 

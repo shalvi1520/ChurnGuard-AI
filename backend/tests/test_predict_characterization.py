@@ -159,12 +159,20 @@ def captures(tmp_path_factory):
         email = f"charact{int(time.time())}@example.com"
         resp = client.post(
             "/api/auth/signup",
-            json={"email": email, "password": "password123", "name": "Characterization"},
+            json={
+                "email": email,
+                "password": "password123",
+                "name": "Characterization",
+                # Signup re-checks the Terms box server-side; the
+                # frontend checkbox is an affordance, not a control.
+                "acceptedTerms": True,
+            },
         )
-        assert resp.status_code == 200, resp.text
-        token = resp.json()["token"]
+        assert resp.status_code == 201, resp.text
         user_id = resp.json()["user"]["id"]
-        headers = {"Authorization": f"Bearer {token}"}
+        # The session rides in an HttpOnly cookie that TestClient keeps and
+        # resends automatically -- there is no bearer token to attach.
+        headers = {}
 
         frame = _labelled_frame(seed=101, n=60)
 
@@ -303,10 +311,18 @@ def test_db_failure_mid_persist_does_not_fail_the_request(monkeypatch, tmp_path)
         email = f"dbfail{int(time.time())}@example.com"
         resp = client.post(
             "/api/auth/signup",
-            json={"email": email, "password": "password123", "name": "DB Fail"},
+            json={
+                "email": email,
+                "password": "password123",
+                "name": "DB Fail",
+                # Signup re-checks the Terms box server-side; the
+                # frontend checkbox is an affordance, not a control.
+                "acceptedTerms": True,
+            },
         )
-        assert resp.status_code == 200, resp.text
-        headers = {"Authorization": f"Bearer {resp.json()['token']}"}
+        assert resp.status_code == 201, resp.text
+        # Session cookie, held and resent by TestClient. See above.
+        headers = {}
 
         dataset_id = _connect_and_map(client, _labelled_frame(seed=303, n=45), "dbfail.csv")
 
@@ -382,10 +398,18 @@ def test_failing_session_close_does_not_escape_as_500(monkeypatch, tmp_path):
         email = f"closefail{int(time.time())}@example.com"
         resp = client.post(
             "/api/auth/signup",
-            json={"email": email, "password": "password123", "name": "Close Fail"},
+            json={
+                "email": email,
+                "password": "password123",
+                "name": "Close Fail",
+                # Signup re-checks the Terms box server-side; the
+                # frontend checkbox is an affordance, not a control.
+                "acceptedTerms": True,
+            },
         )
-        assert resp.status_code == 200, resp.text
-        headers = {"Authorization": f"Bearer {resp.json()['token']}"}
+        assert resp.status_code == 201, resp.text
+        # Session cookie, held and resent by TestClient. See above.
+        headers = {}
 
         dataset_id = _connect_and_map(client, _labelled_frame(seed=404, n=45), "closefail.csv")
 

@@ -21,7 +21,7 @@ Reference documents that informed this build (not copied into the repo, live on 
 
 PREDICT → EXPLAIN → ACT. Help Customer Success teams: identify at-risk customers, understand *why* (SHAP-style explanation), decide what to do (recommended action), review an AI-drafted outreach email (human-approved, never auto-sent), and track outcomes. Portfolio & Risk covers the whole portfolio (how much is at risk, where it concentrates, what drives it); Executive View is the presentation-mode summary.
 
-This is a **prototype**, but as of session 7 it is no longer a demo-data shell: predictions, SHAP values, risk scores, recommendations and outreach drafts all come from a real FastAPI + ML backend (`backend/`) trained on whatever dataset the user connects — see the session 7 changelog entry near the top of this file. What's still deliberately prototype-scoped: no database (one dataset in memory at a time), no backend user accounts (auth stays local/mock), no time-series history (a single upload is a snapshot).
+This is a **prototype**, but as of session 7 it is no longer a demo-data shell: predictions, SHAP values, risk scores, recommendations and outreach drafts all come from a real FastAPI + ML backend (`backend/`) trained on whatever dataset the user connects — see the session 7 changelog entry near the top of this file. What's still deliberately prototype-scoped: one *active* dataset in memory at a time, and no time-series history (a single upload is a snapshot). **Both of the other former caveats are gone**: there is a real database (Postgres, with SQLite fully supported by the same code — see Database) and real user accounts with password and Google sign-in (see Authentication).
 
 # Current Architecture (ML pipeline — conceptual, NOT implemented in this frontend)
 
@@ -153,7 +153,7 @@ Design system components in `src/components/ui/` were NOT modified except where 
 
 # Services (`src/services/api.js`)
 
-Single service layer, already existed and is well-structured — extended, not replaced. **As of session 7, `VITE_USE_MOCK_API` no longer exists.** `dashboardService`, `customerService`, `explainabilityService`, `recommendationService`, `outreachService` and `datasetService` always call the real backend via the shared `apiClient` (axios, `baseURL` = `VITE_API_BASE_URL`, default `http://localhost:8000/api`). Only `authService` stays local/mock (no backend user accounts exist), and `notificationService` stays local/demo (there is no notification backend — see Mock Data).
+Single service layer, already existed and is well-structured — extended, not replaced. **As of session 7, `VITE_USE_MOCK_API` no longer exists.** `dashboardService`, `customerService`, `explainabilityService`, `recommendationService`, `outreachService` and `datasetService` always call the real backend via the shared `apiClient` (axios, `baseURL` = `VITE_API_BASE_URL`, default `http://localhost:8000/api`). **As of session 17 `authService` is real too** — it calls `backend/api/auth_routes.py` and carries the session in an HttpOnly cookie (`withCredentials: true` on the shared `apiClient`); see the Authentication section. Only `notificationService` stays local/demo (there is no notification backend — see Mock Data).
 
 Current: `authService`, `dashboardService`, `customerService`, `explainabilityService`, `recommendationService`, `outreachService`, `datasetService`, `connectorService`, `notificationService`.
 
@@ -172,18 +172,18 @@ Current: `authService`, `dashboardService`, `customerService`, `explainabilitySe
 
 # API Routes (real, as of session 7)
 
-Implemented in `backend/api/dataset_routes.py`, mounted under `/api` in `backend/api/main.py`: `GET /dashboard*`, `GET /customers`, `GET /customers/:id`, `GET /customers/:id/explanation`, `GET /customers/:id/recommendations`, `PUT /recommendations/:id`, `POST /customers/:id/outreach/generate`, `GET/PUT /outreach*`, `POST /datasets/upload|validate|map-columns|predict`. `POST /auth/*`, `POST /chat` and the old Playbooks/Simulator routes were never implemented and are not needed — auth stays local/mock and chat/simulator don't exist as features any more (see below).
+Implemented in `backend/api/dataset_routes.py`, mounted under `/api` in `backend/api/main.py`: `GET /dashboard*`, `GET /customers`, `GET /customers/:id`, `GET /customers/:id/explanation`, `GET /customers/:id/recommendations`, `PUT /recommendations/:id`, `POST /customers/:id/outreach/generate`, `GET/PUT /outreach*`, `POST /datasets/upload|validate|map-columns|predict`. `/api/auth/*` **is now implemented** in `backend/api/auth_routes.py` (see Authentication). `POST /chat` and the old Playbooks/Simulator routes were never implemented and are not needed — chat/simulator don't exist as features any more (see below).
 
 # Mock Data (`src/mock/`)
 
-**As of session 7:** `datasetSchema.js`, `demoDataset.js`, `notifications.js`, `users.js`. `customers.js`, `dashboard.js`, `explainability.js`, `recommendations.js` and `outreach.js` were **deleted** — they held a fixed 20-account SaaS-company mock that has no relationship to whatever dataset a user actually connects; that data now comes from the real backend (see the session 7 changelog entry). Do not scatter new mock data into components — for the two files that remain relevant to real data flow (`datasetSchema.js`, `demoDataset.js`), add to this directory and wire through `services/api.js`; the rest live only for `authService`/`notificationService`, which stay local/demo by design (the assistant's canned replies went with it in session 16). **(Session 10b)** `notifications.js` was rewritten: its entries and the assistant's canned replies used to name customers and companies from the deleted 20-account mock and linked to `/customers/CUST-100x`, which 404s. Both now avoid invented specifics and link only to routes that exist, and the panel says it is sample content.
+**As of session 17:** `datasetSchema.js`, `demoDataset.js`, `notifications.js`. (`users.js` was deleted in session 17 with the demo-credentials removal — it held `demoCredentials` plus a `mockUsers` array that nothing in the repo imported.) `customers.js`, `dashboard.js`, `explainability.js`, `recommendations.js` and `outreach.js` were **deleted** — they held a fixed 20-account SaaS-company mock that has no relationship to whatever dataset a user actually connects; that data now comes from the real backend (see the session 7 changelog entry). Do not scatter new mock data into components — for the two files that remain relevant to real data flow (`datasetSchema.js`, `demoDataset.js`), add to this directory and wire through `services/api.js`; the rest live only for `authService`/`notificationService`, which stay local/demo by design (the assistant's canned replies went with it in session 16). **(Session 10b)** `notifications.js` was rewritten: its entries and the assistant's canned replies used to name customers and companies from the deleted 20-account mock and linked to `/customers/CUST-100x`, which 404s. Both now avoid invented specifics and link only to routes that exist, and the panel says it is sample content.
 
 - `datasetSchema.js` — `CHURNGUARD_FIELDS`, the canonical list of fields a customer dataset maps onto (5 required: Customer ID, Tenure, Monthly charges, Contract type, Churn label; 3 optional: Total charges, Service/product tier, Payment method), each with a plain-language description, an example, and name aliases used for auto-matching. **This is the one definition on the frontend** — mirrored server-side in `backend/api/schema.py` (kept in sync by hand; it's a small, stable list). The "Before you upload" requirements list, the validation report's required-field check, and the mapping UI all read the frontend copy. Don't restate these fields anywhere else.
 - `demoDataset.js` — builds a *real* 302-row Telco-shaped CSV (deterministic seeded PRNG, so it's byte-identical every run) including a few blank `TotalCharges` and two exact duplicate rows. Uploading it now runs through the real backend and trains a real (if small-sample) model — "Use demo dataset" is a genuine end-to-end path, not a canned response.
 
 # Demo Behavior
 
-- **One-click demo entry**: Landing page "Explore Demo" button → `/login?demo=true`. `LoginPage` detects `?demo=true` and auto-submits the pre-filled demo credentials (`demo@churnguard.ai` / `demo2026`) on mount, landing on **`/data-management`** (changed 2026-09-06 — was `/dashboard`). From there "Use demo dataset" reaches the Overview in three more clicks, no CSV needed.
+- **Demo sign-in: removed entirely (session 17).** The landing page's "Explore Demo" button linked to `/login?demo=true`, which auto-submitted a prefilled `demo@churnguard.ai` / `demo2026` — and after real accounts arrived, `main.py` seeded that account on startup so the bypass kept working. That was a real, working credential with its password committed to the repository, not a mock. All of it is gone: the seeding, the `?demo=true` auto-submit, the prefilled values, the credential box on the sign-in page, and `mock/users.js`. The landing button now reads "Sign In" and links to `/login`. **Do not reintroduce a demo login.** The demo *dataset* below is unaffected — it never required an account bypass.
 - **Use demo dataset**: `/data-management` step 1 offers it beside the real upload — builds a genuine CSV (`mock/demoDataset.js`) and runs it through the exact same upload → validate → map → process → predict pipeline as a real upload, so there's only one code path to maintain.
 - **Demo mode indicator**: `AppContext.demoMode` (currently hardcoded `true`) shows a "DEMO" badge in the header/sidebar.
 - Any mock/simulated result in the UI is explicitly labeled as such (outreach drafts state that they are a starting point for human review; Explainability's written summary says it is a demo write-up, not live model output; the data-setup completion screen distinguishes measured facts from simulated scores; `ModelArchitecture` says predictions are demo data).
@@ -338,7 +338,164 @@ What was actually slow, in order of impact:
 
 **Important measurement caveat:** headless Chromium renders WebGL in software (SwiftShader), so any headless FPS number for the 3D canvas is far worse than reality. To judge the 3D honestly, run Playwright with `headless: false` and `--enable-gpu` (on this machine that reports `ANGLE (Intel UHD Graphics …)` and gives ~56–58fps).
 
+# Authentication (session 17)
+
+**Real accounts, server-side sessions, HttpOnly cookies.** Replaces the previous
+arrangement, where the backend had genuine bcrypt+JWT signup/login but the frontend
+treated `localStorage` as the source of truth.
+
+## What was actually wrong before
+
+Worth recording, because "the backend was already real" hid several of these:
+
+- **`localStorage` was the source of truth.** A stale entry rendered a signed-in shell for a
+  session the server had already rejected; an empty one was treated as proof of being signed
+  out even when a valid session existed. There was no `/auth/me` call at startup.
+- **Sign-out did not sign you out.** It deleted the client's copy of a 7-day JWT. The token
+  stayed valid for the rest of the week, and nothing server-side could stop it.
+- **The Google and Microsoft buttons were fake.** Both ran `handleSubmit(onSubmit)()` — they
+  resubmitted the email/password form with the demo credentials. Nothing OAuth-shaped happened.
+- **Forgot-password was a stub** that always claimed "We've sent a password reset link",
+  having sent nothing, because no reset flow existed at all.
+- **A demo credential was a real credential.** See Demo Behavior.
+
+## Architecture
+
+- **Session** = a row in `user_sessions` + an opaque 256-bit token in an **HttpOnly** cookie
+  (`churnguard_session`). Only the token's SHA-256 is stored. HttpOnly means an XSS bug can't
+  exfiltrate it the way it could a localStorage JWT; opaque means nothing to forge; a row
+  means sign-out can *delete* it. That last property is the whole reason this isn't a JWT.
+- **Remember me** is real: unchecked → browser-session cookie, capped server-side at 12h;
+  checked → 30-day persistent cookie. `expires_at` on the row is authoritative, so editing
+  the cookie client-side achieves nothing.
+- **Passwords**: bcrypt. `validate_password` enforces a length floor (8) and nothing else —
+  composition rules push people toward `Password1!` and reuse (NIST SP 800-63B). The signup
+  strength meter encourages, it doesn't refuse.
+- **`Authorization: Bearer <jwt>` is still accepted** as a secondary credential for scripting
+  and the backend's own tests. Same signed token, verified the same way — not a bypass. The
+  browser never uses it, and the frontend stores no token anywhere.
+
+## Tables (`backend/db/models.py`)
+
+| Table | Purpose |
+| :--- | :--- |
+| `users` | + `is_active`, `updated_at`; `password_hash` is now **nullable** (an OAuth-only account has no password, and a placeholder hash would make it look password-capable to every check in the codebase) |
+| `oauth_accounts` | provider identity → local user, unique on `(provider, provider_account_id)` |
+| `user_sessions` | one signed-in browser; `token_hash`, `expires_at`, `auth_method` |
+| `password_reset_tokens` | single-use, expiring, hash-only |
+
+Migration `c7f1a3d94b02`. It is **guarded by inspector checks throughout**, because
+`main.py` calls `create_all()` on every startup — so anyone who ran the backend after pulling
+the new models already has the three new tables, and an unguarded `create_table` would fail
+and half-apply.
+
+## OAuth (`backend/auth/oauth.py`)
+
+Authorization code flow + OIDC, entirely server-side. The browser never sees a client secret,
+an authorization code, or a provider access token. Three checks, each load-bearing:
+
+1. **`state`** in a short-lived HttpOnly cookie — without it, a victim can be walked through a
+   callback carrying an attacker's code and silently signed into the attacker's account.
+2. **PKCE (S256)** — an intercepted code is useless without the verifier.
+3. **ID token signature** against the provider's JWKS, issuer and audience pinned. The issuer
+   is checked explicitly in `oauth._check_issuer` against the discovery document's value —
+   dropping the check would accept any issuer at all.
+
+Accounts key on the provider's **`sub`**, never email. **Linking rule:** a new provider
+identity whose email matches an existing account is linked *only if the provider says the
+email is verified*. Otherwise it is refused with a message pointing at the password. Google
+states verification per token; a provider that does not assert the claim is treated as
+unverified.
+
+No new dependency — `requests` + `pyjwt[crypto]`.
+
+## Endpoints
+
+`POST /api/auth/signup` (201) · `/login` · `/logout` · `GET /me` · `GET /providers` ·
+`GET /{provider}` + `/{provider}/callback` for google ·
+`POST /forgot-password` · `POST /reset-password`
+
+`/providers` and `/me` are declared **before** the `/{provider}` routes — FastAPI matches in
+registration order, so otherwise `GET /api/auth/providers` is captured as a provider named
+"providers".
+
+## Frontend
+
+- `AuthContext` calls `/auth/me` **once** on mount (ref-guarded against StrictMode's double
+  effect) and is the single source of truth. `isLoading` (startup) is now distinct from
+  `isSubmitting` (a form in flight) — conflating them made the whole app show its startup
+  loader whenever a form submitted.
+- `AuthContext.logout()` remains the **only** logout path; Profile → Sign out and Security →
+  Sign out both call it. Don't add a second one.
+- `apiClient` has `withCredentials: true` and **no token interceptor**. Its 401 handler no
+  longer force-navigates — that fired on the entirely expected 401 from `/auth/me` at startup
+  and blew away router state with a full reload. Redirecting is the route guards' job.
+- New pages: `ResetPasswordPage`, `OAuthCallbackPage`. The latter exists to close a real race:
+  the session cookie arrives on a redirect this SPA never saw, so landing directly on a
+  guarded route would bounce to `/login` moments after a successful sign-in.
+- `/auth/callback` sits **outside** `AuthRoute` — that guard bounces authenticated users away
+  from auth pages, which is what this page becomes mid-run once its refresh succeeds.
+- Protected routes now pass `state.from`, so sign-in returns you where you were headed. Router
+  state, not a query param, so it can never point at an external origin.
+
+## Configuration
+
+All backend-only, in `backend/.env` (see `backend/.env.example` and **AUTH_SETUP.md**).
+Required: `DATABASE_URL`, `JWT_SECRET`. Optional: `GOOGLE_*`, `SMTP_*`,
+`APP_ENV`, `FRONTEND_URL`, `BACKEND_URL`.
+
+**Never put any of this in a `VITE_*` variable** — Vite inlines those into the bundle served
+to every visitor, so a secret placed there is published, not configured.
+
+Missing OAuth credentials are a first-class state, not an error: the button is disabled and
+says so, `/api/auth/providers` reports it, and the start endpoint returns 503 naming the
+variables to set. It never fakes a sign-in. Missing SMTP likewise: the reset link is generated
+and logged, and the UI says delivery isn't configured rather than claiming an email was sent.
+
+# Database (session 17)
+
+Postgres (shared Neon instance) — and **SQLite is fully supported by the same code**. Set
+`DATABASE_URL=sqlite:///./churnguard.db` and everything works with no frontend change; the
+schema deliberately uses portable column types. `backend/db/database.py` branches on the
+dialect because the Neon pooling/timeout arguments are a `TypeError` on SQLite, not a warning.
+Database files are gitignored (`*.db`, `*.sqlite`, `*.sqlite3`).
+
+**Fixed a real bug here:** `load_dotenv(..., override=True)` clobbered any deliberately-set
+`DATABASE_URL`, which silently defeated `backend/tests/conftest.py` — whose entire purpose is
+to keep the test suite off the shared Neon instance. **The backend tests had been running
+against production.** `CHURNGUARD_DATABASE_URL` is now the override channel that `.env` cannot
+clobber, and conftest uses it; conftest also falls back to SQLite when no local Postgres is
+reachable, instead of making the suite unrunnable.
+
+
 # Changelog
+
+**2026-09-15 (session 18)** — Microsoft sign-in removed. Auth is now email/password + Google + password reset.
+
+*Why:* user request. Microsoft OAuth was complete and working, but is no longer a supported sign-in method for this product.
+
+**Removed:** the `MICROSOFT` provider config and its `PROVIDERS` entry (`backend/auth/config.py`), the Microsoft button in `LoginPage.jsx`, the templated-`{tenantid}` issuer branch and the MSA-tenant `email_verified` inference (`backend/auth/oauth.py`), `MICROSOFT_*` from `backend/.env.example`, and §3 of AUTH_SETUP.md (later sections renumbered).
+
+**Deliberately NOT removed:** the generic `oauth_accounts` table and the `provider`/`auth_provider` columns — they were never Microsoft-specific and existing Google rows depend on them. Alembic migrations were left untouched; they are an applied history, not current config. The OAuth routes are generic (`/{provider}`), so no route was deleted — dropping the `PROVIDERS` entry is what makes `/api/auth/microsoft` stop existing.
+
+**`email_verified` is now fail-closed:** absent claim = unverified, so any provider added later will not auto-link to an existing password account unless it positively asserts verification.
+
+**2026-09-15 (session 17)** — Real authentication: cookie sessions, Google/Microsoft OAuth, password reset; demo credentials removed.
+
+*Why:* the sign-in experience was partly theatre. The backend had real bcrypt+JWT accounts, but the frontend trusted `localStorage` over the server, sign-out left the token valid for a week, the Google and Microsoft buttons just resubmitted the demo credentials, forgot-password claimed to send an email that did not exist, and `demo@churnguard.ai` / `demo2026` was a working credential with its password in the repo.
+
+**Sessions are server-side now.** `user_sessions` rows + an opaque token in an HttpOnly cookie, stored only as a SHA-256. Sign-out deletes the row, so it actually ends the session — the one thing a JWT cannot do. Remember-me picks 12h vs 30d, enforced server-side.
+
+**Google and Microsoft sign-in are real** — authorization code + OIDC, server-side, with `state`, PKCE and full ID-token signature/issuer/audience verification. Identities key on the provider's `sub`, never email, and an unverified provider email is never auto-linked to an existing account.
+
+**Password reset is real** — single-use, 60-minute, hash-only tokens; a reset revokes every session. With no SMTP configured the UI says so plainly instead of claiming an email was sent.
+
+**Demo credentials gone** — seeding in `main.py`, the `?demo=true` auto-submit, the prefilled form, the on-page credential box, and `mock/users.js`. Landing's "Explore Demo" is now "Sign In".
+
+**Also fixed, found along the way:** `backend/tests/conftest.py` never actually redirected the test database, so the backend suite had been running against the shared Neon instance (`load_dotenv(override=True)` overwrote it); `README.md` was a fully unresolved git merge conflict; `cryptography` was undeclared despite being needed for RS256; `Input`'s label was associated with nothing and its show/hide button was unlabelled and keyboard-unreachable.
+
+*Files:* new `backend/auth/{config,sessions,oauth,email_service}.py`, `backend/migrations/versions/c7f1a3d94b02_*.py`, `backend/tests/test_auth.py`, `backend/.env.example`, `AUTH_SETUP.md`, `src/pages/auth/{ResetPasswordPage,OAuthCallbackPage}.jsx`, `src/context/AuthContext.test.jsx`, `src/pages/auth/LoginPage.test.jsx`. Rewritten: `backend/api/auth_routes.py`, `backend/db/{database,security,models}.py`, `backend/tests/conftest.py`, `src/context/AuthContext.jsx`, `src/services/api.js`, `src/pages/auth/{LoginPage,SignupPage,ForgotPasswordPage}.jsx`, `src/components/ui/Input.jsx`, `src/routes/index.jsx`, `README.md`. Deleted: `src/mock/users.js`.
+
 
 **2026-09-12 (session 16)** — Salesforce and the AI assistant removed; Retention turned into one three-stage workflow.
 

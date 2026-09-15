@@ -15,8 +15,10 @@ import logging
 import os
 
 import pandas as pd
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from starlette.middleware.base import BaseHTTPMiddleware
 from pydantic import BaseModel, Field
 
 from .connector_routes import router as connector_router
@@ -40,6 +42,48 @@ _cors_kwargs = (
     if _cors_origins_env
     else {"allow_origin_regex": r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$"}
 )
+class _CatchUnhandledErrors(BaseHTTPMiddleware):
+    """Turns an unhandled exception into a JSON 500 that CORS can decorate.
+
+    Ordering is the whole point of this class, and it is why an
+    `@app.exception_handler(Exception)` does NOT solve the same problem: that
+    hook is served by Starlette's ServerErrorMiddleware, which sits *outside*
+    every user middleware including CORS. Its response therefore never passes
+    through CORSMiddleware's response path and carries no
+    `Access-Control-Allow-Origin` header.
+
+    The browser's report of that is a CORS policy violation -- the one thing
+    that did not actually go wrong -- while the real server-side error stays
+    completely invisible from the front end. It is an expensive failure to
+    debug, because every visible clue points at CORS configuration. It cost us
+    exactly that: the true cause was a NOT NULL constraint on `users`.
+
+    Catching here instead, *inside* CORS (see the add_middleware order below),
+    means a 500 comes back as a normal response with the usual CORS headers,
+    so the browser shows the real status and the real message.
+
+    The exception is logged in full server-side; the body is a fixed sentence,
+    because exception text routinely carries table names, SQL fragments and
+    absolute file paths that have no business reaching a browser.
+    """
+
+    async def dispatch(self, request: Request, call_next):
+        try:
+            return await call_next(request)
+        except Exception:  # noqa: BLE001 -- deliberate catch-all, re-logged below
+            logger.exception("Unhandled error on %s %s", request.method, request.url.path)
+            return JSONResponse(
+                status_code=500,
+                content={"detail": "Something went wrong on the server. Please try again."},
+            )
+
+
+# Order matters and is the reverse of what it reads like: `add_middleware`
+# inserts at position 0, so the LAST one added ends up OUTERMOST. Registering
+# the catch-all first and CORS second puts CORS on the outside, wrapping it --
+# which is exactly what lets CORS attach its headers to the 500s this produces.
+# Swapping these two lines silently reintroduces the bug described above.
+app.add_middleware(_CatchUnhandledErrors)
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
@@ -104,43 +148,29 @@ def _orchestration_router():
     return router
 
 
-def _seed_demo_account() -> None:
-    """The landing page's "Explore Demo" link and LoginPage's prefilled form
-    (src/pages/auth/LoginPage.jsx) both assume demo@churnguard.ai / demo2026
-    just works -- true under the old mock authService, which accepted any
-    password. With real accounts that login would 401 unless this account
-    genuinely exists, so it's seeded once here rather than special-casing
-    "any password works for this one email" (a real backdoor, not a fix)."""
-    from ..db import security
-    from ..db.database import SessionLocal
-    from ..db.models import User
-
-    db = SessionLocal()
-    try:
-        if not db.query(User).filter(User.email == "demo@churnguard.ai").first():
-            db.add(User(
-                email="demo@churnguard.ai",
-                password_hash=security.hash_password("demo2026"),
-                name="Demo User",
-                company="ChurnGuard Demo",
-            ))
-            db.commit()
-    finally:
-        db.close()
-
-
 def _auth_router():
     # Requires DATABASE_URL + JWT_SECRET (backend/.env) and the sqlalchemy/
     # psycopg2/bcrypt/pyjwt extras -- optional so a server with no database
     # configured still serves the core churn pipeline, just without accounts,
     # persisted dataset history, or retrain-skipping.
+    #
+    # There is deliberately no demo account seeded here any more. A shared
+    # address with a password committed to the repository is a real, working
+    # credential for whatever that account can reach -- it was not a mock, and
+    # "it's only for the demo" does not change what it is. Anyone who wants to
+    # look around now signs up, which takes about as long as typing the demo
+    # credentials did.
     from .auth_routes import router
 
     from ..db.database import Base, engine
     from ..db import models  # noqa: F401 -- import registers the tables on Base
 
+    # Creates any table that doesn't exist yet; never alters or drops one, so
+    # it is safe to run on every startup and cannot lose data. Alembic remains
+    # the mechanism for changing an existing table -- see
+    # backend/migrations/versions/ (the auth migration is written to tolerate
+    # tables this call has already created).
     Base.metadata.create_all(bind=engine)
-    _seed_demo_account()
     return router
 
 

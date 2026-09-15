@@ -40,3 +40,10 @@ backend/artifacts/
 backend/generic/artifacts/
 
 .venv/
+
+# Local databases. The app supports DATABASE_URL=sqlite:///./churnguard.db,
+# which writes a real database of real accounts (hashed passwords, live
+# sessions) into the working directory -- never committed.
+*.db
+*.sqlite
+*.sqlite3

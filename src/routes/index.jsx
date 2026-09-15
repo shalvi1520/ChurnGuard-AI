@@ -1,5 +1,5 @@
 import { lazy, Suspense } from 'react';
-import { createBrowserRouter, Navigate, Outlet, ScrollRestoration } from 'react-router-dom';
+import { createBrowserRouter, Navigate, Outlet, ScrollRestoration, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useApp } from '../context/AppContext';
 import { requiresDatasetSetup } from './accessRules';
@@ -11,6 +11,8 @@ const LandingPage = lazy(() => import('../pages/LandingPage'));
 const LoginPage = lazy(() => import('../pages/auth/LoginPage'));
 const SignupPage = lazy(() => import('../pages/auth/SignupPage'));
 const ForgotPasswordPage = lazy(() => import('../pages/auth/ForgotPasswordPage'));
+const ResetPasswordPage = lazy(() => import('../pages/auth/ResetPasswordPage'));
+const OAuthCallbackPage = lazy(() => import('../pages/auth/OAuthCallbackPage'));
 const DashboardPage = lazy(() => import('../pages/DashboardPage'));
 const CustomersPage = lazy(() => import('../pages/CustomersPage'));
 const CustomerDetailPage = lazy(() => import('../pages/CustomerDetailPage'));
@@ -41,8 +43,15 @@ function PageLoader() {
 function ProtectedRoute({ children, requiresDataset = true }) {
   const { isAuthenticated, isLoading } = useAuth();
   const { datasetSetupComplete, datasetSetupHydrated } = useApp();
+  const location = useLocation();
   if (isLoading) return <PageLoader />;
-  if (!isAuthenticated) return <Navigate to="/login" replace />;
+  // `state.from` lets LoginPage return the user to the page they actually
+  // asked for once they sign in, instead of always dropping them at the
+  // default landing route. Carried in router state rather than the query
+  // string so it can never be pointed at an external origin.
+  if (!isAuthenticated) {
+    return <Navigate to="/login" replace state={{ from: location.pathname + location.search }} />;
+  }
   if (requiresDataset) {
     if (!datasetSetupHydrated) return <PageLoader />;
     if (!datasetSetupComplete) return <Navigate to="/data-management" replace />;
@@ -54,8 +63,11 @@ function ProtectedRoute({ children, requiresDataset = true }) {
 // sidebar/app chrome — used for onboarding, which is its own flow.
 function BareProtectedRoute({ children }) {
   const { isAuthenticated, isLoading } = useAuth();
+  const location = useLocation();
   if (isLoading) return <PageLoader />;
-  if (!isAuthenticated) return <Navigate to="/login" replace />;
+  if (!isAuthenticated) {
+    return <Navigate to="/login" replace state={{ from: location.pathname + location.search }} />;
+  }
   return children;
 }
 
@@ -92,6 +104,21 @@ export const router = createBrowserRouter([{ element: <RootLayout />, children: 
       { path: '/login', element: <Suspense fallback={<PageLoader />}><LoginPage /></Suspense> },
       { path: '/signup', element: <Suspense fallback={<PageLoader />}><SignupPage /></Suspense> },
       { path: '/forgot-password', element: <Suspense fallback={<PageLoader />}><ForgotPasswordPage /></Suspense> },
+      { path: '/reset-password', element: <Suspense fallback={<PageLoader />}><ResetPasswordPage /></Suspense> },
+    ],
+  },
+  // Deliberately outside AuthRoute. That guard bounces an authenticated user
+  // away from auth pages -- which is exactly what this page becomes, mid-run,
+  // the moment its session refresh succeeds. Being bounced at that point would
+  // pre-empt its own routing decision, so it sits on its own and decides where
+  // to send the user itself.
+  // A layout route with one child, matching the group above: AuthLayout
+  // renders an <Outlet />, so passing the page as children would render the
+  // split-screen shell around nothing at all.
+  {
+    element: <AuthLayout />,
+    children: [
+      { path: '/auth/callback', element: <Suspense fallback={<PageLoader />}><OAuthCallbackPage /></Suspense> },
     ],
   },
   {

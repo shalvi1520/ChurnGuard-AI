@@ -15,43 +15,52 @@ import { delay } from '../utils/helpers';
 const BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api';
 
 // Axios instance
+//
+// `withCredentials` is what makes authentication work at all now. The session
+// lives in an HttpOnly cookie set by FastAPI, which JavaScript cannot read and
+// therefore cannot attach by hand -- the browser only sends it on a
+// cross-origin request when the request explicitly asks it to. Without this
+// flag every authenticated call would arrive at the backend anonymous, with no
+// visible error to explain why.
+//
+// There is deliberately no request interceptor reading a token out of
+// localStorage any more. The token used to sit there in plain sight of any
+// script on the page; the cookie replaces it, and the browser attaches it.
 const apiClient = axios.create({
   baseURL: BASE_URL,
   timeout: 30000,
+  withCredentials: true,
   headers: { 'Content-Type': 'application/json' },
 });
 
-// Auth interceptor
-apiClient.interceptors.request.use((config) => {
-  const token = localStorage.getItem('churnguard_token');
-  if (token) {
-    config.headers.Authorization = `Bearer ${token}`;
-  }
-  return config;
-});
-
 // Response interceptor
+//
+// A 401 is reported to the caller and nothing more. The previous version
+// force-navigated to /login with `window.location.href`, which had two
+// problems: it threw away the React router's state with a full page reload,
+// and it fired on *any* 401 -- including the entirely expected one from
+// `GET /auth/me` during startup, when nobody is signed in yet and the correct
+// response is simply "show the landing page". Redirecting is a routing
+// decision, so the route guards in routes/index.jsx make it.
 apiClient.interceptors.response.use(
   (response) => response.data,
-  (error) => {
-    if (error.response?.status === 401) {
-      localStorage.removeItem('churnguard_token');
-      localStorage.removeItem('churnguard_user');
-      window.location.href = '/login';
-    }
-    return Promise.reject(error);
-  }
+  (error) => Promise.reject(error)
 );
 
 // ============================================
 // Auth Services
 // ============================================
 //
-// Real accounts, backed by backend/api/auth_routes.py: signup/login are
-// hashed-password + JWT against a Postgres `users` table, not a local mock.
-// If the server has no database configured, these calls fail with a real
-// 503 rather than silently accepting any credentials -- see BackendNotice
-// for how the app surfaces that.
+// Real accounts, backed by backend/api/auth_routes.py: bcrypt-hashed
+// passwords and server-side sessions against a `users` table, not a local
+// mock. If the server has no database configured, these calls fail with a
+// real 503 rather than silently accepting any credentials -- see
+// BackendNotice for how the app surfaces that.
+//
+// Nothing here stores a token. The session arrives as an HttpOnly cookie the
+// browser holds and attaches on its own, so there is no client-side auth
+// state to keep in sync (or to leak) -- `getCurrentUser()` asking the server
+// is the only source of truth about who is signed in.
 
 /** FastAPI's error body is `{ detail: ... }` (a string, or a list of
  * pydantic validation errors); AuthContext reads `err.response.data.message`,
@@ -72,10 +81,20 @@ function withAuthMessage(err) {
   return err;
 }
 
+/** Where the browser is sent to begin an OAuth sign-in.
+ *
+ * A full-page navigation, not an XHR: the provider's consent screen is a page
+ * the user has to actually see and interact with, and it sets cookies on the
+ * provider's own domain. Fetching it in the background would return HTML the
+ * app has no business rendering, and the sign-in would never complete. */
+export function oauthSignInUrl(provider) {
+  return `${BASE_URL.replace(/\/$/, '')}/auth/${provider}`;
+}
+
 export const authService = {
-  async login(email, password) {
+  async login(email, password, remember = false) {
     try {
-      return await apiClient.post('/auth/login', { email, password });
+      return await apiClient.post('/auth/login', { email, password, remember });
     } catch (err) {
       throw withAuthMessage(err);
     }
@@ -89,18 +108,56 @@ export const authService = {
     }
   },
 
-  async forgotPassword() {
-    // No backend password-reset flow exists yet (a real one needs an email
-    // sender, a reset-token table and a reset-confirmation page -- out of
-    // scope here). Kept as a stub so the form doesn't error out, but the
-    // copy stays honest about not actually sending anything.
-    await delay(400);
-    return { message: 'Password reset isn’t available yet. Contact support to regain access.' };
+  /** The signed-in user, or null.
+   *
+   * A 401 here is the ordinary "nobody is signed in" answer, not a failure,
+   * so it resolves to null. Anything else (backend down, 500) is rethrown --
+   * AuthContext has to be able to tell "definitely signed out" apart from
+   * "couldn't find out", because only the first should clear session state. */
+  async getCurrentUser() {
+    try {
+      return await apiClient.get('/auth/me');
+    } catch (err) {
+      if (err.response?.status === 401) return null;
+      throw err;
+    }
+  },
+
+  async resetPassword(token, password) {
+    try {
+      return await apiClient.post('/auth/reset-password', { token, password });
+    } catch (err) {
+      throw withAuthMessage(err);
+    }
+  },
+
+  /** Which OAuth providers this server can actually perform.
+   *
+   * Lets the sign-in page disable a button and say why, instead of offering
+   * one that dead-ends on a 503. Never carries a client id or secret. */
+  async getOAuthProviders() {
+    return apiClient.get('/auth/providers');
+  },
+
+  async forgotPassword(email) {
+    try {
+      return await apiClient.post('/auth/forgot-password', { email });
+    } catch (err) {
+      throw withAuthMessage(err);
+    }
   },
 
   async logout() {
-    localStorage.removeItem('churnguard_token');
-    localStorage.removeItem('churnguard_user');
+    // The server deletes the session row and clears the cookie. Unlike the
+    // old localStorage version, this genuinely ends the session rather than
+    // just forgetting a token that stayed valid until it expired.
+    try {
+      await apiClient.post('/auth/logout');
+    } catch {
+      // Signing out must never leave someone stuck inside the app. If the
+      // call fails (backend down, network gone) the client still drops its
+      // state; the cookie expires on its own, and the session row with it.
+    }
   },
 };
 

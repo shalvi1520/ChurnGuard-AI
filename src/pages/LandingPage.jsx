@@ -145,9 +145,13 @@ export default function LandingPage() {
               See ChurnGuard in Action
             </Button>
           </Link>
-          <Link to="/login?demo=true">
+          {/* Was `/login?demo=true`, which auto-submitted the sign-in form
+              with a demo account's real credentials -- an authentication
+              bypass wearing a "demo" label. It now goes to the sign-in page
+              like any other visitor. */}
+          <Link to="/login">
             <Button variant="outline" size="xl" className="w-full sm:w-auto bg-bg-elevated/30 backdrop-blur-sm border-border hover:bg-bg-elevated/50">
-              Explore Demo
+              Sign In
             </Button>
           </Link>
         </FadeIn>

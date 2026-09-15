@@ -22,5 +22,11 @@ python-dotenv
 sqlalchemy
 psycopg2-binary
 bcrypt
-pyjwt
+# [crypto] pulls in `cryptography`, which PyJWT needs to verify the RS256
+# signatures on Google ID tokens. Without it OAuth fails at
+# verification with an algorithm-unsupported error, so it is declared
+# rather than relied on as a transitive dependency of something else.
+pyjwt[crypto]
 pytest
+# fastapi.testclient (used by backend/tests) is built on httpx.
+httpx

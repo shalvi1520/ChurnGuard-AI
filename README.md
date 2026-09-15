@@ -1,106 +1,167 @@
-<<<<<<< HEAD
 # ChurnGuard - AI-Powered Customer Retention Intelligence
 
 ## 1. Project Overview
 
-**ChurnGuard** is a sophisticated, AI-powered customer retention platform tailored for SaaS businesses. It solves the critical problem of unexpected customer churn by predicting which customers are at risk, explaining the underlying reasons using SHAP (SHapley Additive exPlanations) values, and empowering Customer Success teams to take immediate, personalized action.
+**ChurnGuard** is an AI-powered customer retention platform for SaaS businesses. It predicts which customers are at risk of churning, explains the underlying reasons using SHAP (SHapley Additive exPlanations) values, and helps Customer Success teams take immediate, personalized action.
 
 The system follows a three-step pipeline:
-1. **PREDICT**: Identify at-risk customers using advanced machine learning models.
-2. **EXPLAIN**: Demystify the "why" behind the risk using SHAP-based feature contributions.
-3. **ACT**: Generate AI-driven retention recommendations and personalized outreach emails to prevent churn.
+1. **PREDICT**: Identify at-risk customers using a stacking ensemble.
+2. **EXPLAIN**: Show *why* a customer is at risk, via SHAP feature contributions.
+3. **ACT**: Generate retention recommendations and personalized outreach emails.
 
-This repository contains the production-ready frontend application built with React, Vite, and Tailwind CSS, featuring a premium enterprise-grade design language.
+In the product these map to **Explainability = WHY**, **Recommendations = WHAT**, **Outreach = HOW**.
+
+This repository contains both the React + Vite frontend and the FastAPI + ML backend (`backend/`).
 
 ## 2. Key Features
 
-- **Executive Dashboard**: A comprehensive overview of retention metrics, revenue at risk, churn trend, and risk distribution across the customer base.
-- **Customer CRM & Details**: Advanced filtering, searching, and sorting of the customer base. Individual customer views showing health scores, risk trends, and activity timelines.
-- **SHAP Explainability View**: Visualizes exactly which factors (e.g., feature adoption, support tickets) are increasing or decreasing a customer's churn risk.
-- **AI-Generated Recommendations**: Context-aware suggested actions for customer success managers, with an approve/reject workflow.
-- **Automated Outreach Generation**: AI drafts personalized emails addressing the specific churn drivers. Requires human review before sending.
-- **Data Management Workflow**: A multi-step stepper for uploading datasets (CSV/Excel), validation, column mapping, and triggering predictions.
-- **Mock/Real API Toggle**: The frontend can run completely offline using an extensive suite of mock data or connect to a real FastAPI backend via environment variables.
+- **Executive Dashboard**: Retention metrics, revenue at risk, churn trend, and risk distribution.
+- **Customer CRM & Details**: Filtering, searching and sorting; per-customer health scores, risk trends and activity.
+- **SHAP Explainability View**: Which factors are pushing a customer's churn risk up or down.
+- **AI-Generated Recommendations**: Context-aware suggested actions, with an approve/reject workflow.
+- **Automated Outreach Generation**: Drafted emails addressing the specific churn drivers. Human review required before sending.
+- **Data Management Workflow**: Upload (CSV/Excel) or connect a CRM, validate, map columns, then predict.
+- **CRM Connectors**: HubSpot and a generic HTTP/API endpoint connector.
+- **Real Authentication**: Email/password accounts, Google sign-in, server-side sessions — see [§6](#6-authentication).
 
 ## 3. Technology Stack
 
 | Category | Technology | Purpose |
 | :--- | :--- | :--- |
-| **Language** | JavaScript (ES6+) | Primary language for the React application. |
-| **Frontend Framework** | React 18 & Vite | Fast development environment, modern component-based architecture. |
-| **Styling** | Tailwind CSS v3 | Utility-first CSS for rapid, consistent, and highly customizable design. |
-| **Routing** | React Router v6 | Client-side routing, protected routes, and lazy loading. |
-| **State Management**| React Context API | Global state (Auth, App/UI state) without external dependencies. |
-| **Data Visualization**| Recharts | Responsive, composable charting for metrics and analytics. |
-| **Animation** | Framer Motion | Fluid micro-interactions, page transitions, and UI animations. |
-| **Icons** | Lucide React | Clean, consistent iconography used throughout the application. |
-| **Form Handling** | React Hook Form & Zod | Form state management and schema-based validation. |
-
-*Architectural Choice Note:* React + Vite was chosen for optimal developer experience and build performance. Tailwind CSS is used to enforce a strict design system without the overhead of heavy UI libraries. Framer Motion is utilized to meet the "premium, enterprise-grade" aesthetic requirements through subtle animations.
+| **Language** | JavaScript (ES6+) / Python | React app / backend and ML. |
+| **Frontend Framework** | React 19 & Vite | Component-based architecture, fast builds. |
+| **Styling** | Tailwind CSS v4 | Utility-first CSS enforcing the design system. |
+| **Routing** | React Router v7 | Client-side routing, protected routes, lazy loading. |
+| **State Management** | React Context API | Global state (Auth, App/UI) without extra dependencies. |
+| **Data Visualization** | Recharts | Responsive, composable charting. |
+| **Animation** | Framer Motion | Page transitions and micro-interactions. |
+| **Icons** | Lucide React | Consistent iconography. |
+| **Form Handling** | React Hook Form & Zod | Form state and schema-based validation. |
+| **Backend** | FastAPI + SQLAlchemy | API, accounts, dataset history. |
+| **ML** | LightGBM, CatBoost, scikit-learn, Optuna, SHAP | Stacking ensemble, tuning, explainability. |
+| **Database** | PostgreSQL (SQLite supported) | Accounts, sessions, dataset and training history. |
 
 ## 4. Installation and Setup
 
 ### Prerequisites
 - **Node.js**: v18.x or higher
 - **npm**: v9.x or higher
+- **Python**: 3.11+
 
 ### Environment Variables
-Create a `.env` file in the root of the project.
+
+**Frontend** — create a `.env` in the repository root (see `.env.example`):
 
 | Variable | Required | Description | Example |
 | :--- | :--- | :--- | :--- |
-| `VITE_USE_MOCK_API` | No | Toggles between mock data (`true`) and real backend (`false`). | `true` |
-| `VITE_API_BASE_URL` | No | URL of the backend API (if `VITE_USE_MOCK_API=false`). | `http://localhost:8000/api` |
+| `VITE_API_BASE_URL` | No | URL of the backend API. | `http://localhost:8000/api` |
+
+> `VITE_*` variables are inlined into the JavaScript bundle and are therefore
+> public. Never put a secret — a client secret, a session key, an API token —
+> in one. All backend configuration lives in `backend/.env`, which is never
+> shipped to the browser.
+
+**Backend** — create `backend/.env` (see `backend/.env.example`). Required:
+`DATABASE_URL`, `JWT_SECRET`. Optional: OAuth and SMTP settings, covered in
+[AUTH_SETUP.md](AUTH_SETUP.md).
 
 ### Installation Steps
 
-1. **Clone the repository** (if applicable):
-   ```bash
-   git clone <repository-url>
-   cd Antigravity_workspace
-   ```
-
-2. **Install dependencies**:
+1. **Install frontend dependencies**:
    ```bash
    npm install
    ```
 
-3. **Run the development server**:
+2. **Install backend dependencies**:
+   ```bash
+   pip install -r backend/requirements.txt
+   ```
+
+3. **Create the database schema**:
+   ```bash
+   python -m alembic upgrade head
+   ```
+
+4. **Start the backend** (from the repository root):
+   ```bash
+   python -m uvicorn backend.api.main:app --reload --port 8000
+   ```
+
+5. **Start the frontend**:
    ```bash
    npm run dev
    ```
    The application will be available at `http://localhost:5173`.
 
 ### Running the Application
-- **Development Mode**: `npm run dev` starts the Vite dev server with Hot Module Replacement (HMR).
-- **Production Build**: `npm run build` compiles the application into static files in the `dist` directory.
-- **Mock Mode**: Ensure `VITE_USE_MOCK_API=true` is set. You can log in with any credentials or use the demo credentials (`demo@churnguard.ai` / `demo2026`).
-=======
-# ChurnGuard 
+- **Development**: `npm run dev` starts Vite with Hot Module Replacement.
+- **Production Build**: `npm run build` compiles to `dist/`.
+- **Tests**: `npm test` (frontend), `python -m pytest backend/tests/` (backend).
+- **Lint**: `npm run lint`.
 
-AI-powered customer retention intelligence system — predicts which customers are likely to churn, explains *why* using SHAP, and surfaces both through a dashboard, instead of handing Customer Success teams a bare risk score with no context.
+## 5. Database
 
-## Problem
+The application runs on **PostgreSQL**. `DATABASE_URL` in `backend/.env` selects
+the database, and **SQLite is fully supported** by the same code — set
+`DATABASE_URL=sqlite:///./churnguard.db` and everything works, with no frontend
+change of any kind. The schema uses portable column types deliberately so the
+two stay interchangeable; the backend test suite runs on SQLite when no local
+Postgres is reachable.
 
-SaaS and telecom companies lose customers who quietly disengage before cancelling. Most churn tools output a risk score without explaining what's driving it or what to do about it, so Customer Success teams react late, with generic offers, after the customer has already decided to leave. ChurnGuard closes that gap: **Predict → Explain → Serve**.
+Schema changes go through Alembic:
 
-## Tech Stack
+```bash
+python -m alembic upgrade head          # apply migrations
+python -m alembic revision --autogenerate -m "description"
+```
 
-**ML**
-- LightGBM, CatBoost, PyTorch-TabNet — base models in a stacking ensemble
-- Logistic Regression — meta-learner
-- scikit-learn, Optuna (hyperparameter tuning), SHAP (explainability)
+Startup also calls `create_all()`, which creates any missing table but never
+alters or drops one — so a fresh checkout works without a migration step, while
+existing data is never at risk. Database files (`*.db`, `*.sqlite3`) are
+gitignored and must never be committed.
 
-**Backend**
-- FastAPI — `/predict`, `/explain`, `/model-performance` endpoints
-- PostgreSQL / SQLite — prediction history
+## 6. Authentication
 
-**Frontend**
-- Next.js — churn-risk customer list, per-customer explanation view, model performance dashboard
+Accounts are real: passwords are bcrypt-hashed, sessions are server-side rows
+addressed by an opaque token in an **HttpOnly cookie**, and signing out deletes
+the session rather than merely forgetting a token.
 
-**Deployment**
-- Docker Compose
+**Supported sign-in methods**
+- Email and password
+- Google (OAuth 2.0 / OpenID Connect)
+- Password reset by emailed, single-use, expiring link
 
-**Dataset**
-- [IBM Telco Customer Churn](https://www.kaggle.com/datasets/yeanzc/telco-customer-churn-ibm-dataset) (Kaggle) — used for prototyping
->>>>>>> 684a4dbf8422698864f2c5573ae13887aad8073e
+**Endpoints**
+
+| Method | Path | Purpose |
+| :--- | :--- | :--- |
+| `POST` | `/api/auth/signup` | Create an account (201) |
+| `POST` | `/api/auth/login` | Sign in |
+| `POST` | `/api/auth/logout` | End the session |
+| `GET` | `/api/auth/me` | The signed-in user, or 401 |
+| `GET` | `/api/auth/providers` | Which OAuth providers are configured |
+| `GET` | `/api/auth/google` | Start Google sign-in |
+| `GET` | `/api/auth/google/callback` | Google redirect target |
+| `POST` | `/api/auth/forgot-password` | Request a reset link |
+| `POST` | `/api/auth/reset-password` | Set a new password |
+
+**Google sign-in requires you to register an OAuth application** with Google
+and put the resulting credentials in `backend/.env`. Until you do, the button
+is disabled and explains that it is not configured — it never fakes a
+sign-in. Full step-by-step instructions, including the exact
+redirect URIs to register, are in **[AUTH_SETUP.md](AUTH_SETUP.md)**.
+
+**Password-reset email** requires SMTP settings in `backend/.env`. Without
+them the reset link is still generated and written to the backend log, and the
+UI says plainly that email delivery is not configured rather than claiming a
+message was sent.
+
+There are no demo credentials and no demo sign-in bypass. Anyone who wants to
+try the product signs up.
+
+## 7. Documentation
+
+- [AUTH_SETUP.md](AUTH_SETUP.md) — Google OAuth and SMTP setup
+- [ARCHITECTURE.md](ARCHITECTURE.md) — system architecture
+- [DEVELOPMENT.md](DEVELOPMENT.md) — development notes
+- [PROJECT_MEMORY.md](PROJECT_MEMORY.md) — decision history
