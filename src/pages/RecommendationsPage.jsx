@@ -7,6 +7,7 @@ import Button from '../components/ui/Button';
 import Badge, { RiskBadge } from '../components/ui/Badge';
 import Select from '../components/ui/Select';
 import EmptyState from '../components/ui/EmptyState';
+import { SkeletonCard } from '../components/ui/Skeleton';
 import PageTrail from '../components/ui/PageTrail';
 import RetentionFlow from '../components/ui/RetentionFlow';
 import { InfoTip } from '../components/ui/Tooltip';
@@ -207,7 +208,7 @@ export default function RecommendationsPage() {
       )}
 
       {loading ? (
-        <div className="space-y-4">{Array.from({ length: 3 }).map((_, i) => <div key={i} className="h-40 rounded-xl bg-bg-card border border-border animate-pulse" />)}</div>
+        <div className="space-y-4">{Array.from({ length: 3 }).map((_, i) => <SkeletonCard key={i} />)}</div>
       ) : error ? (
         <EmptyState
           icon={AlertTriangle}

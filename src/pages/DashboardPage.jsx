@@ -17,6 +17,7 @@ import Badge from '../components/ui/Badge';
 import EmptyState from '../components/ui/EmptyState';
 import { InfoTip } from '../components/ui/Tooltip';
 import { SkeletonCard, SkeletonChart } from '../components/ui/Skeleton';
+import CountUp from '../components/ui/CountUp';
 import { dashboardService } from '../services/api';
 import { useApp } from '../context/AppContext';
 import { cn, formatNumber, formatRelativeDate, getRiskColor, getRiskTier } from '../utils/helpers';
@@ -479,7 +480,9 @@ export default function DashboardPage() {
                 {riskTotal > 0 && (
                   <div className="absolute inset-0 flex items-center justify-center pointer-events-none" aria-hidden="true">
                     <div className="text-center">
-                      <div className="text-lg font-bold text-text-primary tabular-nums leading-none">{formatNumber(riskTotal)}</div>
+                      <div className="text-lg font-bold text-text-primary tabular-nums leading-none">
+                        <CountUp value={riskTotal} format={formatNumber} />
+                      </div>
                       <div className="text-[10px] text-text-tertiary mt-0.5">customers</div>
                     </div>
                   </div>

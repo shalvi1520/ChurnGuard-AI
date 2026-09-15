@@ -508,7 +508,7 @@
 
 import { useState, useEffect, useRef } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { Mail, Send, Check, Edit, RefreshCw, Copy, Sparkles, ShieldCheck, Clock, CheckCircle, Bot, ArrowRight, ArrowLeft } from 'lucide-react';
+import { Mail, Send, Check, Edit, RefreshCw, Copy, Sparkles, ShieldCheck, Clock, CheckCircle, Bot, ArrowRight, ArrowLeft, AlertTriangle } from 'lucide-react';
 import Card, { CardHeader, CardTitle } from '../components/ui/Card';
 import Button from '../components/ui/Button';
 import Badge from '../components/ui/Badge';
@@ -540,6 +540,7 @@ export default function OutreachPage() {
   const [emails, setEmails] = useState([]);
   const [selectedEmail, setSelectedEmail] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [sending, setSending] = useState(false);
   const [editMode, setEditMode] = useState(false);
@@ -639,6 +640,7 @@ export default function OutreachPage() {
   }, [selectedEmail?.customerId]);
 
   const loadEmails = async () => {
+    setLoadError(false);
     try {
       const data = await outreachService.getEmails();
       setEmails(data);
@@ -646,7 +648,10 @@ export default function OutreachPage() {
         const target = customerId ? data.find(e => e.customerId === customerId) || data[0] : data[0];
         selectEmail(target);
       }
-    } catch (e) { console.error(e); }
+    } catch (e) {
+      console.error(e);
+      setLoadError(true);
+    }
     setLoading(false);
   };
 
@@ -666,7 +671,10 @@ export default function OutreachPage() {
       setEmails(prev => [email, ...prev]);
       selectEmail(email);
       addToast({ type: 'success', message: 'Email draft generated' });
-    } catch (e) { console.error(e); }
+    } catch (e) {
+      console.error(e);
+      addToast({ type: 'error', message: e?.response?.data?.detail || 'Could not draft that email. Try again in a moment.' });
+    }
     setGenerating(false);
   };
 
@@ -727,7 +735,9 @@ export default function OutreachPage() {
             </p>
           </header>
           {customerId && (
-            <Button size="sm" icon={Sparkles} loading={generating} onClick={() => handleGenerate()}>Draft a new email</Button>
+            <Button size="sm" icon={Sparkles} loading={generating} onClick={() => handleGenerate()}>
+              {generating ? 'Drafting your email…' : 'Draft a new email'}
+            </Button>
           )}
         </div>
       </div>
@@ -771,7 +781,18 @@ export default function OutreachPage() {
             <p className="text-[11px] text-text-tertiary mt-0.5">Select one to review it.</p>
           </div>
           <div className="divide-y divide-border max-h-[600px] overflow-y-auto">
-            {emails.length === 0 ? (
+            {loadError ? (
+              <div className="p-6 text-center">
+                <AlertTriangle size={18} className="text-risk-medium mx-auto mb-2" aria-hidden="true" />
+                <p className="text-xs text-text-secondary">Couldn&apos;t load your drafts.</p>
+                <p className="text-[11px] text-text-tertiary mt-1">
+                  Your dataset is still connected — this is usually temporary.
+                </p>
+                <Button size="sm" variant="secondary" className="mt-3" onClick={loadEmails}>
+                  Try again
+                </Button>
+              </div>
+            ) : emails.length === 0 ? (
               <div className="p-6 text-center">
                 <p className="text-xs text-text-secondary">No drafts yet.</p>
                 <p className="text-[11px] text-text-tertiary mt-1">
@@ -833,7 +854,7 @@ export default function OutreachPage() {
                         loading={generating}
                         onClick={() => handleGenerate(selectedEmail.customerId)}
                       >
-                        Redraft
+                        {generating ? 'Redrafting…' : 'Redraft'}
                       </Button>
                     </div>
                   </div>

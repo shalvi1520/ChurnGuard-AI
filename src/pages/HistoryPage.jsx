@@ -53,7 +53,7 @@ function Fact({ label, value }) {
   );
 }
 
-function DatasetRow({ record, isActive, onOpen, opening, onDelete, deleting }) {
+function DatasetRow({ record, isActive, onOpen, opening, onDelete, deleting, presentationMode }) {
   const meta = SOURCE_META[record.sourceKind] || SOURCE_META.upload;
   const Icon = meta.icon;
   const instant = record.predictionsAvailable;
@@ -109,17 +109,22 @@ function DatasetRow({ record, isActive, onOpen, opening, onDelete, deleting }) {
         >
           {isActive ? 'In use' : instant ? 'Open instantly' : 'Reconnect file'}
         </Button>
-        <Button
-          size="sm"
-          variant="danger"
-          onClick={() => onDelete(record)}
-          disabled={deleting}
-          loading={deleting}
-          icon={Trash2}
-          aria-label={`Delete ${record.filename} from history`}
-        >
-          Delete
-        </Button>
+        {/* Hidden, not just disabled, in presentation mode -- a destructive
+            action has no reason to be visibly sitting on screen during a
+            live demo, even behind a confirm dialog. */}
+        {!presentationMode && (
+          <Button
+            size="sm"
+            variant="danger"
+            onClick={() => onDelete(record)}
+            disabled={deleting}
+            loading={deleting}
+            icon={Trash2}
+            aria-label={`Delete ${record.filename} from history`}
+          >
+            Delete
+          </Button>
+        )}
       </div>
     </Card>
   );
@@ -127,7 +132,7 @@ function DatasetRow({ record, isActive, onOpen, opening, onDelete, deleting }) {
 
 export default function HistoryPage() {
   const navigate = useNavigate();
-  const { activeDataset, addToast, completeDatasetSetup, resetDatasetSetup } = useApp();
+  const { activeDataset, addToast, completeDatasetSetup, resetDatasetSetup, presentationMode } = useApp();
 
   const [records, setRecords] = useState(null); // null = still loading
   const [loadError, setLoadError] = useState(null);
@@ -354,6 +359,7 @@ export default function HistoryPage() {
               opening={openingId === record.id}
               onDelete={handleDeleteClick}
               deleting={deletingId === record.id}
+              presentationMode={presentationMode}
             />
           ))}
         </div>

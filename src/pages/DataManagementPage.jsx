@@ -89,7 +89,7 @@ export default function DataManagementPage() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const { user } = useAuth();
-  const { addToast, datasetSetupComplete, activeDataset, completeDatasetSetup, resetDatasetSetup } =
+  const { addToast, datasetSetupComplete, activeDataset, completeDatasetSetup, resetDatasetSetup, presentationMode } =
     useApp();
 
   const [phase, setPhase] = useState(PHASE.CHOOSE);
@@ -594,9 +594,14 @@ export default function DataManagementPage() {
             <Button variant="secondary" size="sm" icon={History} onClick={() => navigate('/history')}>
               Dataset history
             </Button>
-            <Button variant="secondary" size="sm" icon={RefreshCw} onClick={handleReplace}>
-              Replace dataset
-            </Button>
+            {/* Hidden, not just disabled, in presentation mode -- discarding
+                the connected dataset has no reason to be one click away
+                during a live demo. */}
+            {!presentationMode && (
+              <Button variant="secondary" size="sm" icon={RefreshCw} onClick={handleReplace}>
+                Replace dataset
+              </Button>
+            )}
           </div>
         )}
       </header>

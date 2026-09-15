@@ -1,10 +1,14 @@
 import { useState, useEffect } from 'react';
-import { motion } from 'framer-motion';
 import { Users, AlertTriangle, DollarSign, TrendingUp, Shield, ArrowRight, PiggyBank } from 'lucide-react';
 import { PieChart, Pie, Cell, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ReferenceLine } from 'recharts';
 import Card from '../components/ui/Card';
+import ChartCard from '../components/ui/ChartCard';
+import EmptyState from '../components/ui/EmptyState';
+import MetricCard from '../components/ui/MetricCard';
+import { SkeletonCard, SkeletonChart } from '../components/ui/Skeleton';
 import { dashboardService, customerService } from '../services/api';
-import { formatCurrency, formatNumber, formatPercent, getRiskColor } from '../utils/helpers';
+import { formatCurrency, getRiskColor } from '../utils/helpers';
+import { metric } from '../utils/glossary';
 
 // The default assumed retention rate for the illustrative estimate below --
 // a round, clearly-a-placeholder number, not a figure derived from any real
@@ -68,28 +72,86 @@ export default function ExecutiveOverviewPage() {
   const [riskDistribution, setRiskDistribution] = useState([]);
   const [drivers, setDrivers] = useState([]);
   const [topAtRisk, setTopAtRisk] = useState([]);
+  const [loading, setLoading] = useState(true);
+  // Distinct from a real failure: a 409 means the connected dataset hasn't
+  // finished training yet (the same "not ready", not "broken" distinction
+  // Portfolio & Risk makes for the same endpoints) -- worth its own, calmer
+  // message rather than the generic "couldn't load" one.
+  const [notReady, setNotReady] = useState(false);
+  const [error, setError] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
+    let cancelled = false;
     async function load() {
-      const [m, r, d, critical] = await Promise.all([
-        dashboardService.getMetrics(),
-        dashboardService.getRiskDistribution(),
-        dashboardService.getTopDrivers(),
-        customerService.getCustomers({ risk: 'critical', sortBy: 'revenueAtRisk', sortDir: 'desc', limit: 5 }),
-      ]);
-      setMetrics(m);
-      setRiskDistribution(r);
-      setDrivers(d);
-      setTopAtRisk(critical.customers);
+      setLoading(true);
+      setError(false);
+      setNotReady(false);
+      try {
+        const [m, r, d, critical] = await Promise.all([
+          dashboardService.getMetrics(),
+          dashboardService.getRiskDistribution(),
+          dashboardService.getTopDrivers(),
+          customerService.getCustomers({ risk: 'critical', sortBy: 'revenueAtRisk', sortDir: 'desc', limit: 5 }),
+        ]);
+        if (cancelled) return;
+        setMetrics(m);
+        setRiskDistribution(r);
+        setDrivers(d);
+        setTopAtRisk(critical.customers);
+      } catch (err) {
+        if (cancelled) return;
+        if (err?.response?.status === 409) {
+          setNotReady(true);
+        } else {
+          setError(true);
+        }
+      }
+      if (!cancelled) setLoading(false);
     }
     load();
-  }, []);
+    return () => { cancelled = true; };
+  }, [reloadKey]);
 
-  if (!metrics) return (
-    <div className="flex items-center justify-center min-h-[60vh]">
-      <div className="w-8 h-8 rounded-full border-2 border-border border-t-accent animate-spin" />
-    </div>
-  );
+  const retry = () => setReloadKey((k) => k + 1);
+
+  if (loading) {
+    return (
+      <div className="space-y-8">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          {Array.from({ length: 4 }).map((_, i) => <SkeletonCard key={i} />)}
+        </div>
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <SkeletonChart />
+          <SkeletonChart />
+        </div>
+      </div>
+    );
+  }
+
+  if (notReady) {
+    return (
+      <EmptyState
+        icon={AlertTriangle}
+        title="Your dataset is still being processed"
+        description="Training is still running for the connected dataset. Check back in a moment."
+        actionLabel="Check now"
+        action={retry}
+      />
+    );
+  }
+
+  if (error || !metrics) {
+    return (
+      <EmptyState
+        icon={AlertTriangle}
+        title="We couldn't load the executive overview"
+        description="The portfolio figures didn't come back. Your dataset is still connected — this is usually temporary."
+        actionLabel="Try again"
+        action={retry}
+      />
+    );
+  }
 
   // The backend omits a KPI it has no data for (e.g. retention rate when no
   // customer carries a churn outcome), so each one is read defensively and
@@ -101,13 +163,13 @@ export default function ExecutiveOverviewPage() {
   const showRevenue = metrics.dataset?.available?.revenue !== false;
 
   const kpis = [
-    { key: 'totalCustomers', label: 'Total Customers', format: formatNumber, icon: Users, color: '#86BC25' },
-    { key: 'customersAtRisk', label: 'Customers at Risk', format: formatNumber, icon: AlertTriangle, color: '#EF4444' },
-    { key: 'revenueAtRisk', label: 'Revenue at Risk', format: formatCurrency, icon: DollarSign, color: '#F97316' },
-    { key: 'retentionRate', label: 'Retention Rate', format: formatPercent, icon: TrendingUp, color: '#4ADE80' },
+    { key: 'totalCustomers', format: 'number', icon: Users },
+    { key: 'customersAtRisk', format: 'number', icon: AlertTriangle },
+    { key: 'revenueAtRisk', format: 'currency', icon: DollarSign },
+    { key: 'retentionRate', format: 'percent', icon: TrendingUp },
   ]
     .filter((k) => metrics.kpis[k.key] !== undefined)
-    .map((k) => ({ ...k, value: k.format(metrics.kpis[k.key].value) }));
+    .map((k) => ({ ...k, value: metrics.kpis[k.key].value }));
   // Both directions, strongest first. Filtering to positive-only left this
   // chart blank whenever every averaged SHAP value came out negative.
   const topDriversShown = drivers.slice(0, 5);
@@ -134,30 +196,30 @@ export default function ExecutiveOverviewPage() {
         </div>
       </div>
 
-      {/* KPIs */}
+      {/* KPIs — same MetricCard every other page's KPI row uses, so the same
+          number is described identically wherever it's shown (glossary-driven
+          description/help, not this page's own copy). */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        {kpis.map((kpi, i) => (
-          <motion.div
-            key={kpi.label}
-            initial={{ opacity: 0, y: 30 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: i * 0.1 }}
-          >
-            <Card className="text-center py-6">
-              <div className="w-10 h-10 rounded-xl mx-auto mb-3 flex items-center justify-center" style={{ backgroundColor: `${kpi.color}15` }}>
-                <kpi.icon size={20} style={{ color: kpi.color }} />
-              </div>
-              <p className="text-3xl font-bold text-text-primary tabular-nums tracking-tight">{kpi.value}</p>
-              <p className="text-xs text-text-tertiary mt-1 uppercase tracking-wider font-medium">{kpi.label}</p>
-            </Card>
-          </motion.div>
-        ))}
+        {kpis.map((kpi, i) => {
+          const g = metric(kpi.key);
+          return (
+            <MetricCard
+              key={kpi.key}
+              title={g.label}
+              description={g.description}
+              help={g.help}
+              value={kpi.value}
+              format={kpi.format}
+              icon={kpi.icon}
+              delay={i * 0.1}
+            />
+          );
+        })}
       </div>
 
       {/* Charts */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <Card>
-          <h3 className="text-sm font-semibold text-text-primary mb-4">Risk Distribution</h3>
+        <ChartCard metricKey="riskDistribution">
           <div className="h-64 flex items-center">
             <ResponsiveContainer width="50%" height="100%">
               <PieChart>
@@ -178,13 +240,9 @@ export default function ExecutiveOverviewPage() {
               ))}
             </div>
           </div>
-        </Card>
+        </ChartCard>
 
-        <Card>
-          <h3 className="text-sm font-semibold text-text-primary mb-1">Top Churn Drivers</h3>
-          <p className="text-xs text-text-tertiary mb-4">
-            Orange raises churn risk, green lowers it — averaged across your customers.
-          </p>
+        <ChartCard metricKey="topDrivers">
           <div className="h-64">
             {topDriversShown.length === 0 ? (
               <div className="h-full flex items-center justify-center text-center px-6">
@@ -214,7 +272,7 @@ export default function ExecutiveOverviewPage() {
               </ResponsiveContainer>
             )}
           </div>
-        </Card>
+        </ChartCard>
       </div>
 
       {/* Critical Accounts */}

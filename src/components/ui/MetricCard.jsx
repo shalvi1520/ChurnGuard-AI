@@ -4,6 +4,7 @@ import { TrendingUp, TrendingDown, ArrowRight } from 'lucide-react';
 import { cn, formatNumber, formatCurrency, formatPercent } from '../../utils/helpers';
 import { LineChart, Line, ResponsiveContainer } from 'recharts';
 import { InfoTip } from './Tooltip';
+import CountUp from './CountUp';
 
 /**
  * `description` is visible supporting text — it says what the number means
@@ -16,11 +17,11 @@ import { InfoTip } from './Tooltip';
  * that don't lead anywhere, so not every card turns into a button.
  */
 export default function MetricCard({ title, value, change, trend, format = 'number', sparklineData, icon: Icon, description, help, action, className, delay = 0 }) {
-  const formattedValue = format === 'currency'
-    ? formatCurrency(value)
+  const valueFormatter = format === 'currency'
+    ? formatCurrency
     : format === 'percent'
-    ? formatPercent(value)
-    : formatNumber(value);
+    ? formatPercent
+    : formatNumber;
 
   const isPositiveChange = change > 0;
   const TrendIcon = trend === 'up' ? TrendingUp : TrendingDown;
@@ -67,7 +68,7 @@ export default function MetricCard({ title, value, change, trend, format = 'numb
       <div className="flex items-end justify-between gap-2">
         <div className="min-w-0">
           <div className="text-2xl font-bold text-text-primary tracking-tight tabular-nums">
-            {formattedValue}
+            <CountUp value={value} format={valueFormatter} />
           </div>
           {change !== undefined && (
             <div className={cn('flex items-center gap-1 mt-1.5 whitespace-nowrap', changeColor)}>
