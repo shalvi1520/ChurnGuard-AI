@@ -192,8 +192,17 @@ export default function AppLayout({ children }) {
   const isLocked = (path) => !datasetSetupComplete && requiresDatasetSetup(path);
 
   const handleLogout = async () => {
+    // Order matters here: navigate to the public homepage FIRST, then clear
+    // auth state. Doing it the other way around (log out, then navigate)
+    // flips `isAuthenticated` to false while still sitting on a protected
+    // route -- ProtectedRoute (routes/index.jsx) watches that flag and
+    // immediately redirects to /login itself the instant it sees `false`,
+    // which wins the race against this navigate() call regardless of what
+    // destination it's given. Landing on '/' first, an unguarded route,
+    // means there's no ProtectedRoute mounted to hijack the redirect when
+    // the auth state changes a moment later.
+    navigate('/');
     await logout();
-    navigate('/login');
   };
 
   if (presentationMode) {

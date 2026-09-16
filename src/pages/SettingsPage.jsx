@@ -46,8 +46,10 @@ export default function SettingsPage() {
   };
 
   const handleLogout = async () => {
+    // Same ordering fix as AppLayout.jsx's sign-out -- see its comment for
+    // why navigate() must happen before logout(), not after.
+    navigate('/');
     await logout();
-    navigate('/login');
   };
 
   return (
