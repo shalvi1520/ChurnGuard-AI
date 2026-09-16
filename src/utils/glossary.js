@@ -105,8 +105,8 @@ export const METRICS = {
   },
   topDrivers: {
     label: 'Top Churn Drivers',
-    description: 'What\'s actually pushing churn risk up, ranked by impact',
-    help: 'Drivers are ranked by their real contribution to the model\'s predictions, not guesswork. Orange factors raise risk, green ones lower it, and a longer bar means a bigger effect. A driver dominating this list points to a structural fix — pricing, onboarding, a specific plan — rather than one-by-one outreach. Drivers for one specific account live on the Explainability page.',
+    description: 'What\'s pushing your at-risk customers toward churn, ranked by impact',
+    help: 'Drivers are ranked by their real contribution to the model\'s predictions for customers it already flags as high-risk or worse — not diluted by your healthy majority, and not guesswork. Orange factors raise risk, green ones lower it, and a longer bar means a bigger effect. A driver dominating this list points to a structural fix — pricing, onboarding, a specific plan — rather than one-by-one outreach. Drivers for one specific account live on the Explainability page.',
   },
   shapContribution: {
     label: 'Feature Contributions',

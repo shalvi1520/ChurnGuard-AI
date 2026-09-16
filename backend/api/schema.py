@@ -33,7 +33,17 @@ def get_field(key: str) -> Optional[Dict[str, Any]]:
 
 
 def pretty_feature_name(key: str) -> str:
-    return FIELD_LABELS.get(key, str(key).replace("_", " ").capitalize())
+    """Human-readable label for a feature/column key. Canonical ChurnGuard
+    fields use their defined label; anything else (an unmapped column from
+    the uploaded dataset, e.g. `DaySinceLastOrder`) is split on its own
+    camelCase/snake_case/kebab-case word boundaries via tokenize_column_name()
+    and re-title-cased -- plain `.capitalize()` used to lowercase everything
+    after the first letter, turning `DaySinceLastOrder` into
+    `Daysincelastorder`."""
+    if key in FIELD_LABELS:
+        return FIELD_LABELS[key]
+    tokens = tokenize_column_name(key)
+    return " ".join(t.capitalize() for t in tokens) if tokens else str(key)
 
 
 def normalize_column_name(name: Optional[str]) -> str:

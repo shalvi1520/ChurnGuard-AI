@@ -96,8 +96,9 @@ except Exception:  # noqa: BLE001 -- optional extra, see comment above
 # ensemble fit + a batch SHAP pass) finishes in a reasonable time for an
 # interactive call rather than the library's full 30-trial default.
 PREDICT_N_TRIALS = 15
-TOP_DRIVERS_SAMPLE_CAP = 60
+TOP_DRIVERS_SAMPLE_CAP = 100  # was 60 -- needs enough rows in BOTH the at-risk and safe groups to contrast reliably
 TOP_DRIVERS_NSAMPLES = 30
+MIN_ROWS_PER_GROUP_FOR_CONTRAST = 8
 
 MODEL_FEATURE_KEYS = ["tenure"]
 # `monthly_charges` and `contract_type` live here, not in MODEL_FEATURE_KEYS:
@@ -799,23 +800,85 @@ def _check_churn_column(model_df: pd.DataFrame, column_name: str) -> None:
 def _compute_top_drivers(
     model_df: pd.DataFrame, feature_cols: List[str], fingerprint: Optional[str] = None
 ) -> List[Dict[str, Any]]:
+    """What separates your at-risk customers from your safe ones, per
+    feature -- not each feature's raw SHAP value against the explainer's
+    own background baseline.
+
+    A raw baseline-relative mean can come out negative for EVERY feature
+    at once, for perfectly ordinary reasons (an unrepresentative
+    KernelExplainer background sample, or a base_value that already sits
+    high) -- and when that happens, at-risk customers end up explained
+    entirely by green ("protective") bars, which is nonsense to anyone
+    reading the chart: these customers are at risk, so something has to be
+    pushing them there. Comparing each feature's average pull on the
+    at-risk group against its average pull on the safe group fixes this
+    structurally, not by picking a better threshold: it measures what the
+    model actually uses to tell the two groups apart, with no external
+    reference point to be miscalibrated in the first place. A feature that
+    truly behaves the same for both groups correctly drops out -- that's
+    a real finding, not a bug in the chart.
+    """
+    AT_RISK_THRESHOLD = 0.60  # matches _risk_tier()'s "high" cutoff
+    MATERIALITY_RATIO = 0.15
+    MIN_DRIVERS_SHOWN = 3
+
     try:
         sample = model_df.sample(n=min(TOP_DRIVERS_SAMPLE_CAP, len(model_df)), random_state=42)
         scaled = generic_predictor.preprocess(sample[feature_cols], fingerprint)
+        # One SHAP call over the whole sample, split by risk tier ourselves
+        # -- both groups' values then come from the same explainer call and
+        # are directly comparable, and it's half the KernelExplainer cost
+        # of running the two groups separately.
         result = explain_high_risk_batch(scaled, threshold=0.0, nsamples=TOP_DRIVERS_NSAMPLES, fingerprint=fingerprint)
         shap_cols = [c for c in result.columns if c not in ("churn_probability", "base_value")]
 
+        at_risk = result[result["churn_probability"] >= AT_RISK_THRESHOLD]
+        safe = result[result["churn_probability"] < AT_RISK_THRESHOLD]
+
         drivers = []
-        for col in shap_cols:
-            mean_signed = float(result[col].mean())
-            drivers.append({
-                "driver": schema.pretty_feature_name(col),
-                "impact": round(mean_signed, 4),
-                "direction": "positive" if mean_signed >= 0 else "negative",
-                "customers": int((result[col] > 0).sum()) if mean_signed >= 0 else int((result[col] < 0).sum()),
-                "_abs": float(result[col].abs().mean()),
-            })
+        if len(at_risk) >= MIN_ROWS_PER_GROUP_FOR_CONTRAST and len(safe) >= MIN_ROWS_PER_GROUP_FOR_CONTRAST:
+            for col in shap_cols:
+                contrast = float(at_risk[col].mean()) - float(safe[col].mean())
+                direction = "positive" if contrast >= 0 else "negative"
+                drivers.append({
+                    "driver": schema.pretty_feature_name(col),
+                    "impact": round(contrast, 4),
+                    "direction": direction,
+                    "customers": int((at_risk[col] > 0).sum()) if direction == "positive" else int((at_risk[col] < 0).sum()),
+                    "_abs": abs(contrast),
+                })
+        else:
+            # Too few rows in one group this sample to contrast reliably
+            # (a very small or very lopsided dataset) -- fall back to the
+            # at-risk group's own mean, or the whole sample if even that
+            # group is too thin. Still focused on at-risk customers where
+            # possible; just not differential.
+            pool = at_risk if len(at_risk) >= MIN_ROWS_PER_GROUP_FOR_CONTRAST else result
+            for col in shap_cols:
+                mean_signed = float(pool[col].mean())
+                drivers.append({
+                    "driver": schema.pretty_feature_name(col),
+                    "impact": round(mean_signed, 4),
+                    "direction": "positive" if mean_signed >= 0 else "negative",
+                    "customers": int((pool[col] > 0).sum()) if mean_signed >= 0 else int((pool[col] < 0).sum()),
+                    "_abs": abs(mean_signed),
+                })
+
         drivers.sort(key=lambda d: d["_abs"], reverse=True)
+
+        # A driver whose effect is a sliver of the strongest one's isn't a
+        # business signal worth a slot next to genuinely strong drivers --
+        # it's noise-adjacent, and showing it at the same visual weight
+        # misleads a reader into treating it as comparably actionable.
+        # Filtered by relative magnitude, not by direction (green vs
+        # orange) -- a small POSITIVE driver gets dropped exactly like a
+        # small negative one would, so this never turns into the
+        # positive-only filter that used to silently empty this chart.
+        if drivers:
+            strongest = drivers[0]["_abs"]
+            significant = [d for d in drivers if d["_abs"] >= strongest * MATERIALITY_RATIO]
+            drivers = significant if len(significant) >= MIN_DRIVERS_SHOWN else drivers[:MIN_DRIVERS_SHOWN]
+
         for d in drivers:
             d.pop("_abs")
         return drivers
@@ -2159,6 +2222,7 @@ def _dataset_context(entry: DatasetEntry) -> Dict[str, Any]:
     return {
         "source": entry.source.as_dict(),
         "filename": entry.filename,
+        "uploadedAt": datetime.fromtimestamp(entry.uploaded_at, tz=timezone.utc).isoformat(),
         "rows": entry.profile["rowCount"],
         "columns": entry.profile["columnCount"],
         "customers": len(entry.customers),

@@ -68,7 +68,7 @@ const NEUTRAL_FILL = '#6B7490';
 
 const signed = (v) => `${v > 0 ? '+' : ''}${Number(v).toFixed(2)}`;
 
-function ChartTooltip({ active, payload, label, valueFormatter, hint }) {
+function ChartTooltip({ active, payload, label, valueFormatter, hint, extra }) {
   if (!active || !payload?.length) return null;
   return (
     <div className="bg-bg-secondary border border-border rounded-lg p-3 shadow-xl text-xs">
@@ -83,6 +83,9 @@ function ChartTooltip({ active, payload, label, valueFormatter, hint }) {
           </span>
         </div>
       ))}
+      {/* Per-point context that isn't itself a plotted value -- e.g. how many
+          customers a driver actually affects. */}
+      {extra && <p className="text-text-tertiary mt-1.5">{extra(payload[0].payload)}</p>}
       {hint && <p className="text-text-tertiary mt-1.5">{hint}</p>}
     </div>
   );
@@ -395,8 +398,13 @@ export default function DashboardPage() {
         {/* Which data these numbers come from -- reported by the backend, so a
             real upload is never labelled as demo data or vice versa. */}
         {metrics?.dataset && (
-          <div className="mt-3">
+          <div className="mt-3 flex flex-wrap items-center gap-2">
             <DataSourceBadge source={metrics.dataset.source} filename={metrics.dataset.filename} />
+            {metrics.dataset.uploadedAt && (
+              <span className="text-[11px] text-text-tertiary">
+                · Refreshed {formatRelativeDate(metrics.dataset.uploadedAt)}
+              </span>
+            )}
           </div>
         )}
       </header>
@@ -540,7 +548,7 @@ export default function DashboardPage() {
           >
             <div className="h-56">
               <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={drivers} layout="vertical" margin={{ top: 4, right: 12, left: 0, bottom: 0 }}>
+                <BarChart data={drivers} layout="vertical" margin={{ top: 4, right: 12, left: 4, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" horizontal={false} />
                   <XAxis
                     type="number"
@@ -553,9 +561,27 @@ export default function DashboardPage() {
                        positive effect" -- the opposite of what it means. */
                     domain={[(min) => Math.min(0, min), (max) => Math.max(0, max)]}
                   />
-                  <YAxis type="category" dataKey="driver" tick={{ fontSize: 10 }} width={132} axisLine={false} tickLine={false} />
+                  <YAxis
+                    type="category"
+                    dataKey="driver"
+                    tick={{ fontSize: 10 }}
+                    width={150}
+                    axisLine={false}
+                    tickLine={false}
+                    // Full name is still on hover (tooltip) and for screen
+                    // readers (ChartFigures below) -- this just keeps long,
+                    // properly-spaced names from clipping the plot area.
+                    tickFormatter={(v) => (v.length > 20 ? `${v.slice(0, 19)}…` : v)}
+                  />
                   <ReferenceLine x={0} stroke={NEUTRAL_FILL} />
-                  <Tooltip content={<ChartTooltip valueFormatter={signed} />} />
+                  <Tooltip
+                    content={
+                      <ChartTooltip
+                        valueFormatter={signed}
+                        extra={(d) => `Affects ${formatNumber(d.customers)} at-risk customers`}
+                      />
+                    }
+                  />
                   <Bar dataKey="impact" name="Effect on churn risk" radius={[0, 4, 4, 0]} barSize={14} animationDuration={500}>
                     {drivers.map((d) => (
                       <Cell key={d.driver} fill={d.fill} />
@@ -581,7 +607,9 @@ export default function DashboardPage() {
             </div>
             <ChartFigures
               label={metric('topDrivers').label}
-              items={drivers.map((d) => `${d.driver}: ${d.direction === 'positive' ? 'raises' : 'lowers'} churn risk (${signed(d.impact)})`)}
+              items={drivers.map(
+                (d) => `${d.driver}: ${d.direction === 'positive' ? 'raises' : 'lowers'} churn risk for ${formatNumber(d.customers)} customers (${signed(d.impact)})`
+              )}
             />
           </ChartCard>
         </div>
