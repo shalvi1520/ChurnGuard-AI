@@ -47,7 +47,7 @@ const features = [
   {
     icon: Brain,
     title: 'Predict with Precision',
-    description: 'Proprietary ML models analyze hundreds of behavioral signals to predict churn probability with up to 94% accuracy.',
+    description: 'Proprietary ML models analyze hundreds of behavioral signals to surface exactly who\'s about to churn, before it\'s too late.',
     color: '#F97316',
     glow: 'rgba(249, 115, 22, 0.15)'
   },
@@ -357,14 +357,6 @@ export default function LandingPage() {
             <div className="flex items-center gap-3">
               <Shield size={18} className="text-accent" />
               <span className="text-sm font-bold tracking-widest text-white">CHURNGUARD</span>
-            </div>
-            {/* Every link here goes somewhere real. The previous Platform /
-                Pricing / Privacy / Terms row was four `href="#"` placeholders. */}
-            <div className="flex flex-wrap justify-center items-center gap-6 sm:gap-8 text-sm font-medium text-text-tertiary">
-              <a href="#features" className="hover:text-white transition-colors">Features</a>
-              <a href="#how-it-works" className="hover:text-white transition-colors">How It Works</a>
-              <a href="#security" className="hover:text-white transition-colors">Security</a>
-              <Link to="/login" className="hover:text-white transition-colors">Sign In</Link>
             </div>
             <p className="text-sm text-text-tertiary font-medium">
               © 2026 ChurnGuard. All rights reserved.
