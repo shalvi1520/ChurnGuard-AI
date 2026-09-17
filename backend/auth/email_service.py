@@ -12,9 +12,11 @@ So `send()` returns a result carrying `delivered`, and the route renders a
 different (honest) screen when it is False. In development with no SMTP host,
 the reset link is written to the server log and the UI says so plainly.
 
-Swapping SMTP for a provider API (Resend, SES, Postmark) means adding one
-`EmailBackend` subclass and selecting it in `get_backend()`; nothing else in
-the codebase touches email.
+Resend is tried first when configured (RESEND_API_KEY): several hosts,
+Render included, block outbound SMTP on standard tiers to stop spam abuse,
+so raw SMTP that works locally can silently fail once deployed. Resend sends
+over a normal HTTPS API call instead, which isn't affected by that block.
+SMTP remains supported for anyone who configures SMTP_HOST instead.
 """
 import logging
 import smtplib
@@ -73,14 +75,14 @@ class ConsoleEmailBackend(EmailBackend):
         # and a wall of markup there would bury the link this exists to show.
         if config.IS_PRODUCTION:
             logger.error(
-                "No SMTP configured — email NOT sent to %s (subject=%r). Body withheld: "
+                "No email backend configured — email NOT sent to %s (subject=%r). Body withheld: "
                 "it can contain a live reset link, which must not reach the logs.",
                 to,
                 subject,
             )
         else:
             logger.warning(
-                "No SMTP configured — email NOT sent. Intended recipient=%s subject=%r\n"
+                "No email backend configured — email NOT sent. Intended recipient=%s subject=%r\n"
                 "--- message body (development only; APP_ENV=%s) ---\n%s\n"
                 "---------------------------------------------------",
                 to,
@@ -90,7 +92,7 @@ class ConsoleEmailBackend(EmailBackend):
             )
         return EmailResult(
             delivered=False,
-            detail="No SMTP server is configured (set SMTP_HOST in backend/.env).",
+            detail="No email backend is configured (set RESEND_API_KEY or SMTP_HOST in backend/.env).",
         )
 
 
@@ -125,18 +127,58 @@ class SmtpEmailBackend(EmailBackend):
         return EmailResult(delivered=True)
 
 
+class ResendEmailBackend(EmailBackend):
+    """Sends over Resend's HTTPS API instead of raw SMTP.
+
+    Exists because several hosts (Render included) block outbound SMTP
+    connections on standard tiers to prevent spam abuse -- HTTPS is not
+    blocked, so an API-based provider is what actually works once deployed,
+    even though SMTP works fine locally.
+    """
+
+    def send(self, *, to: str, subject: str, body: str, html: Optional[str] = None) -> EmailResult:
+        import httpx
+
+        payload = {
+            "from": config.SMTP_FROM,
+            "to": [to],
+            "subject": subject,
+            "text": body,
+        }
+        if html:
+            payload["html"] = html
+
+        try:
+            response = httpx.post(
+                "https://api.resend.com/emails",
+                headers={"Authorization": f"Bearer {config.RESEND_API_KEY}"},
+                json=payload,
+                timeout=15,
+            )
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            # Same reasoning as the SMTP branch: Resend's error body can
+            # include account-identifying detail, so it stays server-side.
+            logger.error("Resend send to %s failed: %s", to, exc)
+            return EmailResult(delivered=False, detail="The email provider rejected the message.")
+        return EmailResult(delivered=True)
+
+
 def get_backend() -> EmailBackend:
     """The backend this server's configuration selects.
 
-    `config.email_is_configured()` is the single question -- is SMTP_HOST set
-    -- and it is asked here and in the API response alike, so the two can never
-    disagree about whether mail can be sent.
+    Resend takes priority when RESEND_API_KEY is set -- it works in
+    environments (like Render) that block outbound SMTP. SMTP remains
+    available for anyone who configures SMTP_HOST instead, and
+    ConsoleEmailBackend is the honest fallback when neither is configured.
 
-    Adding a provider API (Resend, SES, Postmark) means one more EmailBackend
-    subclass and one more branch in this function. Nothing else in the codebase
-    touches email -- auth_routes calls send_password_reset and reads
-    `delivered`, and that is the whole contract.
+    Adding another provider API (SES, Postmark) means one more EmailBackend
+    subclass and one more branch here. Nothing else in the codebase touches
+    email -- auth_routes calls send_password_reset and reads `delivered`,
+    and that is the whole contract.
     """
+    if config.RESEND_API_KEY:
+        return ResendEmailBackend()
     return SmtpEmailBackend() if config.email_is_configured() else ConsoleEmailBackend()
 
 

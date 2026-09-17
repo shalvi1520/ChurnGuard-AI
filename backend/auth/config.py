@@ -152,9 +152,10 @@ PROVIDERS = {"google": GOOGLE}
 
 # --- outbound email ---------------------------------------------------------
 #
-# Absent SMTP settings mean password-reset emails genuinely cannot be sent,
-# and the app says exactly that rather than showing a "check your inbox"
-# screen for a message that was never dispatched. See auth/email_service.py.
+# Absent both a Resend key and SMTP settings means password-reset emails
+# genuinely cannot be sent, and the app says exactly that rather than showing
+# a "check your inbox" screen for a message that was never dispatched. See
+# auth/email_service.py.
 
 SMTP_HOST = _env("SMTP_HOST")
 SMTP_PORT = int(_env("SMTP_PORT") or "587")
@@ -162,6 +163,12 @@ SMTP_USERNAME = _env("SMTP_USERNAME")
 SMTP_PASSWORD = _env("SMTP_PASSWORD")
 SMTP_FROM = _env("SMTP_FROM") or "ChurnGuard <no-reply@churnguard.local>"
 SMTP_USE_TLS = (_env("SMTP_USE_TLS") or "true").lower() != "false"
+
+# Resend (https://resend.com) sends over HTTPS rather than raw SMTP, which
+# several hosts -- Render included -- block outbound on standard tiers to
+# prevent spam abuse. Preferred over SMTP when set; see
+# email_service.get_backend().
+RESEND_API_KEY = _env("RESEND_API_KEY")
 
 
 def email_is_configured() -> bool:
@@ -172,7 +179,7 @@ def email_is_configured() -> bool:
     on nothing about the address that was submitted -- see the enumeration note
     in auth_routes.forgot_password.
     """
-    return bool(SMTP_HOST)
+    return bool(RESEND_API_KEY or SMTP_HOST)
 
 
 # --- rate limiting ----------------------------------------------------------
