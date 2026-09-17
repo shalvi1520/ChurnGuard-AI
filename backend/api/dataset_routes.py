@@ -2089,6 +2089,25 @@ def reopen_dataset_history(
         0, sum(1 for c in customers if c["riskTier"] in ("high", "critical")) - len(restored_drafts)
     )
 
+    # The Data Management "What ChurnGuard is using" table needs the rich
+    # {label, column, required} shape the live setup wizard builds itself
+    # from /validate's field list -- that wizard never runs on reopen, so
+    # without this the frontend was falling back to entry.mapped_field_keys()
+    # (a flat list of field KEYS, e.g. "tenure"), which has no .label/.column/
+    # .required for that table to read, rendering every row blank.
+    # entry.mappings is {yourColumnName: churnguardFieldKey} (see
+    # DataManagementPage.jsx's process(), which writes it in this direction).
+    mapped_columns = [
+        {
+            "key": field_key,
+            "label": schema.FIELD_BY_KEY.get(field_key, {}).get("label", field_key),
+            "column": column_name,
+            "required": bool(schema.FIELD_BY_KEY.get(field_key, {}).get("required")),
+        }
+        for column_name, field_key in (entry.mappings or {}).items()
+        if field_key
+    ]
+
     store.create_dataset(entry)
 
     return {
@@ -2100,6 +2119,7 @@ def reopen_dataset_history(
         "columns": dataset_row.column_count,
         "customersProcessed": len(customers),
         "mappedFields": entry.mapped_field_keys(),
+        "mappedColumns": mapped_columns,
         "cleaning": entry.cleaning,
         "extraColumnsUsed": extra.get("extraColumnsUsed", []),
         "trainingMetrics": {

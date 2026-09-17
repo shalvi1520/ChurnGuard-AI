@@ -232,7 +232,7 @@ export default function HistoryPage() {
           datasetRows: result.rows,
           columns: result.columns,
           fieldsMapped: result.mappedFields?.length ?? null,
-          mappedColumns: result.mappedFields ?? [],
+          mappedColumns: result.mappedColumns ?? [],
           cleaning: result.cleaning ?? [],
           additionalColumns: result.extraColumnsUsed?.length ?? 0,
           trainingMetrics: result.trainingMetrics ?? null,
