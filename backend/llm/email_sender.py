@@ -1,67 +1,46 @@
 """
-Actually delivers an approved outreach draft over SMTP, using the project's
-own Gmail account (EMAIL_USER / EMAIL_APP_PASSWORD in .env). Mirrors
-providers.py's pattern: read credentials from the environment only, never
-hardcoded, and treat missing configuration as "not available" rather than
-an error -- so a deployment without SMTP set up still runs, it just falls
-back to dataset_routes.py's original mark-as-sent behaviour.
+Actually delivers an approved outreach draft, using Resend's HTTPS API
+(RESEND_API_KEY in .env). Mirrors providers.py's pattern: read credentials
+from the environment only, never hardcoded, and treat missing configuration
+as "not available" rather than an error -- so a deployment without an email
+provider configured still runs, it just falls back to dataset_routes.py's
+original mark-as-sent behaviour.
+
+Resend over raw SMTP: several hosts, Render included, block outbound SMTP
+connections on standard tiers to prevent spam abuse. A blocked SMTP
+connection doesn't always fail fast either -- it can hang at the TCP level
+well past any timeout coded here, long enough to trip the platform's own
+gateway timeout and return a 502 before this module ever gets the chance to
+raise its own clear error. Resend sends over a normal HTTPS POST, which
+isn't affected by that block.
 """
 import os
-import smtplib
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
 from typing import Optional
 
+import httpx
 from dotenv import load_dotenv
 
 load_dotenv()
 load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), ".env"))
 
-_ENV_HOST = "EMAIL_HOST"
-_ENV_PORT = "EMAIL_PORT"
-_ENV_USER = "EMAIL_USER"
-_ENV_PASSWORD = "EMAIL_APP_PASSWORD"
+_ENV_API_KEY = "RESEND_API_KEY"
+_ENV_FROM_ADDRESS = "EMAIL_FROM_ADDRESS"
 _ENV_FROM_NAME = "EMAIL_FROM_NAME"
 
 _DEFAULT_FROM_NAME = "The Customer Success Team"
-_SMTP_TIMEOUT_SECONDS = 15
+_DEFAULT_FROM_ADDRESS = "onboarding@resend.dev"
+_REQUEST_TIMEOUT_SECONDS = 15
 _BRAND_ACCENT = "#22C55E"  # matches ChurnGuard's "approved" green used elsewhere in the app
 
 
-
-
-_smtp_connection = None
-
-
-def _get_connection():
-    global _smtp_connection
-    if _smtp_connection is not None:
-        try:
-            _smtp_connection.noop()  # cheap way to check the connection is still alive
-            return _smtp_connection
-        except Exception:
-            _smtp_connection = None  # stale connection, reconnect below
-
-    host = os.getenv(_ENV_HOST, "smtp.gmail.com")
-    port = int(os.getenv(_ENV_PORT, "587"))
-    user = os.getenv(_ENV_USER)
-    password = os.getenv(_ENV_PASSWORD)
-
-    conn = smtplib.SMTP(host, port, timeout=_SMTP_TIMEOUT_SECONDS)
-    conn.starttls()
-    conn.login(user, password)
-    _smtp_connection = conn
-    return conn
-
-
 class EmailDeliveryError(Exception):
-    """Raised when SMTP is configured but the send itself fails -- lets the
-    caller keep the draft's status unchanged instead of falsely marking it
-    'sent'."""
+    """Raised when an email provider is configured but the send itself
+    fails -- lets the caller keep the draft's status unchanged instead of
+    falsely marking it 'sent'."""
 
 
 def is_configured() -> bool:
-    return bool(os.getenv(_ENV_USER) and os.getenv(_ENV_PASSWORD))
+    return bool(os.getenv(_ENV_API_KEY))
 
 
 def _wrap_html(body_text: str, from_name: str, cta_text: Optional[str]) -> str:
@@ -103,53 +82,34 @@ def _wrap_html(body_text: str, from_name: str, cta_text: Optional[str]) -> str:
     </body></html>"""
 
 
-# def send_outreach_email(recipient_email: str, subject: str, body_text: str, cta_text: Optional[str] = None) -> None:
-#     """Raises EmailDeliveryError on any SMTP failure -- callers must not
-#     mark a draft 'sent' unless this returns without raising."""
-#     if not is_configured():
-#         raise EmailDeliveryError("SMTP is not configured (EMAIL_USER / EMAIL_APP_PASSWORD missing).")
-
-#     from_name = os.getenv(_ENV_FROM_NAME, _DEFAULT_FROM_NAME)
-#     host = os.getenv(_ENV_HOST, "smtp.gmail.com")
-#     port = int(os.getenv(_ENV_PORT, "587"))
-#     user = os.getenv(_ENV_USER)
-#     password = os.getenv(_ENV_PASSWORD)
-
-#     msg = MIMEMultipart("alternative")
-#     msg["Subject"] = subject
-#     msg["From"] = f"{from_name} <{user}>"
-#     msg["To"] = recipient_email
-#     msg.attach(MIMEText(body_text, "plain"))
-#     msg.attach(MIMEText(_wrap_html(body_text, from_name, cta_text), "html"))
-
-#     try:
-#         with smtplib.SMTP(host, port, timeout=_SMTP_TIMEOUT_SECONDS) as server:
-#             server.starttls()
-#             server.login(user, password)
-#             server.sendmail(user, recipient_email, msg.as_string())
-#     except (smtplib.SMTPException, OSError) as exc:
-#         raise EmailDeliveryError(str(exc)) from exc
-
-
-
 def send_outreach_email(recipient_email: str, subject: str, body_text: str, cta_text: Optional[str] = None) -> None:
+    """Raises EmailDeliveryError on any send failure -- callers must not
+    mark a draft 'sent' unless this returns without raising."""
     if not is_configured():
-        raise EmailDeliveryError("SMTP is not configured (EMAIL_USER / EMAIL_APP_PASSWORD missing).")
+        raise EmailDeliveryError("Email delivery is not configured (RESEND_API_KEY missing).")
 
+    api_key = os.getenv(_ENV_API_KEY)
     from_name = os.getenv(_ENV_FROM_NAME, _DEFAULT_FROM_NAME)
-    user = os.getenv(_ENV_USER)
+    from_address = os.getenv(_ENV_FROM_ADDRESS, _DEFAULT_FROM_ADDRESS)
 
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = subject
-    msg["From"] = f"{from_name} <{user}>"
-    msg["To"] = recipient_email
-    msg.attach(MIMEText(body_text, "plain"))
-    msg.attach(MIMEText(_wrap_html(body_text, from_name, cta_text), "html"))
+    payload = {
+        "from": f"{from_name} <{from_address}>",
+        "to": [recipient_email],
+        "subject": subject,
+        "text": body_text,
+        "html": _wrap_html(body_text, from_name, cta_text),
+    }
 
     try:
-        conn = _get_connection()
-        conn.sendmail(user, recipient_email, msg.as_string())
-    except (smtplib.SMTPException, OSError) as exc:
-        global _smtp_connection
-        _smtp_connection = None  # force a fresh connection next time
-        raise EmailDeliveryError(str(exc)) from exc
+        response = httpx.post(
+            "https://api.resend.com/emails",
+            headers={"Authorization": f"Bearer {api_key}"},
+            json=payload,
+            timeout=_REQUEST_TIMEOUT_SECONDS,
+        )
+        response.raise_for_status()
+    except httpx.HTTPError as exc:
+        # Same reasoning as elsewhere: the provider's error body can carry
+        # account-identifying detail, so it goes to the caller as a plain
+        # message, not verbatim.
+        raise EmailDeliveryError(f"The email provider rejected the message: {exc}") from exc
