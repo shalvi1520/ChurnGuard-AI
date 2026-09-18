@@ -25,7 +25,7 @@ from backend.api.main import app
 from backend.api.store import DatasetEntry, DatasetSource
 from backend.db.database import SessionLocal
 from backend.db.models import Dataset as DatasetRow
-from backend.db.models import TrainedModel
+from backend.db.models import DatasetMetrics, TrainedModel
 
 
 def _signup(client: TestClient, label: str) -> dict:
@@ -61,6 +61,32 @@ def _seed_dataset_row(user_id: str, fingerprint: str = "fp-histdel") -> tuple[st
         db.add(model_row)
         db.commit()
         return dataset_row.id, model_row.id
+    finally:
+        db.close()
+
+
+def _seed_dataset_row_with_metrics(user_id: str, fingerprint: str = "fp-histdel-metrics") -> tuple[str, str, str]:
+    """Same as _seed_dataset_row(), plus a DatasetMetrics row (Reliability
+    Score / Market Impact, see generic/metrics_agent.py) -- regression
+    coverage for the ForeignKeyViolation this table's foreign key used to
+    cause on delete before the endpoint deleted it as a child row too."""
+    db = SessionLocal()
+    try:
+        dataset_row = DatasetRow(
+            user_id=user_id, filename="seed.csv", source_kind="upload", row_count=10, column_count=3,
+            fingerprint=fingerprint,
+        )
+        db.add(dataset_row)
+        db.flush()
+        model_row = TrainedModel(
+            dataset_id=dataset_row.id, fingerprint=fingerprint,
+            artifact_dir="/tmp/histdel-nowhere", report={"test_metrics": {}},
+        )
+        db.add(model_row)
+        metrics_row = DatasetMetrics(dataset_id=dataset_row.id, revenue_at_risk=100.0, reliability_score=90.0)
+        db.add(metrics_row)
+        db.commit()
+        return dataset_row.id, model_row.id, metrics_row.id
     finally:
         db.close()
 
@@ -121,6 +147,45 @@ def test_delete_removes_the_dataset_and_cascades_to_its_trained_models(client):
         assert db.query(TrainedModel).filter(TrainedModel.id == model_id).first() is None
     finally:
         db.close()
+
+
+def test_delete_removes_a_dataset_metrics_row_without_a_foreign_key_violation(client):
+    """Regression test: dataset_metrics.dataset_id has a foreign key to
+    datasets.id with no DB-level ON DELETE CASCADE (same as trained_models'),
+    so deleting a dataset that has a DatasetMetrics row used to 500 with a
+    ForeignKeyViolation -- the delete endpoint deleted trained_models rows
+    first but never dataset_metrics ones. Confirms both that the request
+    succeeds and that the row is actually gone afterward, not orphaned."""
+    user = _signup(client, "metrics")
+    dataset_id, model_id, metrics_id = _seed_dataset_row_with_metrics(user["id"])
+
+    resp = client.delete(f"/api/datasets/history/{dataset_id}")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "deleted"
+
+    db = SessionLocal()
+    try:
+        assert db.query(DatasetRow).filter(DatasetRow.id == dataset_id).first() is None
+        assert db.query(TrainedModel).filter(TrainedModel.id == model_id).first() is None
+        assert db.query(DatasetMetrics).filter(DatasetMetrics.id == metrics_id).first() is None
+    finally:
+        db.close()
+
+
+def test_delete_still_works_for_a_dataset_with_no_dataset_metrics_row(client):
+    """The ordinary case predating this feature -- a dataset with no
+    DatasetMetrics row at all -- must keep working exactly as before."""
+    user = _signup(client, "no-metrics")
+    dataset_id, _model_id = _seed_dataset_row(user["id"])
+    db = SessionLocal()
+    try:
+        assert db.query(DatasetMetrics).filter(DatasetMetrics.dataset_id == dataset_id).first() is None
+    finally:
+        db.close()
+
+    resp = client.delete(f"/api/datasets/history/{dataset_id}")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "deleted"
 
 
 def test_delete_404s_on_a_repeat_call(client):

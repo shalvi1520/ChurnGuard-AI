@@ -377,6 +377,52 @@ class RetrainEvent(Base):
     connection: Mapped["CrmConnection"] = relationship(back_populates="retrain_events")
 
 
+class DatasetMetrics(Base):
+    """The portfolio-level read on one dataset's latest trained/scored run:
+    revenue at risk, a Market Impact Explanation, and a Reliability Score for
+    the model behind it -- see generic/metrics_agent.py for how each is
+    computed and worded. Both the reliability score and the market impact
+    severity come with plain-English, non-technical explanations, since a
+    bare number was the whole problem this table exists to fix.
+
+    One row per dataset (`dataset_id` unique), upserted on every re-predict
+    rather than appended, since only the most recent run's numbers are ever
+    shown -- there is no trend view over past runs to keep history for (same
+    "single snapshot" reasoning as Dataset/_dataset_context's `available.history`).
+    """
+
+    __tablename__ = "dataset_metrics"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_uuid)
+    dataset_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("datasets.id"), nullable=False, unique=True, index=True
+    )
+    # None when the dataset has no monthly_charges field mapped -- see
+    # _dataset_context()'s `available.revenue` gating in dataset_routes.py.
+    revenue_at_risk: Mapped[float] = mapped_column(Float, nullable=True)
+    reliability_score: Mapped[float] = mapped_column(Float, nullable=True)
+    # 'Low' | 'Moderate' | 'High' | 'Critical' -- how far this dataset's own
+    # churn rate sits from a general industry benchmark. Not a 0-100 score:
+    # replaces the earlier market_impact_score (concentration/segment-weight
+    # formula), which measured internal portfolio concentration rather than
+    # real market consequences and was discarded for exactly that reason.
+    market_impact_severity: Mapped[str] = mapped_column(String(20), nullable=True)
+    # The full plain-language paragraph (churn rate, projected loss, industry
+    # benchmark comparison, 12-month trajectory) with this run's real numbers
+    # interpolated in -- see generic/metrics_agent.py's _market_impact_explanation().
+    market_impact_explanation: Mapped[str] = mapped_column(Text, nullable=True)
+    # {"reliability": {narrative, components}, "marketImpact": {churnRatePct,
+    # projectedAnnualLoss, benchmarkUsed, benchmarkIndustry, ...}} -- the
+    # structured numbers and per-component tags/text behind both explanations
+    # above, so the frontend can highlight individual figures rather than
+    # only rendering a paragraph. See generic/metrics_agent.py's
+    # compute_dataset_metrics().
+    component_breakdown: Mapped[dict] = mapped_column(JSON, nullable=True)
+    computed_at: Mapped[datetime.datetime] = mapped_column(DateTime, nullable=False, default=datetime.datetime.utcnow)
+
+    dataset: Mapped["Dataset"] = relationship()
+
+
 class ActivityEvent(Base):
     """One user-attributed action worth showing on an account's activity feed:
     who trained a model, who drafted/edited/approved/sent an outreach email,

@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import {
   Users, AlertTriangle, TrendingUp, DollarSign, ArrowRight, ChevronRight, Activity,
+  Gauge, CheckCircle2, XCircle, AlertCircle, Globe2,
 } from 'lucide-react';
 import {
   PieChart, Pie, Cell, ResponsiveContainer, XAxis, YAxis,
@@ -20,7 +21,7 @@ import { SkeletonCard, SkeletonChart } from '../components/ui/Skeleton';
 import CountUp from '../components/ui/CountUp';
 import { dashboardService } from '../services/api';
 import { useApp } from '../context/AppContext';
-import { cn, formatNumber, formatRelativeDate, getRiskColor, getRiskTier } from '../utils/helpers';
+import { cn, formatNumber, formatCurrency, formatRelativeDate, getRiskColor, getRiskTier } from '../utils/helpers';
 import { metric } from '../utils/glossary';
 import { customersHref, useWorkflowNav } from '../utils/navigation';
 
@@ -46,6 +47,173 @@ const KPI_CONFIG = [
   { key: 'revenueAtRisk', format: 'currency', icon: DollarSign },
   { key: 'retentionRate', format: 'percent', icon: TrendingUp },
 ];
+
+// Icon + colour per plain-language tag -- generic/metrics_agent.py assigns
+// one of these three to every Reliability Score component, already in
+// business language (no SHAP/PSI/schema-inference jargon reaches this file).
+const RELIABILITY_TAG_STYLE = {
+  good: { Icon: CheckCircle2, className: 'text-risk-low' },
+  caution: { Icon: AlertCircle, className: 'text-risk-medium' },
+  poor: { Icon: XCircle, className: 'text-risk-high' },
+};
+
+const CONFIDENCE_LABEL = { high: 'High Confidence', moderate: 'Moderate Confidence', low: 'Low Confidence' };
+
+// Always visible, not a click/hover reveal: this is meant to be read, not
+// discovered. Keyed to whichever dataset is currently active (metrics is
+// refetched on every dataset switch, same as every other section on this
+// page), so it never shows a stale prior dataset's numbers.
+// Datasets reopened from History can be older than this feature, or older
+// than a shape change within it (see get_dashboard()'s comment in
+// dataset_routes.py) -- shown plainly rather than as an empty card or a
+// section that silently vanishes.
+const METRICS_REPROCESS_NOTE = 'Reprocess this dataset (re-run Predict) to generate this.';
+
+function ReliabilitySection({ reliability }) {
+  if (!reliability) return null;
+
+  if (reliability.unavailable) {
+    return (
+      <section aria-labelledby="reliability-score">
+        <SectionHeading id="reliability-score">Reliability score</SectionHeading>
+        <Card>
+          <p className="text-sm text-text-secondary">
+            Metrics weren&rsquo;t available when this dataset was last processed. {METRICS_REPROCESS_NOTE}
+          </p>
+        </Card>
+      </section>
+    );
+  }
+
+  const { value, confidence, breakdown } = reliability;
+  const components = breakdown?.components ? Object.values(breakdown.components) : [];
+
+  return (
+    <section aria-labelledby="reliability-score">
+      <SectionHeading id="reliability-score">Reliability score</SectionHeading>
+      <Card>
+        <div className="flex items-center gap-3 mb-1">
+          <div className="p-2 rounded-lg bg-bg-tertiary text-accent shrink-0">
+            <Gauge size={18} aria-hidden="true" />
+          </div>
+          <p className="text-lg font-bold text-text-primary tracking-tight">
+            {Math.round(value)}/100 &mdash; {CONFIDENCE_LABEL[confidence] || 'Confidence'}
+          </p>
+        </div>
+        <p className="text-sm text-text-secondary mt-1 mb-4">
+          This score reflects how much you can trust these predictions.
+        </p>
+        {components.length > 0 ? (
+          <ul className="grid gap-2.5">
+            {components.map((component, i) => {
+              const style = RELIABILITY_TAG_STYLE[component.tag] || RELIABILITY_TAG_STYLE.caution;
+              const { Icon } = style;
+              return (
+                <li key={i} className="flex items-start gap-2.5">
+                  <Icon size={16} className={cn('shrink-0 mt-0.5', style.className)} aria-hidden="true" />
+                  <span className="text-sm text-text-secondary leading-relaxed">{component.text}</span>
+                </li>
+              );
+            })}
+          </ul>
+        ) : (
+          // The score itself is real (persisted), but this run predates the
+          // plain-language breakdown -- say so instead of an empty list.
+          <p className="text-sm text-text-tertiary">
+            A detailed breakdown wasn&rsquo;t saved for this run. {METRICS_REPROCESS_NOTE}
+          </p>
+        )}
+      </Card>
+    </section>
+  );
+}
+
+// Small stat tiles styled like Portfolio pulse's MetricCard tiles (same
+// border/radius/uppercase-label pattern), not MetricCard itself: a "Not
+// available" degraded-mode string can't go through MetricCard's CountUp,
+// which always renders a number.
+function ImpactStat({ label, value, sub }) {
+  return (
+    <div className="rounded-xl border border-border bg-bg-card p-5">
+      <p className="text-xs font-medium text-text-tertiary uppercase tracking-wider">{label}</p>
+      <p className="text-2xl font-bold text-text-primary tracking-tight tabular-nums mt-2">{value}</p>
+      {sub && <p className="text-xs text-text-tertiary mt-1">{sub}</p>}
+    </div>
+  );
+}
+
+// Always visible, keyed to the active dataset -- same rationale as
+// ReliabilitySection above. Degraded mode (no revenue field mapped) renders
+// its own clear message rather than hiding the section or showing a $0.
+function MarketImpactSection({ marketImpact }) {
+  if (!marketImpact) return null;
+
+  if (marketImpact.unavailable) {
+    return (
+      <section aria-labelledby="market-impact">
+        <SectionHeading id="market-impact">Market impact</SectionHeading>
+        <Card>
+          <p className="text-sm text-text-secondary">
+            Market impact wasn&rsquo;t available when this dataset was last processed. {METRICS_REPROCESS_NOTE}
+          </p>
+        </Card>
+      </section>
+    );
+  }
+
+  const {
+    churnRatePct, atRiskCount, totalCustomers, isEstimated,
+    projectedAnnualLoss, vsBenchmarkRatio, impactHeadline, explanation,
+  } = marketImpact;
+
+  // Only the fully degenerate case (no customers scored at all) ever leaves
+  // this null -- a missing revenue field gets an industry-average estimate
+  // instead, never a blank "Not available" (see generic/metrics_agent.py).
+  const lossValue = projectedAnnualLoss == null ? 'Not available' : formatCurrency(projectedAnnualLoss);
+  const lossSub = projectedAnnualLoss == null
+    ? 'not enough data to estimate'
+    : isEstimated
+      ? 'estimated — no billing field mapped'
+      : 'if at-risk customers churn';
+
+  return (
+    <section aria-labelledby="market-impact">
+      <SectionHeading id="market-impact">Market impact</SectionHeading>
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-4">
+        <ImpactStat label="Churn rate" value={`${churnRatePct}%`} sub={`${atRiskCount} of ${totalCustomers} customers`} />
+        <ImpactStat
+          label={isEstimated ? 'Projected annual loss (estimated)' : 'Projected annual loss'}
+          value={lossValue}
+          sub={lossSub}
+        />
+        <ImpactStat
+          label="Vs. industry benchmark"
+          value={vsBenchmarkRatio != null ? `${vsBenchmarkRatio.toFixed(1)}x` : '—'}
+          sub="typical rate for reference"
+        />
+      </div>
+      <Card>
+        <div className="flex items-center gap-3 mb-1">
+          <div className="p-2 rounded-lg bg-bg-tertiary text-accent shrink-0">
+            <Globe2 size={18} aria-hidden="true" />
+          </div>
+          {/* impactHeadline already carries its confidence qualifier, e.g.
+              "Moderate Business Impact (Estimated)" -- never shown bare
+              unless it's backed by the dataset's own, largely-complete
+              revenue data. See metrics_agent._impact_headline(). */}
+          <p className="text-lg font-bold text-text-primary tracking-tight">
+            {churnRatePct}% churn rate &mdash; {impactHeadline}
+          </p>
+        </div>
+        <div className="space-y-2.5 mt-3">
+          {explanation.split('\n\n').map((paragraph, i) => (
+            <p key={i} className="text-sm text-text-secondary leading-relaxed">{paragraph}</p>
+          ))}
+        </div>
+      </Card>
+    </section>
+  );
+}
 
 const RISK_TIERS = ['low', 'medium', 'high', 'critical'];
 
@@ -423,17 +591,18 @@ export default function DashboardPage() {
           >
             {kpis.map((kpi, i) => {
               const g = metric(kpi.key);
+              const kpiData = metrics.kpis[kpi.key];
               return (
                 <MetricCard
                   key={kpi.key}
                   title={g.label}
                   description={g.description}
                   help={g.help}
-                  value={metrics.kpis[kpi.key].value}
+                  value={kpiData.value}
                   format={kpi.format}
                   icon={kpi.icon}
                   // An empty list isn't worth a link.
-                  action={kpi.drill && metrics.kpis[kpi.key].value > 0 ? { ...kpi.drill, state: backHere } : undefined}
+                  action={kpi.drill && kpiData.value > 0 ? { ...kpi.drill, state: backHere } : undefined}
                   delay={i * 0.05}
                 />
               );
@@ -778,6 +947,15 @@ export default function DashboardPage() {
           </Button>
         </Card>
       </section>
+
+      {/* 5. Can these numbers be trusted, and what does the churn ripple out
+          into -- appended below every existing graph on this page, computed
+          for whichever dataset is currently active, fresh or reopened from
+          history (see reopen_dataset_history() / get_dashboard() in
+          dataset_routes.py). Always-visible plain-language text, not a
+          hover/click reveal -- meant to be read, not discovered. */}
+      <ReliabilitySection reliability={metrics?.kpis?.reliabilityScore} />
+      <MarketImpactSection marketImpact={metrics?.marketImpact} />
     </div>
   );
 }

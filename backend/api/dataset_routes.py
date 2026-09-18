@@ -30,6 +30,7 @@ from ..agents import business_rules  # pure Python, no optional deps -- safe to 
 from ..generic import artifact_registry
 from ..generic import drift as drift_util
 from ..generic import fingerprint as fingerprint_util
+from ..generic import metrics_agent
 from ..generic import predictor as generic_predictor
 from ..generic import preprocessing as generic_preprocessing
 from ..generic import explainer as generic_explainer
@@ -70,7 +71,7 @@ _outreach_fingerprints_in_progress: set = set()
 # never to a broken /predict.
 try:
     from ..db.database import SessionLocal, get_db
-    from ..db.models import ActivityEvent, CrmConnection, RetrainEvent
+    from ..db.models import ActivityEvent, CrmConnection, DatasetMetrics, RetrainEvent
     from ..db.models import Dataset as DatasetRow
     from ..db.models import TrainedModel
     from .auth_routes import (
@@ -1294,6 +1295,71 @@ def _persist_predictions(
         _safe_close(db)
 
 
+def _persist_dataset_metrics(current_user, fingerprint: str, metrics: Optional[Dict[str, Any]]) -> None:
+    """Upserts generic/metrics_agent.py's output against this dataset's row --
+    one row per dataset (DatasetMetrics.dataset_id is unique), overwritten on
+    every re-predict since only the latest run's numbers are ever shown.
+
+    Same lookup-by-fingerprint pattern as _persist_predictions(), so this is
+    naturally a no-op for the REUSE_MODEL path (whose "fingerprint" is a
+    registry cache key, never written to TrainedModel.fingerprint, so no row
+    is ever found) and for anonymous/no-DB usage -- consistent with how every
+    other persistence helper in this file already degrades.
+    """
+    if current_user is None or metrics is None:
+        return
+    db = SessionLocal()
+    try:
+        row = (
+            db.query(TrainedModel)
+            .join(DatasetRow, TrainedModel.dataset_id == DatasetRow.id)
+            .filter(DatasetRow.user_id == current_user.id, TrainedModel.fingerprint == fingerprint)
+            .order_by(TrainedModel.trained_at.desc())
+            .first()
+        )
+        if row is None:
+            return
+        existing = db.query(DatasetMetrics).filter(DatasetMetrics.dataset_id == row.dataset_id).first()
+        if existing is None:
+            existing = DatasetMetrics(dataset_id=row.dataset_id)
+            db.add(existing)
+        existing.revenue_at_risk = metrics.get("revenueAtRisk")
+        existing.reliability_score = metrics.get("reliabilityScore")
+        existing.market_impact_severity = metrics.get("marketImpactSeverity")
+        existing.market_impact_explanation = metrics.get("marketImpactExplanation")
+        existing.component_breakdown = _json_safe(metrics.get("componentBreakdown"))
+        existing.computed_at = datetime.utcnow()
+        db.commit()
+    except Exception:  # noqa: BLE001 -- best-effort persistence, see docstring
+        logger.warning("Failed to persist dataset metrics for fingerprint %s", fingerprint, exc_info=True)
+        db.rollback()
+    finally:
+        _safe_close(db)
+
+
+def _dataset_metrics_from_row(row) -> Optional[Dict[str, Any]]:
+    """Rebuilds compute_dataset_metrics()'s return shape from a persisted
+    DatasetMetrics row -- used wherever a dataset's metrics are read back
+    without a fresh /predict (history listing, reopening a past dataset from
+    history), so both a freshly computed and a persisted-then-reloaded run
+    render identically. confidenceLabel/lowConfidence are derived from the
+    stored score via the same rubric a fresh computation uses, rather than
+    duplicating (and risking drifting from) a second stored copy of it.
+    """
+    if row is None:
+        return None
+    confidence_label, low_confidence = metrics_agent.confidence_label_for(row.reliability_score)
+    return {
+        "revenueAtRisk": row.revenue_at_risk,
+        "reliabilityScore": row.reliability_score,
+        "confidenceLabel": confidence_label,
+        "lowConfidence": low_confidence,
+        "marketImpactSeverity": row.market_impact_severity,
+        "marketImpactExplanation": row.market_impact_explanation,
+        "componentBreakdown": row.component_breakdown,
+    }
+
+
 def _score_with_reused_model(
     entry: DatasetEntry,
     df: pd.DataFrame,
@@ -1831,6 +1897,18 @@ def run_prediction(
         detail=f"Trained a model on {entry.filename} ({len(result.customers)} customers, {result.training_source}).",
     )
 
+    # Metrics Agent: revenue at risk / market impact / reliability score for
+    # this run (see generic/metrics_agent.py). Placed here -- after scoring
+    # and explanation have produced `result`, before the conditional
+    # auto-outreach step below -- deliberately mirrors "after Explain, before
+    # Outreach" from a graph-based pipeline, even though this codebase's real
+    # per-dataset flow isn't graph-based (see the implementation plan).
+    entry.dataset_metrics = metrics_agent.compute_dataset_metrics(
+        entry, result, MODEL_FEATURE_KEYS + OPTIONAL_FEATURE_KEYS
+    )
+    if DB_AVAILABLE:
+        _persist_dataset_metrics(current_user, result.fingerprint, entry.dataset_metrics)
+
     # Eligible customers (see business_rules.MIN_RISK_TIER_FOR_AUTO_OUTREACH)
     # get outreach drafted automatically, in the background, so the queue is
     # already populated by the time anyone opens Outreach -- not triggered by
@@ -1844,7 +1922,7 @@ def run_prediction(
     return _build_predict_response(dataset_id, entry, result)
 
 
-def _dataset_history_query(db: Session, user_id: str) -> tuple[List[DatasetRow], Dict[str, Any]]:
+def _dataset_history_query(db: Session, user_id: str) -> tuple[List[DatasetRow], Dict[str, Any], Dict[str, Any]]:
     """The actual reads behind GET /datasets/history, factored out so both
     the fast (shared-session) path and its fresh-connection retry below can
     run the exact same query."""
@@ -1888,7 +1966,18 @@ def _dataset_history_query(db: Session, user_id: str) -> tuple[List[DatasetRow],
             # First one seen per dataset_id is the latest, thanks to the
             # order_by above -- never overwritten by an older run.
             latest_by_dataset.setdefault(model.dataset_id, model)
-    return rows, latest_by_dataset
+
+    dataset_metrics_by_dataset: Dict[str, Any] = {}
+    if dataset_ids:
+        metric_rows = (
+            db.query(DatasetMetrics)
+            .filter(DatasetMetrics.dataset_id.in_(dataset_ids))
+            .all()
+        )
+        # dataset_id is unique on this table (one row per dataset, upserted
+        # by _persist_dataset_metrics), so no "latest of several" step needed.
+        dataset_metrics_by_dataset = {m.dataset_id: m for m in metric_rows}
+    return rows, latest_by_dataset, dataset_metrics_by_dataset
 
 
 @router.get("/datasets/history")
@@ -1914,11 +2003,11 @@ def dataset_history(current_user=Depends(get_current_user_fast), db: Session = D
         raise HTTPException(503, "Dataset history needs a database, which isn't configured on this server.")
 
     try:
-        rows, latest_by_dataset = _dataset_history_query(db, current_user.id)
+        rows, latest_by_dataset, dataset_metrics_by_dataset = _dataset_history_query(db, current_user.id)
     except OperationalError:
         retry_db = SessionLocal()
         try:
-            rows, latest_by_dataset = _dataset_history_query(retry_db, current_user.id)
+            rows, latest_by_dataset, dataset_metrics_by_dataset = _dataset_history_query(retry_db, current_user.id)
         except OperationalError as exc:
             raise HTTPException(503, "Couldn't reach the database. Please try again in a moment.") from exc
         finally:
@@ -1927,6 +2016,7 @@ def dataset_history(current_user=Depends(get_current_user_fast), db: Session = D
     out = []
     for row in rows:
         latest_model = latest_by_dataset.get(row.id)
+        dataset_metrics_row = dataset_metrics_by_dataset.get(row.id)
         out.append({
             "id": row.id,
             "filename": row.filename,
@@ -1947,6 +2037,9 @@ def dataset_history(current_user=Depends(get_current_user_fast), db: Session = D
                 if latest_model
                 else None
             ),
+            # From generic/metrics_agent.py, via _persist_dataset_metrics() --
+            # distinct from `metrics` above, which is model test metrics.
+            "datasetMetrics": _dataset_metrics_from_row(dataset_metrics_row),
             # Whether GET /datasets/history/{id}/predictions has anything
             # to return -- lets the frontend show/hide a "view
             # predictions" action per row without a second round trip.
@@ -2081,6 +2174,19 @@ def reopen_dataset_history(
     entry.fingerprint = latest_model.fingerprint
     entry.top_drivers = extra.get("topDrivers")
 
+    # Without this, reopening a past dataset from history left
+    # entry.dataset_metrics at its dataclass default of None even though a
+    # DatasetMetrics row already existed for it -- the Reliability Score and
+    # Market Impact sections would silently disappear the moment a user
+    # switched away from whichever dataset was most recently /predict'd in
+    # this server process, making it look like metrics only ever worked for
+    # "one dataset" rather than for every dataset that had actually been
+    # trained.
+    dataset_metrics_row = (
+        db.query(DatasetMetrics).filter(DatasetMetrics.dataset_id == dataset_row.id).first()
+    )
+    entry.dataset_metrics = _dataset_metrics_from_row(dataset_metrics_row)
+
     restored_drafts = latest_model.outreach_drafts or []
     entry.outreach_drafts = restored_drafts
     entry.auto_outreach_state = "done"
@@ -2141,24 +2247,25 @@ def delete_dataset_history(
     /datasets/history* route: knowing a row's id is never enough on its own
     to reach another user's data.
 
-    Every TrainedModel row for this dataset goes with it. This uses two
-    explicit bulk DELETE statements (trained_models first, then the dataset
-    row -- there's no DB-level ON DELETE CASCADE on that foreign key, only
-    the ORM relationship's cascade="all, delete-orphan", which is what the
-    bulk statements below replace) rather than `Session.delete(dataset_row)`,
-    on purpose: that ORM path tracks the object and, at flush, asserts
-    exactly one row matched its DELETE -- which is exactly what a second,
-    racing request for the same row (a double click, a retried request) used
-    to violate, logging `SAWarning: DELETE statement ... expected to delete
+    Every TrainedModel and DatasetMetrics row for this dataset goes with it.
+    This uses three explicit bulk DELETE statements (trained_models and
+    dataset_metrics first, then the dataset row -- neither foreign key has a
+    DB-level ON DELETE CASCADE, only the ORM relationship's
+    cascade="all, delete-orphan" on TrainedModel, which is what the bulk
+    statements below replace) rather than `Session.delete(dataset_row)`, on
+    purpose: that ORM path tracks the object and, at flush, asserts exactly
+    one row matched its DELETE -- which is exactly what a second, racing
+    request for the same row (a double click, a retried request) used to
+    violate, logging `SAWarning: DELETE statement ... expected to delete
     1 row(s); 0 were matched` for both tables while still reporting success.
     A plain bulk DELETE ... WHERE has no such expectation: matching zero rows
     is a normal, silent outcome, and its returned row count is what this
     function uses below to tell "I deleted it" apart from "it was already
     gone" -- both are reported as a clean, definite result, never a warning.
 
-    Both statements run against the SAME session and commit together, so a
+    All statements run against the SAME session and commit together, so a
     process crash (or anything else) between them can't leave an orphaned
-    trained_models row with no dataset to point at.
+    trained_models or dataset_metrics row with no dataset to point at.
 
     get_current_user_fast + its own `Depends(get_db)` share one database
     round trip for the sign-in check and this endpoint's own query/delete --
@@ -2182,9 +2289,13 @@ def delete_dataset_history(
 
     fingerprint = dataset_row.fingerprint
 
-    # Child rows first (the FK has no DB-level cascade), then the dataset
-    # row itself -- both bulk statements, both in this one transaction.
+    # Child rows first (neither FK has DB-level cascade), then the dataset
+    # row itself -- all bulk statements, all in this one transaction. Same
+    # reasoning as TrainedModel below applies to DatasetMetrics: without
+    # this, deleting a dataset that has a Reliability Score/Market Impact
+    # row (generic/metrics_agent.py) fails with a ForeignKeyViolation.
     db.query(TrainedModel).filter(TrainedModel.dataset_id == dataset_row_id).delete(synchronize_session=False)
+    db.query(DatasetMetrics).filter(DatasetMetrics.dataset_id == dataset_row_id).delete(synchronize_session=False)
     deleted_datasets = (
         db.query(DatasetRow)
         .filter(DatasetRow.id == dataset_row_id, DatasetRow.user_id == current_user.id)
@@ -2289,7 +2400,64 @@ def get_dashboard():
         revenue_at_risk = round(sum(c["revenueAtRisk"] or 0 for c in at_risk), 2)
         kpis["revenueAtRisk"] = {"value": revenue_at_risk}
 
-    return {"kpis": kpis, "sparklines": {}, "dataset": _dataset_context(entry)}
+    # Reliability Score / Market Impact Explanation, from
+    # generic/metrics_agent.py (see run_prediction() and, for a dataset
+    # reopened from history rather than freshly /predict'd,
+    # reopen_dataset_history()).
+    #
+    # A dataset reopened from history can predate either feature, or predate
+    # a shape change within this same feature (component_breakdown used to be
+    # a flat {schemaCompleteness: {...}, ...} dict before the plain-language
+    # rewrite added the "reliability"/"marketImpact" nesting, and before
+    # Market Impact Explanation replaced the old market_impact_score float).
+    # A freshly-trained dataset always has the full current shape (this run's
+    # compute_dataset_metrics() call produces it unconditionally), so none of
+    # the "unavailable" branches below ever fire for that path -- only for a
+    # persisted row written by an older version of this code.
+    dm = entry.dataset_metrics or {}
+    breakdown = dm.get("componentBreakdown") or {}
+    reliability_score = dm.get("reliabilityScore")
+    reliability_components = breakdown.get("reliability")
+    market_impact_data = breakdown.get("marketImpact")
+
+    if reliability_score is not None:
+        kpis["reliabilityScore"] = {
+            "value": reliability_score,
+            "confidence": dm.get("confidenceLabel"),
+            "lowConfidence": dm.get("lowConfidence"),
+            # Plain-language checklist (narrative + one tagged line per
+            # signal) -- see metrics_agent._reliability_score(). None when
+            # the score itself is real but was persisted by an older,
+            # flat-shaped component_breakdown -- the frontend shows a short
+            # "reprocess to see the breakdown" note instead of an empty list.
+            "breakdown": reliability_components,
+        }
+    else:
+        # get_dashboard() only ever runs on a trained dataset (_trained_or_409
+        # above), so reaching here always means "trained, but no reliability
+        # score was ever computed/persisted for it" -- an old dataset from
+        # before the Metrics Agent existed at all, not the fresh-upload path.
+        kpis["reliabilityScore"] = {"unavailable": True}
+
+    if market_impact_data is not None:
+        # A distinct top-level section, not a kpis.* entry: unlike the
+        # other cards here, this is a severity label + a few pulled-out
+        # numbers + a full paragraph, not a single big number a
+        # MetricCard tile can represent.
+        market_impact = {
+            "severity": dm.get("marketImpactSeverity"),
+            "explanation": dm.get("marketImpactExplanation"),
+            **market_impact_data,
+        }
+    else:
+        market_impact = {"unavailable": True}
+
+    return {
+        "kpis": kpis,
+        "sparklines": {},
+        "marketImpact": market_impact,
+        "dataset": _dataset_context(entry),
+    }
 
 
 @router.get("/dashboard/risk-distribution")

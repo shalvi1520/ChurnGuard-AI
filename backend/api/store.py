@@ -72,6 +72,11 @@ class DatasetEntry:
     # Computed once, right after training, on a capped sample.
     top_drivers: Optional[List[Dict[str, Any]]] = None
 
+    # Computed once, right after training, by generic/metrics_agent.py:
+    # {revenueAtRisk, marketImpactScore, reliabilityScore, confidenceLabel,
+    # lowConfidence, componentBreakdown}. None until a /predict has run.
+    dataset_metrics: Optional[Dict[str, Any]] = None
+
     # Set only when this run scored against a REUSE_MODEL candidate (see
     # resolve_training_eligibility() in dataset_routes.py): {trainedAt,
     # driftState}. None for a model trained fresh on this exact data, since
