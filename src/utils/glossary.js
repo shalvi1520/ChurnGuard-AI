@@ -110,7 +110,7 @@ export const METRICS = {
   },
   shapContribution: {
     label: 'Feature Contributions',
-    description: 'How much each factor moves this customer\'s risk up or down',
+    description: 'Powered by SHAP, a widely trusted technique for explaining individual model predictions',
     help: 'Each bar is one factor\'s real SHAP effect on this customer\'s score. Bars to the right push risk up, bars to the left pull it down, and longer bars matter more.',
   },
   riskByPlan: {

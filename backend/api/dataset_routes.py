@@ -3005,6 +3005,8 @@ def get_explanation(customer_id: str):
         for d in top5
     ]
 
+    baseline_risk = round(entry.explanation_base_value.get(customer_id, 0) * 100, 1)
+
     if customer_id not in entry.ai_explanations:
         try:
             from ..llm import explain_generator  # optional extra -- see module docstring
@@ -3014,19 +3016,20 @@ def get_explanation(customer_id: str):
                 for f in features_out
             ]
             result = explain_generator.generate_explanation_summary(
-                customer_id, customer["churnProbability"], pretty
+                customer_id, customer["churnProbability"], baseline_risk, pretty
             )
             entry.ai_explanations[customer_id] = result["summary"]
-        except (ImportError, RuntimeError):
+        except (ImportError, RuntimeError) as exc:
             # No LLM provider configured, or langchain isn't installed. The
             # SHAP breakdown above is the real explanation either way; the
-            # written summary is a convenience on top of it.
-            pass
+            # written summary is a convenience on top of it -- but logged, so a
+            # missing summary is never silent.
+            logger.warning("Plain-English explanation unavailable for %s: %s", customer_id, exc)
 
     return {
         "customerId": customer_id,
         "churnProbability": customer["churnProbability"],
-        "baselineRisk": round(entry.explanation_base_value.get(customer_id, 0) * 100, 1),
+        "baselineRisk": baseline_risk,
         "features": features_out,
         "aiExplanation": entry.ai_explanations.get(customer_id),
     }

@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useSearchParams, useLocation } from 'react-router-dom';
-import { AlertTriangle, ArrowRight, Sparkles, ChevronDown } from 'lucide-react';
+import { AlertTriangle, ArrowRight, Sparkles } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Cell, CartesianGrid, Tooltip, ReferenceLine } from 'recharts';
 import Card, { CardHeader, CardTitle } from '../components/ui/Card';
 import ChartCard from '../components/ui/ChartCard';
@@ -12,7 +12,6 @@ import EmptyState from '../components/ui/EmptyState';
 import PageTrail from '../components/ui/PageTrail';
 import RetentionFlow from '../components/ui/RetentionFlow';
 import { SkeletonChart } from '../components/ui/Skeleton';
-import ModelArchitecture from '../components/ModelArchitecture';
 import { explainabilityService, customerService } from '../services/api';
 import { getRiskTier } from '../utils/helpers';
 import { metric } from '../utils/glossary';
@@ -45,7 +44,6 @@ export default function ExplainabilityPage() {
   const [explanation, setExplanation] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
-  const [openFeature, setOpenFeature] = useState(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -170,6 +168,29 @@ export default function ExplainabilityPage() {
             </div>
           </Card>
 
+          {/* The plain-language answer leads -- a non-technical reader gets
+              the point before any chart or raw factor list. */}
+          {explanation.aiExplanation && (
+            <Card>
+              <CardHeader>
+                <div className="flex items-center gap-2">
+                  <div className="w-8 h-8 rounded-lg bg-accent/10 flex items-center justify-center">
+                    <Sparkles size={16} className="text-accent" />
+                  </div>
+                  <div>
+                    <CardTitle>The same analysis, in plain English</CardTitle>
+                    <p className="text-xs text-text-tertiary mt-0.5">
+                      An LLM-written summary of the real factors below — it can only reference what's shown here.
+                    </p>
+                  </div>
+                </div>
+              </CardHeader>
+              <div className="p-4 rounded-lg bg-bg-tertiary/30 border border-border">
+                <p className="text-sm text-text-secondary leading-relaxed">{explanation.aiExplanation}</p>
+              </div>
+            </Card>
+          )}
+
           {/* Factor contributions */}
           <ChartCard metricKey="shapContribution" isEmpty={chartData.length === 0}>
             <div className="flex flex-wrap items-center gap-4 mb-3 text-[11px] text-text-tertiary">
@@ -183,9 +204,18 @@ export default function ExplainabilityPage() {
             </div>
             <div className="h-80">
               <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={chartData} layout="vertical" margin={{ left: 20 }}>
+                <BarChart data={chartData} layout="vertical" margin={{ left: 20, bottom: 14 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#2A2F42" horizontal={false} />
-                  <XAxis type="number" tick={{ fontSize: 11, fill: '#6B7490' }} axisLine={false} tickLine={false} domain={[-0.15, 0.4]} />
+                  <XAxis
+                    type="number"
+                    tick={{ fontSize: 11, fill: '#6B7490' }}
+                    axisLine={false}
+                    tickLine={false}
+                    domain={[-0.15, 0.4]}
+                    // The raw numbers alone carry no unit -- names the scale
+                    // without changing what it measures.
+                    label={{ value: 'Impact on churn risk', position: 'insideBottom', offset: -2, fontSize: 10, fill: '#6B7490' }}
+                  />
                   <ReferenceLine x={0} stroke="#6B7490" strokeWidth={1} />
                   <YAxis type="category" dataKey="feature" tick={{ fontSize: 12, fill: '#9BA3B8' }} width={160} axisLine={false} tickLine={false} />
                   <Tooltip content={({ active, payload }) => active && payload?.[0] ? (
@@ -211,68 +241,34 @@ export default function ExplainabilityPage() {
               </ResponsiveContainer>
             </div>
 
-            {/* Factor list - open one to see what was actually measured */}
+            {/* Factor list -- one compact row per factor. The reasoning behind
+                each one lives in the plain-English summary above. */}
             <div className="mt-5 border-t border-border pt-4">
-              <p className="text-xs text-text-tertiary mb-2">Select a factor to see what was measured.</p>
               <ul className="grid gap-1.5">
-                {explanation.features.map((f, i) => {
-                  const isOpen = openFeature === i;
-                  return (
-                    <li key={`${f.feature}-${i}`} className="rounded-lg border border-border/60 bg-bg-tertiary/20">
-                      <button
-                        type="button"
-                        onClick={() => setOpenFeature(isOpen ? null : i)}
-                        aria-expanded={isOpen}
-                        className="w-full flex items-center justify-between gap-3 py-2.5 px-3 text-left cursor-pointer hover:bg-bg-tertiary/40 rounded-lg transition-colors"
-                      >
-                        <span className="flex items-center gap-3 min-w-0">
-                          <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: f.direction === 'increases' ? '#F97316' : '#4ADE80' }} />
-                          <span className="min-w-0">
-                            <span className="text-sm font-medium text-text-primary">{f.feature}</span>
-                            <span className="text-xs text-text-tertiary ml-2">{f.value}</span>
-                          </span>
+                {explanation.features.map((f, i) => (
+                  <li key={`${f.feature}-${i}`} className="rounded-lg border border-border/60 bg-bg-tertiary/20">
+                    <div className="flex items-center justify-between gap-3 py-2.5 px-3">
+                      <span className="flex items-center gap-3 min-w-0">
+                        <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: f.direction === 'increases' ? '#F97316' : '#4ADE80' }} />
+                        <span className="min-w-0">
+                          <span className="text-sm font-medium text-text-primary">{f.feature}</span>
+                          <span className="text-xs text-text-tertiary ml-2">{f.value}</span>
                         </span>
-                        <span className="flex items-center gap-3 shrink-0">
-                          <Badge variant={f.direction === 'increases' ? 'high' : 'low'} size="xs">
-                            {f.direction === 'increases' ? 'Raises risk' : 'Lowers risk'}
-                          </Badge>
-                          <span className="text-sm font-semibold tabular-nums" style={{ color: f.direction === 'increases' ? '#F97316' : '#4ADE80' }}>
-                            {f.contribution > 0 ? '+' : ''}{f.contribution.toFixed(2)}
-                          </span>
-                          <ChevronDown size={14} className={`text-text-tertiary transition-transform ${isOpen ? 'rotate-180' : ''}`} aria-hidden="true" />
+                      </span>
+                      <span className="flex items-center gap-3 shrink-0">
+                        <Badge variant={f.direction === 'increases' ? 'high' : 'low'} size="xs">
+                          {f.direction === 'increases' ? 'Raises risk' : 'Lowers risk'}
+                        </Badge>
+                        <span className="text-sm font-semibold tabular-nums" style={{ color: f.direction === 'increases' ? '#F97316' : '#4ADE80' }}>
+                          {f.contribution > 0 ? '+' : ''}{f.contribution.toFixed(2)}
                         </span>
-                      </button>
-                      {isOpen && f.description && (
-                        <p className="px-3 pb-3 text-xs text-text-secondary leading-relaxed">{f.description}</p>
-                      )}
-                    </li>
-                  );
-                })}
+                      </span>
+                    </div>
+                  </li>
+                ))}
               </ul>
             </div>
           </ChartCard>
-
-          {/* AI Explanation */}
-          {explanation.aiExplanation && (
-            <Card>
-              <CardHeader>
-                <div className="flex items-center gap-2">
-                  <div className="w-8 h-8 rounded-lg bg-accent/10 flex items-center justify-center">
-                    <Sparkles size={16} className="text-accent" />
-                  </div>
-                  <div>
-                    <CardTitle>The same analysis, in plain English</CardTitle>
-                    <p className="text-xs text-text-tertiary mt-0.5">
-                      An LLM-written summary of the real factors above — it can only reference what's shown here.
-                    </p>
-                  </div>
-                </div>
-              </CardHeader>
-              <div className="p-4 rounded-lg bg-bg-tertiary/30 border border-border">
-                <p className="text-sm text-text-secondary leading-relaxed">{explanation.aiExplanation}</p>
-              </div>
-            </Card>
-          )}
 
           {/* Stage 1 → stage 2. The handover is the point of the page ending. */}
           <Card className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
@@ -291,8 +287,6 @@ export default function ExplainabilityPage() {
               </Button>
             </div>
           </Card>
-
-          <ModelArchitecture />
         </>
       ) : (
         <EmptyState

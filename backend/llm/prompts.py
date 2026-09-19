@@ -66,27 +66,50 @@ def build_messages(customer_id: str, risk_score: float, drivers: List[dict]) -> 
 
 
 EXPLAIN_SYSTEM_PROMPT = (
-    "You are a churn-analytics assistant writing a plain-English summary of why a "
-    "machine learning model scored one customer as it did. You will be given the "
-    "customer's predicted churn probability and the top factors driving that "
-    "score, derived from a real SHAP explanation of the model's prediction.\n\n"
+    "You are a churn-analytics assistant writing a plain-English explanation of why a "
+    "machine learning model scored one customer as it did, for a customer success or "
+    "retention manager who will act on it. You will be given the customer's predicted "
+    "churn probability, the model's baseline risk (its typical prediction before this "
+    "account's own factors are applied), and the top factors driving this account's "
+    "score -- derived from a real SHAP explanation of the model's prediction, given to "
+    "you most significant first.\n\n"
+    "Write flowing prose (no headings, no bullet points, no markdown) that does exactly "
+    "three things, in this order:\n"
+    "1. Open with the risk verdict: state the churn probability plainly and say how it "
+    "compares to the baseline (e.g. how many points above or below typical), so the "
+    "reader immediately knows whether this is an ordinary case or an unusual one.\n"
+    "2. Walk through the top 3-4 factors you were given, in the SAME order they were "
+    "given. For each, go beyond restating that it raises or lowers risk -- give the "
+    "plain business reason that connects the factor's value to the outcome (for "
+    "example, why a lower-commitment plan tends to correlate with higher churn -- lower "
+    "switching cost, less investment in the relationship -- or why long tenure tends to "
+    "be protective).\n"
+    "3. Close with exactly ONE concrete, actionable insight or pattern this account's "
+    "particular combination of factors points to -- something a retention manager could "
+    "actually do or watch for, not a restatement of the numbers already given.\n\n"
     "Rules:\n"
-    "- Reference ONLY the factors provided to you. Do not invent, assume, or "
-    "speculate about any other reason the customer might be at risk.\n"
-    "- Do not mention SHAP, KernelExplainer, or other technical/statistical "
-    "implementation terms -- write for a customer success manager, not a data "
-    "scientist.\n"
-    "- Be specific about the factor values you were given.\n"
-    "- 3-5 sentences, factual and direct."
+    "- Reference ONLY the factors and numbers provided to you. Do not invent, assume, or "
+    "speculate about any fact about this specific customer beyond what's given here -- "
+    "no guessing at their industry, usage patterns, support history, or anything else "
+    "not stated.\n"
+    "- Your business reasoning in step 2 must stay general and plausible -- why a factor "
+    "like this commonly relates to churn -- never a specific claim about what this "
+    "customer personally did, thought, said, or experienced.\n"
+    "- Do not mention SHAP, KernelExplainer, base values, or other technical/statistical "
+    "implementation terms -- write for a customer success manager, not a data scientist.\n"
+    "- Be specific about the factor values you were given, not vague ('several factors').\n"
+    "- Concise: 4-6 sentences total. A shorter, sharper explanation beats a longer, "
+    "padded one -- never add filler just to reach a length."
 )
 
 EXPLAIN_USER_PROMPT_TEMPLATE = (
     "Customer ID: {customer_id}\n"
     "Predicted churn risk: {risk_score:.0%}\n"
+    "Model baseline risk (before this account's own factors): {baseline_risk:.0%}\n"
     "Top factors, most significant first (positive effect = pushes risk up, "
     "negative = pulls risk down):\n"
     "{driver_lines}\n\n"
-    "Write the plain-English summary."
+    "Write the plain-English explanation."
 )
 
 
@@ -98,10 +121,13 @@ def format_explain_driver_lines(drivers: List[dict]) -> str:
     return "\n".join(lines)
 
 
-def build_explain_messages(customer_id: str, risk_score: float, drivers: List[dict]) -> List[BaseMessage]:
+def build_explain_messages(
+    customer_id: str, risk_score: float, baseline_risk: float, drivers: List[dict]
+) -> List[BaseMessage]:
     user_content = EXPLAIN_USER_PROMPT_TEMPLATE.format(
         customer_id=customer_id,
         risk_score=risk_score / 100 if risk_score > 1 else risk_score,
+        baseline_risk=baseline_risk / 100 if baseline_risk > 1 else baseline_risk,
         driver_lines=format_explain_driver_lines(drivers),
     )
     return [SystemMessage(content=EXPLAIN_SYSTEM_PROMPT), HumanMessage(content=user_content)]

@@ -1,8 +1,7 @@
 """
 LangChain-based multi-provider LLM client with automatic fallback
-rotation: Groq -> Gemini -> OpenAI. Groq is tried first because it's the
-only provider currently configured (backend/.env); Gemini and OpenAI
-activate automatically the moment their API keys are added -- no code
+rotation: Groq -> Gemini -> OpenAI. A provider is only tried once its API
+key is set (Gemini accepts GEMINI_API_KEY or GOOGLE_API_KEY) -- no code
 changes needed. API keys are read from environment variables only, never
 hardcoded.
 """
@@ -15,30 +14,36 @@ from langchain_core.messages import BaseMessage
 
 load_dotenv()
 load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env"))
+# Repo-root .env too (same path email_sender.py reads): the bare call above stops at backend/.env.
+load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), ".env"))
 
 PROVIDER_ORDER = ("groq", "gemini", "openai")
 
 _ENV_VARS = {
-    "groq": "GROQ_API_KEY",
-    "gemini": "GOOGLE_API_KEY",
-    "openai": "OPENAI_API_KEY",
+    "groq": ("GROQ_API_KEY",),
+    "gemini": ("GEMINI_API_KEY", "GOOGLE_API_KEY"),
+    "openai": ("OPENAI_API_KEY",),
 }
 
 _DEFAULT_MODELS = {
     "groq": "openai/gpt-oss-120b",
-    "gemini": "gemini-1.5-flash",
+    "gemini": "gemini-3.5-flash",  # override with GEMINI_MODEL; Google retires model ids
     "openai": "gpt-4o-mini",
 }
 
 _REQUEST_TIMEOUT_SECONDS = 20
 
 
+def _api_key(provider: str) -> Optional[str]:
+    return next((value for name in _ENV_VARS[provider] if (value := os.getenv(name))), None)
+
+
 def get_available_providers() -> List[str]:
-    return [p for p in PROVIDER_ORDER if os.getenv(_ENV_VARS[p])]
+    return [p for p in PROVIDER_ORDER if _api_key(p)]
 
 
 def _build_client(provider: str) -> Optional[BaseChatModel]:
-    api_key = os.getenv(_ENV_VARS[provider])
+    api_key = _api_key(provider)
     if not api_key:
         return None
 
@@ -50,7 +55,9 @@ def _build_client(provider: str) -> Optional[BaseChatModel]:
         from langchain_google_genai import ChatGoogleGenerativeAI
 
         return ChatGoogleGenerativeAI(
-            model=_DEFAULT_MODELS["gemini"], google_api_key=api_key, timeout=_REQUEST_TIMEOUT_SECONDS
+            model=os.getenv("GEMINI_MODEL") or _DEFAULT_MODELS["gemini"],
+            google_api_key=api_key,
+            timeout=_REQUEST_TIMEOUT_SECONDS,
         )
     if provider == "openai":
         from langchain_openai import ChatOpenAI
@@ -75,6 +82,18 @@ def _fix_mojibake(text: str) -> str:
         return text
 
 
+def _response_text(response) -> str:
+    content = response.content
+    if isinstance(content, str):
+        return content
+    # Gemini 3 and other reasoning models reply with a list of content blocks.
+    return "".join(
+        block if isinstance(block, str) else block.get("text", "")
+        for block in content or []
+        if isinstance(block, str) or block.get("type") == "text"
+    )
+
+
 def invoke_with_fallback(messages: List[BaseMessage]) -> Tuple[str, str]:
     """
     Tries each configured provider in PROVIDER_ORDER until one succeeds.
@@ -82,23 +101,24 @@ def invoke_with_fallback(messages: List[BaseMessage]) -> Tuple[str, str]:
     configured provider fails, or if none are configured at all.
     """
     errors = {}
-    tried_any = False
     for provider in PROVIDER_ORDER:
-        client = _build_client(provider)
-        if client is None:
-            continue
-        tried_any = True
         try:
-            response = client.invoke(messages)
-            return _fix_mojibake(response.content), provider
+            # Built inside the try: a provider that can't even be constructed
+            # (missing package, bad argument) is a failure to fall past, not a
+            # reason to abort the providers after it.
+            client = _build_client(provider)
+            if client is None:
+                continue
+            text = _response_text(client.invoke(messages))
+            if not text.strip():
+                raise ValueError("empty response")
+            return _fix_mojibake(text), provider
         except Exception as exc:  # noqa: BLE001 -- intentional: any single provider's
             # failure (timeout, rate limit, auth, etc.) must fall through to the next
             # provider rather than aborting the whole rotation.
             errors[provider] = str(exc)
-            continue
 
-    if not tried_any:
-        raise RuntimeError(
-            f"No LLM provider is configured. Set one of {list(_ENV_VARS.values())} in backend/.env."
-        )
+    if not errors:
+        key_names = [name for names in _ENV_VARS.values() for name in names]
+        raise RuntimeError(f"No LLM provider is configured. Set one of {key_names} in backend/.env.")
     raise RuntimeError(f"All configured providers failed: {errors}")
