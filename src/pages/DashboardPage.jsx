@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import {
   Users, AlertTriangle, TrendingUp, DollarSign, ArrowRight, ChevronRight, Activity,
-  Gauge, CheckCircle2, XCircle, AlertCircle, Globe2,
+  Gauge, CheckCircle2, XCircle, AlertCircle,
 } from 'lucide-react';
 import {
   PieChart, Pie, Cell, ResponsiveContainer, XAxis, YAxis,
@@ -128,19 +128,44 @@ function ReliabilitySection({ reliability }) {
   );
 }
 
-// Small stat tiles styled like Portfolio pulse's MetricCard tiles (same
-// border/radius/uppercase-label pattern), not MetricCard itself: a "Not
-// available" degraded-mode string can't go through MetricCard's CountUp,
-// which always renders a number.
-function ImpactStat({ label, value, sub }) {
-  return (
-    <div className="rounded-xl border border-border bg-bg-card p-5">
-      <p className="text-xs font-medium text-text-tertiary uppercase tracking-wider">{label}</p>
-      <p className="text-2xl font-bold text-text-primary tracking-tight tabular-nums mt-2">{value}</p>
-      {sub && <p className="text-xs text-text-tertiary mt-1">{sub}</p>}
-    </div>
-  );
-}
+// Icon + colour per severity label generic/metrics_agent.py's
+// _severity_label() returns ("Low" | "Moderate" | "High" | "Critical") --
+// `tier` is the same key getRiskColor()/Badge's own variants use, so this
+// badge is colour-identical to the Churn Risk Distribution donut above,
+// never a second, competing colour language on the same page.
+const MARKET_IMPACT_SEVERITY_STYLE = {
+  Low: { tier: 'low', Icon: CheckCircle2 },
+  Moderate: { tier: 'medium', Icon: AlertCircle },
+  High: { tier: 'high', Icon: AlertTriangle },
+  Critical: { tier: 'critical', Icon: XCircle },
+};
+
+// One concrete next step per severity, not just description -- a
+// non-technical reader should never have to infer for themselves whether a
+// number is fine or not. Keyed off the same severity classification as the
+// badge above, never the raw ratio, so the two can't disagree.
+const MARKET_IMPACT_ACTION_LINE = {
+  Low: 'Your risk is currently manageable — keep monitoring, no urgent action needed.',
+  Moderate: 'This is close to typical for your industry — worth keeping an eye on your highest-risk accounts.',
+  High: 'This is running well above typical for your industry — reviewing your highest-risk accounts soon is recommended.',
+  Critical: 'This is running well above typical for your industry — reviewing your highest-risk accounts soon is recommended.',
+};
+
+// The gauge's domain is 0x-2x the industry benchmark (clamped), and its zone
+// boundaries are the same 0.75x/1.15x cut points generic/metrics_agent.py's
+// _severity_label() classifies Low/Moderate/High on -- so the marker can
+// never land in a zone that disagrees with the severity badge next to it.
+// High and Critical both read as "above typical": a 3-zone gauge has no
+// room for a fourth band, and the badge already carries that finer
+// distinction on its own.
+const MARKET_IMPACT_GAUGE_MAX_RATIO = 2;
+const MARKET_IMPACT_GAUGE_ZONES = [
+  { pct: 37.5, color: 'var(--color-risk-low)' },
+  { pct: 20, color: 'var(--color-risk-medium)' },
+  { pct: 42.5, color: 'var(--color-risk-critical)' },
+];
+
+const ESTIMATE_TOOLTIP = 'Calculated using typical revenue-per-customer for your industry, since no revenue field was included in this upload.';
 
 // Always visible, keyed to the active dataset -- same rationale as
 // ReliabilitySection above. Degraded mode (no revenue field mapped) renders
@@ -162,7 +187,7 @@ function MarketImpactSection({ marketImpact }) {
   }
 
   const {
-    churnRatePct, atRiskCount, totalCustomers, isEstimated,
+    churnRatePct, atRiskCount, totalCustomers, isEstimated, severity,
     projectedAnnualLoss, vsBenchmarkRatio, impactHeadline, explanation,
   } = marketImpact;
 
@@ -176,39 +201,87 @@ function MarketImpactSection({ marketImpact }) {
       ? 'estimated — no billing field mapped'
       : 'if at-risk customers churn';
 
+  const sevStyle = MARKET_IMPACT_SEVERITY_STYLE[severity] || MARKET_IMPACT_SEVERITY_STYLE.Moderate;
+  const actionLine = MARKET_IMPACT_ACTION_LINE[severity] || MARKET_IMPACT_ACTION_LINE.Moderate;
+  const markerPct = vsBenchmarkRatio != null
+    ? Math.min(100, Math.max(0, (vsBenchmarkRatio / MARKET_IMPACT_GAUGE_MAX_RATIO) * 100))
+    : null;
+
   return (
     <section aria-labelledby="market-impact">
       <SectionHeading id="market-impact">Market impact</SectionHeading>
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-4">
-        <ImpactStat label="Churn rate" value={`${churnRatePct}%`} sub={`${atRiskCount} of ${totalCustomers} customers`} />
-        <ImpactStat
-          label={isEstimated ? 'Projected annual loss (estimated)' : 'Projected annual loss'}
-          value={lossValue}
-          sub={lossSub}
-        />
-        <ImpactStat
-          label="Vs. industry benchmark"
-          value={vsBenchmarkRatio != null ? `${vsBenchmarkRatio.toFixed(1)}x` : '—'}
-          sub="typical rate for reference"
-        />
-      </div>
       <Card>
-        <div className="flex items-center gap-3 mb-1">
-          <div className="p-2 rounded-lg bg-bg-tertiary text-accent shrink-0">
-            <Globe2 size={18} aria-hidden="true" />
+        {/* Severity, at a glance, before any number -- colour-matched to the
+            Churn Risk Distribution donut so the two never read as separate
+            colour systems on the same page. */}
+        <div className="flex items-center gap-3 flex-wrap mb-1">
+          <Badge variant={sevStyle.tier} size="md" className="inline-flex items-center gap-1.5">
+            <sevStyle.Icon size={13} aria-hidden="true" />
+            {severity} impact
+          </Badge>
+          <p className="text-lg font-bold text-text-primary tracking-tight">{churnRatePct}% churn rate</p>
+        </div>
+        <p className="text-sm text-text-secondary mt-1 mb-4">{impactHeadline}</p>
+
+        {/* The primary visual: where this dataset's churn rate falls versus
+            the industry, not a bare "1.3x" number. */}
+        <div className="mb-5">
+          <div className="relative h-2.5 rounded-full overflow-hidden flex" aria-hidden="true">
+            {MARKET_IMPACT_GAUGE_ZONES.map((zone, i) => (
+              <div key={i} className="h-full" style={{ width: `${zone.pct}%`, backgroundColor: zone.color }} />
+            ))}
+            {markerPct != null && (
+              <div
+                className="absolute top-1/2 h-4 w-4 -translate-y-1/2 -translate-x-1/2 rounded-full border-2 shadow-md"
+                style={{ left: `${markerPct}%`, backgroundColor: 'var(--color-bg-card)', borderColor: 'var(--color-text-primary)' }}
+              />
+            )}
           </div>
-          {/* impactHeadline already carries its confidence qualifier, e.g.
-              "Moderate Business Impact (Estimated)" -- never shown bare
-              unless it's backed by the dataset's own, largely-complete
-              revenue data. See metrics_agent._impact_headline(). */}
-          <p className="text-lg font-bold text-text-primary tracking-tight">
-            {churnRatePct}% churn rate &mdash; {impactHeadline}
+          <div className="flex justify-between text-[10px] text-text-tertiary mt-1.5">
+            <span>Below typical</span>
+            <span>Typical</span>
+            <span>Above typical</span>
+          </div>
+          <p className="sr-only">
+            {vsBenchmarkRatio != null
+              ? `Churn rate is ${vsBenchmarkRatio.toFixed(1)}x the typical industry rate.`
+              : 'No industry benchmark comparison is available for this dataset.'}
           </p>
         </div>
-        <div className="space-y-2.5 mt-3">
+
+        <div className="space-y-2.5">
           {explanation.split('\n\n').map((paragraph, i) => (
             <p key={i} className="text-sm text-text-secondary leading-relaxed">{paragraph}</p>
           ))}
+        </div>
+
+        {/* The one actionable line -- what a non-technical reader should
+            actually do with everything above, not just more description. */}
+        <p className="text-sm font-semibold text-text-primary mt-4">{actionLine}</p>
+
+        {/* The three figures, now supporting detail behind the plain-language
+            read above rather than three equally-weighted boxes. */}
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mt-5 pt-4 border-t border-border">
+          <div>
+            <p className="text-[11px] text-text-tertiary uppercase tracking-wider">Churn rate</p>
+            <p className="text-sm font-semibold text-text-primary tabular-nums mt-0.5">{churnRatePct}%</p>
+            <p className="text-[11px] text-text-tertiary mt-0.5">{atRiskCount} of {totalCustomers} customers</p>
+          </div>
+          <div>
+            <p className="text-[11px] text-text-tertiary uppercase tracking-wider flex items-center gap-1">
+              {isEstimated ? 'Projected annual loss (estimated)' : 'Projected annual loss'}
+              {isEstimated && <InfoTip content={ESTIMATE_TOOLTIP} label="Why this is estimated" size={11} />}
+            </p>
+            <p className="text-sm font-semibold text-text-primary tabular-nums mt-0.5">{lossValue}</p>
+            <p className="text-[11px] text-text-tertiary mt-0.5">{lossSub}</p>
+          </div>
+          <div>
+            <p className="text-[11px] text-text-tertiary uppercase tracking-wider">Vs. industry benchmark</p>
+            <p className="text-sm font-semibold text-text-primary tabular-nums mt-0.5">
+              {vsBenchmarkRatio != null ? `${vsBenchmarkRatio.toFixed(1)}x` : '—'}
+            </p>
+            <p className="text-[11px] text-text-tertiary mt-0.5">typical rate for reference</p>
+          </div>
         </div>
       </Card>
     </section>
@@ -290,72 +363,6 @@ function SectionHeading({ id, children }) {
   );
 }
 
-const DRIFT_BADGE = { none: 'low', moderate: 'medium', high: 'critical' };
-const DRIFT_LABEL = { none: 'Stable', moderate: 'Moderate drift', high: 'High drift' };
-
-// RetrainEvent.trigger_reason values, from backend/db/models.py — the scheduled
-// drift probe behind a CRM connection's auto-retrain, not a per-file upload.
-const RETRAIN_REASON_LABEL = {
-  drift: 'Triggered by data drift',
-  skipped_batch_too_small: 'Skipped — not enough new data yet',
-  skipped_cooldown: 'Skipped — too soon since the last retrain',
-  skipped_no_drift: 'Skipped — data still matched the model',
-  failed: 'Attempted, but failed',
-};
-
-/** Model-level status, distinct from the portfolio-level risk sections below:
- * when the active model was trained, whether the connected data still looks
- * like what it was trained on, and the most recent scheduled-retrain
- * decision for this account. Every field the backend can't honestly compute
- * is reported as "not applicable"/"no history yet" rather than guessed at —
- * see GET /model-health's docstring. */
-function ModelHealthCard({ health }) {
-  if (!health) return null;
-  const { drift, retrain } = health;
-  const latest = retrain?.latest;
-
-  return (
-    <Card>
-      <div className="flex items-center gap-1.5 mb-3">
-        <Activity size={13} className="text-text-tertiary" aria-hidden="true" />
-        <h2 className="text-[11px] font-semibold uppercase tracking-wider text-text-tertiary">Model health</h2>
-      </div>
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <div>
-          <p className="text-[11px] text-text-tertiary">Last trained</p>
-          <p className="text-sm font-semibold text-text-primary mt-0.5">
-            {health.trainedAt ? formatRelativeDate(health.trainedAt) : 'Unknown'}
-          </p>
-        </div>
-        <div>
-          <p className="text-[11px] text-text-tertiary flex items-center gap-1">
-            Data drift
-            <InfoTip content={drift.note} label="About data drift" size={11} />
-          </p>
-          <div className="mt-1">
-            <Badge variant={drift.applicable ? (DRIFT_BADGE[drift.state] || 'default') : 'default'} size="sm">
-              {drift.applicable ? (DRIFT_LABEL[drift.state] || drift.state) : 'Not applicable'}
-            </Badge>
-          </div>
-        </div>
-        <div>
-          <p className="text-[11px] text-text-tertiary">Last retrain decision</p>
-          {latest ? (
-            <>
-              <p className="text-sm font-medium text-text-primary mt-0.5">{formatRelativeDate(latest.triggeredAt)}</p>
-              <p className="text-[11px] text-text-tertiary mt-0.5">
-                {RETRAIN_REASON_LABEL[latest.reason] || latest.reason}
-              </p>
-            </>
-          ) : (
-            <p className="text-sm font-medium text-text-primary mt-0.5">{retrain?.note || 'No retrain activity recorded yet.'}</p>
-          )}
-        </div>
-      </div>
-    </Card>
-  );
-}
-
 // A brand-new dataset's model-health/dashboard data doesn't exist until
 // training actually finishes -- every one of this page's own endpoints
 // 409s ("This dataset hasn't been processed yet") until then. That is a
@@ -381,7 +388,6 @@ export default function DashboardPage() {
   const [riskDistribution, setRiskDistribution] = useState([]);
   const [topDrivers, setTopDrivers] = useState([]);
   const [segmentation, setSegmentation] = useState(null);
-  const [modelHealth, setModelHealth] = useState(null);
   const [segmentView, setSegmentView] = useState(SEGMENT_VIEWS[0].id);
   const { resolvedTheme } = useApp();
   const { stateFrom, drill } = useWorkflowNav();
@@ -412,21 +418,6 @@ export default function DashboardPage() {
         setNotReady(false);
         setLoading(false);
         pollAttemptsRef.current = 0;
-
-        // Model Health is fetched only now, after the data above has
-        // confirmed this dataset is actually trained -- not in parallel
-        // with it. Firing it independently and unconditionally used to mean
-        // it made its own extra 409 whenever this page was reached mid-
-        // training, on top of the four calls above. Still off the page's
-        // loading gate (not awaited here): it needs its own, separately
-        // slow round trip (see get_current_user_fast's docstring), and the
-        // rest of this page has no reason to wait on it -- the card just
-        // fills in a moment later, same as before.
-        dashboardService.getModelHealth()
-          .then((health) => { if (!cancelled) setModelHealth(health); })
-          .catch(() => {
-            // Non-essential card -- the rest of Portfolio & Risk works fine without it.
-          });
       } catch (err) {
         if (cancelled) return;
         if (err?.response?.status === 409) {
@@ -577,7 +568,9 @@ export default function DashboardPage() {
         )}
       </header>
 
-      <ModelHealthCard health={modelHealth} />
+      {/* What this dataset means for the business, up top where a
+          non-technical reader lands first -- see MarketImpactSection above. */}
+      <MarketImpactSection marketImpact={metrics?.marketImpact} />
 
       {/* 1. What is happening */}
       {kpis.length > 0 && (
@@ -948,14 +941,13 @@ export default function DashboardPage() {
         </Card>
       </section>
 
-      {/* 5. Can these numbers be trusted, and what does the churn ripple out
-          into -- appended below every existing graph on this page, computed
-          for whichever dataset is currently active, fresh or reopened from
-          history (see reopen_dataset_history() / get_dashboard() in
-          dataset_routes.py). Always-visible plain-language text, not a
-          hover/click reveal -- meant to be read, not discovered. */}
+      {/* 5. Can these numbers be trusted -- appended below every existing
+          graph on this page, computed for whichever dataset is currently
+          active, fresh or reopened from history (see
+          reopen_dataset_history() / get_dashboard() in dataset_routes.py).
+          Always-visible plain-language text, not a hover/click reveal --
+          meant to be read, not discovered. */}
       <ReliabilitySection reliability={metrics?.kpis?.reliabilityScore} />
-      <MarketImpactSection marketImpact={metrics?.marketImpact} />
     </div>
   );
 }
