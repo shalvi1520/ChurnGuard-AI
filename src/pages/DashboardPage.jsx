@@ -539,6 +539,10 @@ export default function DashboardPage() {
   const { fill, riskTotal, distribution, drivers, tenureRows } = chart;
   const { options: segmentOptions, active: activeSegment, rows: segmentRows } = segment;
   const atRiskCount = metrics?.kpis?.customersAtRisk?.value ?? 0;
+  // Same tiered counts the Churn Risk Distribution donut already draws from
+  // -- not a second source of truth for "how many are Critical".
+  const criticalCount = distribution.find((d) => d.tier === 'critical')?.value ?? 0;
+  const highCount = distribution.find((d) => d.tier === 'high')?.value ?? 0;
 
   // Every drill-down carries "came from Portfolio & Risk", so Customers can
   // offer a named way back -- and the browser's Back lands here too.
@@ -710,7 +714,7 @@ export default function DashboardPage() {
           >
             <div className="h-56">
               <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={drivers} layout="vertical" margin={{ top: 4, right: 12, left: 4, bottom: 0 }}>
+                <BarChart data={drivers} layout="vertical" margin={{ top: 4, right: 12, left: 4, bottom: 14 }}>
                   <CartesianGrid strokeDasharray="3 3" horizontal={false} />
                   <XAxis
                     type="number"
@@ -722,6 +726,15 @@ export default function DashboardPage() {
                        drivers is drawn as full-width bars and reads as "large
                        positive effect" -- the opposite of what it means. */
                     domain={[(min) => Math.min(0, min), (max) => Math.max(0, max)]}
+                    // The raw numbers alone (e.g. 0.00-0.24) carry no unit --
+                    // this names the scale without changing what it measures.
+                    label={{
+                      value: 'Relative impact on churn risk',
+                      position: 'insideBottom',
+                      offset: -2,
+                      fontSize: 10,
+                      fill: 'var(--color-text-tertiary)',
+                    }}
                   />
                   <YAxis
                     type="category"
@@ -930,6 +943,19 @@ export default function DashboardPage() {
             <p className="text-xs text-text-tertiary mt-1">
               Open the customer workspace to search, filter and act on individual accounts.
             </p>
+            {/* One prioritization line, from the same tiered counts the donut
+                above already draws from -- not a new number, just a next step. */}
+            {criticalCount > 0 ? (
+              <p className="text-xs text-text-tertiary mt-1">
+                Start with your {formatNumber(criticalCount)} Critical-risk {criticalCount === 1 ? 'customer' : 'customers'} —
+                {' '}they&rsquo;re both the highest risk and the clearest place to act first.
+              </p>
+            ) : highCount > 0 ? (
+              <p className="text-xs text-text-tertiary mt-1">
+                Start with your {formatNumber(highCount)} High-risk {highCount === 1 ? 'customer' : 'customers'} — they&rsquo;re
+                {' '}the highest risk right now.
+              </p>
+            ) : null}
           </div>
           <Button
             onClick={() => openCustomers(atRiskCount > 0 ? { status: 'at-risk' } : {})}
