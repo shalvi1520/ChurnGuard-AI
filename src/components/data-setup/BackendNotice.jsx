@@ -40,7 +40,7 @@ export default function BackendNotice() {
   return (
     <div
       role="alert"
-      className="rounded-xl border border-risk-critical/30 bg-risk-critical/[0.06] p-4 max-w-2xl"
+      className="rounded-xl border border-risk-critical/30 bg-risk-critical/[0.06] p-4 mx-auto w-full max-w-6xl"
     >
       <div className="flex items-start gap-3">
         <AlertTriangle size={17} className="text-risk-critical mt-0.5 shrink-0" />

@@ -24,6 +24,12 @@ import { connectorService } from '../../services/api';
 
 const PHASE = { PROVIDER: 'provider', CREDENTIALS: 'credentials', SOURCE: 'source' };
 
+// Connectors the backend still serves but that this screen does not offer.
+// Filtered here rather than removed from backend/connectors/: the HTTP
+// endpoint connector and its route stay fully functional for direct API use,
+// it is simply not presented as a choice in the UI.
+const HIDDEN_CONNECTOR_IDS = new Set(['http_endpoint']);
+
 function ProviderCard({ connector, onSelect }) {
   const available = connector.status === 'available';
 
@@ -70,7 +76,7 @@ export default function CrmConnectStep({ onBack, onImported }) {
       .listConnectors()
       .then((res) => {
         if (cancelled) return;
-        setConnectors(res.connectors || []);
+        setConnectors((res.connectors || []).filter((c) => !HIDDEN_CONNECTOR_IDS.has(c.id)));
         setLimits({ defaultLimit: res.defaultLimit, maxLimit: res.maxLimit });
       })
       .catch((err) => {
@@ -133,7 +139,7 @@ export default function CrmConnectStep({ onBack, onImported }) {
 
   if (phase === PHASE.PROVIDER) {
     return (
-      <Card className="max-w-2xl">
+      <Card>
         <div className="flex items-start justify-between gap-4 mb-4">
           <div>
             <h2 className="text-base font-semibold text-text-primary">Connect a CRM or API</h2>
@@ -164,12 +170,15 @@ export default function CrmConnectStep({ onBack, onImported }) {
         {!connectors && !loadError && (
           <div className="space-y-3">
             <Skeleton className="h-20 w-full" />
-            <Skeleton className="h-20 w-full" />
           </div>
         )}
 
         {connectors && (
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div
+            className={`grid gap-3 ${
+              connectors.length > 1 ? 'grid-cols-1 sm:grid-cols-2' : 'grid-cols-1'
+            }`}
+          >
             {connectors.map((c) => (
               <ProviderCard key={c.id} connector={c} onSelect={selectProvider} />
             ))}
@@ -197,7 +206,7 @@ export default function CrmConnectStep({ onBack, onImported }) {
     );
 
     return (
-      <Card className="max-w-2xl">
+      <Card>
         <div className="flex items-start justify-between gap-4 mb-4">
           <div>
             <h2 className="text-base font-semibold text-text-primary">
@@ -218,7 +227,7 @@ export default function CrmConnectStep({ onBack, onImported }) {
           </Button>
         </div>
 
-        <div className="space-y-4">
+        <div className="space-y-4 max-w-xl">
           {provider.credentialFields.map((field) => (
             <div key={field.key}>
               <Input
@@ -278,7 +287,7 @@ export default function CrmConnectStep({ onBack, onImported }) {
   // ---------- choose what to import ----------
 
   return (
-    <Card className="max-w-2xl">
+    <Card>
       <div className="flex items-start justify-between gap-4 mb-4">
         <div>
           <h2 className="text-base font-semibold text-text-primary flex items-center gap-2">
@@ -307,13 +316,15 @@ export default function CrmConnectStep({ onBack, onImported }) {
         </Button>
       </div>
 
-      <Select
-        label="Which records should ChurnGuard analyse?"
-        options={sources.map((s) => ({ value: s.id, label: s.label }))}
-        value={sourceId}
-        placeholder={null}
-        onChange={(e) => setSourceId(e.target.value)}
-      />
+      <div className="max-w-xl">
+        <Select
+          label="Which records should ChurnGuard analyse?"
+          options={sources.map((s) => ({ value: s.id, label: s.label }))}
+          value={sourceId}
+          placeholder={null}
+          onChange={(e) => setSourceId(e.target.value)}
+        />
+      </div>
       {sources.find((s) => s.id === sourceId)?.description && (
         <p className="text-xs text-text-tertiary mt-1.5 leading-relaxed">
           {sources.find((s) => s.id === sourceId).description}

@@ -253,7 +253,7 @@ export default function IssueList({
   const onlyDerivable = issues.length === 0 && suggestion;
 
   return (
-    <div className="space-y-5 max-w-2xl">
+    <div className="space-y-5">
       <Card>
         <div className="flex items-start gap-3">
           <div

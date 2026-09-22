@@ -77,7 +77,7 @@ function asUserError(err) {
  *  the page doesn't jump when the chunk lands. */
 function StepFallback() {
   return (
-    <Card className="max-w-2xl space-y-3">
+    <Card className="space-y-3">
       <Skeleton className="h-4 w-48" />
       <Skeleton className="h-3 w-72" />
       <Skeleton className="h-40 w-full" />
@@ -613,7 +613,7 @@ export default function DataManagementPage() {
       {!complete && <BackendNotice />}
 
       {restoreError && (
-        <Card role="alert" className="max-w-2xl border-risk-critical/30 bg-risk-critical/[0.05]">
+        <Card role="alert" className="mx-auto w-full max-w-6xl border-risk-critical/30 bg-risk-critical/[0.05]">
           <h2 className="text-sm font-semibold text-text-primary">{restoreError.message}</h2>
           <p className="text-xs text-text-secondary mt-1.5 leading-relaxed">{restoreError.hint}</p>
           <Button size="sm" variant="secondary" className="mt-3" onClick={() => navigate('/history')}>
@@ -623,7 +623,7 @@ export default function DataManagementPage() {
       )}
 
       {restoring ? (
-        <Card className="max-w-2xl space-y-3">
+        <Card className="mx-auto w-full max-w-6xl space-y-3">
           <Skeleton className="h-4 w-56" />
           <Skeleton className="h-3 w-80" />
           <Skeleton className="h-24 w-full" />
@@ -636,57 +636,69 @@ export default function DataManagementPage() {
           onViewCustomers={() => navigate('/customers')}
         />
       ) : (
-        <Suspense fallback={<StepFallback />}>
-          {phase === PHASE.CHOOSE && (
-            <SourceSelector
-              onSelect={(key) => setPhase(key === 'crm' ? PHASE.CRM : PHASE.UPLOAD)}
-              onViewHistory={() => navigate('/history')}
-            />
-          )}
+        // The single owner of the setup flow's width. Every step component
+        // used to repeat `max-w-2xl` on its own root -- eight copies of the
+        // same 672px, which read as a shared layout but was not one, so the
+        // column could not be widened from any one place. Those are gone; the
+        // steps now fill whatever this allows.
+        //
+        // Centred rather than flush-left so the remaining margin sits evenly
+        // either side under the full-width DataFlowRail, and capped rather
+        // than removed outright: the thinner steps (the progress list is six
+        // short rows) look stranded stretched across a very wide viewport.
+        <div className="mx-auto w-full max-w-6xl">
+          <Suspense fallback={<StepFallback />}>
+            {phase === PHASE.CHOOSE && (
+              <SourceSelector
+                onSelect={(key) => setPhase(key === 'crm' ? PHASE.CRM : PHASE.UPLOAD)}
+                onViewHistory={() => navigate('/history')}
+              />
+            )}
 
-          {phase === PHASE.UPLOAD && (
-            <UploadStep
-              file={file}
-              onSelectFile={(selected) => {
-                setUploadError(null);
-                setFile(selected);
-              }}
-              onClearFile={() => setFile(null)}
-              onUpload={() => runUpload(file)}
-              onUseDemo={handleUseDemo}
-              onBack={resetFlow}
-              uploading={uploading}
-              progress={progress}
-              error={uploadError}
-              onError={setUploadError}
-            />
-          )}
+            {phase === PHASE.UPLOAD && (
+              <UploadStep
+                file={file}
+                onSelectFile={(selected) => {
+                  setUploadError(null);
+                  setFile(selected);
+                }}
+                onClearFile={() => setFile(null)}
+                onUpload={() => runUpload(file)}
+                onUseDemo={handleUseDemo}
+                onBack={resetFlow}
+                uploading={uploading}
+                progress={progress}
+                error={uploadError}
+                onError={setUploadError}
+              />
+            )}
 
-          {phase === PHASE.CRM && (
-            <CrmConnectStep onBack={resetFlow} onImported={handleImported} />
-          )}
+            {phase === PHASE.CRM && (
+              <CrmConnectStep onBack={resetFlow} onImported={handleImported} />
+            )}
 
-          {phase === PHASE.RUNNING && (
-            <PipelineProgress
-              stageStates={stageStates}
-              error={runError}
-              onRetry={() =>
-                connectedDataset.current ? analyse(connectedDataset.current) : runUpload(file)
-              }
-              onStartOver={resetFlow}
-            />
-          )}
+            {phase === PHASE.RUNNING && (
+              <PipelineProgress
+                stageStates={stageStates}
+                error={runError}
+                onRetry={() =>
+                  connectedDataset.current ? analyse(connectedDataset.current) : runUpload(file)
+                }
+                onStartOver={resetFlow}
+              />
+            )}
 
-          {phase === PHASE.BLOCKED && validation && (
-            <IssueList
-              validation={validation}
-              onStartOver={resetFlow}
-              onDeriveChurn={handleDeriveChurn}
-              derivingChurn={derivingChurn}
-              deriveChurnError={deriveChurnError}
-            />
-          )}
-        </Suspense>
+            {phase === PHASE.BLOCKED && validation && (
+              <IssueList
+                validation={validation}
+                onStartOver={resetFlow}
+                onDeriveChurn={handleDeriveChurn}
+                derivingChurn={derivingChurn}
+                deriveChurnError={deriveChurnError}
+              />
+            )}
+          </Suspense>
+        </div>
       )}
     </div>
   );

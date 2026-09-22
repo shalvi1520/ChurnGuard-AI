@@ -70,7 +70,7 @@ export default function PipelineProgress({
   const percent = Math.round((doneCount / PIPELINE_STAGES.length) * 100);
 
   return (
-    <Card className="max-w-2xl">
+    <Card>
       <div className="mb-5">
         <h2 className="text-base font-semibold text-text-primary">{headline}</h2>
         <p className="text-xs text-text-secondary mt-1 leading-relaxed">{subhead}</p>

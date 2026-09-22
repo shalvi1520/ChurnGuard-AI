@@ -207,7 +207,7 @@ export default function AppLayout({ children }) {
 
   if (presentationMode) {
     return (
-      <div className="min-h-screen bg-bg-primary">
+      <div className="min-h-screen bg-bg-primary app-typography">
         <div className="flex items-center justify-between px-6 py-3 border-b border-border bg-bg-secondary">
           <div className="flex items-center gap-3">
             <Shield size={20} className="text-accent" />
@@ -238,7 +238,7 @@ export default function AppLayout({ children }) {
   }
 
   return (
-    <div className="min-h-screen bg-bg-primary flex">
+    <div className="min-h-screen bg-bg-primary flex app-typography">
       {/* Sidebar */}
       <aside
         className={cn(

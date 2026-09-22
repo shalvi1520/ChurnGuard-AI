@@ -275,3 +275,47 @@
 .tracking-tighter {
   letter-spacing: -0.04em;
 }
+
+/* ============================================
+   Authenticated app typography
+   ============================================
+
+   Scoped to `.app-typography`, which sits on AppLayout's two roots. The
+   landing page is mounted outside AppLayout (src/routes/index.jsx), so it
+   keeps exactly the type it has today.
+
+   Family is deliberately NOT touched: Inter is already loaded in index.html
+   (weights 300-800) and applied on `body`, with antialiasing and Inter's
+   stylistic sets (cv02/cv03/cv04/cv11) already on. There was no system-font
+   fallback to replace and nothing new to load.
+
+   Weight and letter-spacing only -- no size, spacing, colour or layout. */
+
+@layer base {
+  /* Headings that carry no explicit tracking utility -- the 16px semibold
+     card titles, mostly -- read a touch loose at that weight. Inside @layer
+     base on purpose: Tailwind's utilities layer comes afterwards, so any
+     heading that already opts into `tracking-tight` keeps its own value and
+     this applies only where nothing was specified. */
+  .app-typography h1,
+  .app-typography h2,
+  .app-typography h3 {
+    letter-spacing: -0.011em;
+  }
+}
+
+/* Small uppercase section labels ("MEASURED IN YOUR DATA", "RISK LEVEL
+   CONFIGURATION"). At 11-12px, uppercase needs more room between letters
+   than `tracking-wider` (0.05em) gives it to look deliberate rather than
+   cramped. Unlayered so it overrides that utility in one place instead of
+   editing the 25+ components carrying it -- which is also why it is kept to
+   0.07em: the labels grow ~2-4px, comfortably inside their containers.
+
+   Scoped to the `tracking-wider` case and to labels with no tracking utility
+   at all. Anything that deliberately picked a different value keeps it --
+   ExecutiveOverviewPage's `tracking-widest` hero line, for one, which a
+   blanket `.uppercase` rule would have tightened rather than relaxed. */
+.app-typography .uppercase.tracking-wider,
+.app-typography .uppercase:not([class*='tracking-']) {
+  letter-spacing: 0.07em;
+}

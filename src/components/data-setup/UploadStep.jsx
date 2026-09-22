@@ -93,7 +93,7 @@ export default function UploadStep({
   const optionalFields = CHURNGUARD_FIELDS.filter((f) => !f.required);
 
   return (
-    <div className="space-y-5 max-w-2xl">
+    <div className="space-y-5">
       <Card>
         <div className="flex items-start justify-between gap-4 mb-4">
           <div>

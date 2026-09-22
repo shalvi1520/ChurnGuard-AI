@@ -25,13 +25,13 @@ const OPTIONS = [
     icon: Plug,
     label: 'Connect a CRM',
     description: 'Pull customer records directly from a system over its API.',
-    meta: 'HubSpot, HTTP endpoint',
+    meta: 'HubSpot',
   },
 ];
 
 export default function SourceSelector({ onSelect, onViewHistory }) {
   return (
-    <div className="space-y-4 max-w-2xl">
+    <div className="space-y-4">
       <div className="rounded-xl border border-border bg-bg-card p-5">
         <h2 className="text-base font-semibold text-text-primary">Connect your customer data</h2>
         <p className="text-sm text-text-secondary mt-1.5 leading-relaxed">
