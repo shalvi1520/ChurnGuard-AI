@@ -2,10 +2,11 @@ import { useState, useRef, lazy, Suspense } from 'react';
 import { Link } from 'react-router-dom';
 import { motion, useInView } from 'framer-motion';
 import {
-  Shield, ArrowRight, Brain, LineChart, Mail, Zap, Lock, Users,
+  Shield, ArrowRight, Brain, LineChart, Mail, Zap, Users,
   BarChart3, TrendingDown, ChevronDown, CheckCircle, Sparkles, Database,
-  Target, ShieldCheck, ChevronRight, Activity
+  Target, ChevronRight, Activity
 } from 'lucide-react';
+import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Cell, ReferenceLine, Tooltip } from 'recharts';
 import Button from '../components/ui/Button';
 import { cn } from '../utils/helpers';
 
@@ -74,6 +75,19 @@ const faqs = [
   { q: 'Are emails sent automatically?', a: 'No. ChurnGuard generates AI-powered email drafts, but every email requires human review and approval before sending. This ensures quality control and appropriate messaging for each customer.' },
 ];
 
+// Hard-coded sample SHAP-style contributions for the Explainability section's
+// illustrative card. Marketing copy only -- this is never fetched, never
+// rendered anywhere in the authenticated app, and is labelled as an example
+// on screen. Positive pushes churn risk up, negative pulls it down; ordered
+// strongest-up first so the diverging chart reads top-to-bottom.
+const exampleFactors = [
+  { factor: 'Logins down 64% (30d)', contribution: 0.31, fill: '#EF4444' },
+  { factor: '3 unresolved support tickets', contribution: 0.18, fill: '#EF4444' },
+  { factor: 'Seats used: 4 of 20', contribution: 0.13, fill: '#EF4444' },
+  { factor: 'Active integration', contribution: -0.09, fill: '#4ADE80' },
+  { factor: 'Annual contract', contribution: -0.17, fill: '#4ADE80' },
+];
+
 export default function LandingPage() {
   return (
     // The marketing page is deliberately dark in every appearance setting: its
@@ -111,7 +125,7 @@ export default function LandingPage() {
           <div className="hidden md:flex items-center gap-8 font-medium">
             <a href="#features" className="text-text-secondary hover:text-white transition-colors">Features</a>
             <a href="#how-it-works" className="text-text-secondary hover:text-white transition-colors">How It Works</a>
-            <a href="#security" className="text-text-secondary hover:text-white transition-colors">Security</a>
+            <a href="#explainability" className="text-text-secondary hover:text-white transition-colors">Explainability</a>
           </div>
           <div className="flex items-center gap-4">
             <Link to="/login" className="font-medium text-text-secondary hover:text-white transition-colors hidden sm:block">Sign In</Link>
@@ -271,53 +285,114 @@ export default function LandingPage() {
         </div>
       </section>
 
-      {/* Enterprise Security */}
-      <section id="security" className="py-24 md:py-32 relative z-10">
+      {/* Explainability */}
+      <section id="explainability" className="py-24 md:py-32 relative z-10">
         <div className="max-w-7xl mx-auto px-6">
           <div className="bg-gradient-to-br from-[#12151C] to-[#0D0F13] rounded-[40px] p-8 md:p-16 border border-white/5 shadow-2xl overflow-hidden relative">
             {/* Background Pattern */}
             <div className="absolute top-0 right-0 w-1/2 h-full bg-[radial-gradient(circle_at_top_right,rgba(134,188,37,0.1),transparent_50%)]" />
-            
+
             <div className="grid lg:grid-cols-2 gap-16 relative z-10 items-center">
-              <div>
-                <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-blue-500/10 border border-blue-500/20 text-blue-400 text-xs font-bold uppercase tracking-widest mb-6">
-                  <Shield size={14} /> Enterprise Grade
+              <FadeIn direction="right">
+                <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-amber-400/10 border border-amber-400/20 text-amber-300 text-xs font-bold uppercase tracking-widest mb-6">
+                  <Sparkles size={14} /> Explainable AI
                 </div>
-                <h2 className="text-3xl md:text-5xl font-bold text-white tracking-tight mb-6">Security & Compliance First.</h2>
+                <h2 className="text-3xl md:text-5xl font-bold text-white tracking-tight mb-6">See why, not just who.</h2>
                 <p className="text-lg text-text-secondary mb-10 leading-relaxed font-medium">
-                  Your customer data is protected with military-grade encryption. ChurnGuard is built from the ground up for enterprise compliance and strict data governance.
+                  Every prediction comes with the reasons behind it. ChurnGuard uses SHAP values to show which factors raise or lower each customer&apos;s churn risk, so your team knows exactly what to fix.
                 </p>
                 <div className="grid sm:grid-cols-2 gap-x-6 gap-y-6">
                   {[
-                    { icon: Lock, text: 'End-to-End Encryption' },
-                    { icon: ShieldCheck, text: 'Role-Based Access' },
-                    { icon: Users, text: 'Human-in-the-loop AI' },
+                    { icon: BarChart3, text: 'Per-customer SHAP breakdown' },
+                    { icon: Target, text: 'Recommended next action' },
+                    { icon: Users, text: 'Human-approved outreach' },
                   ].map((item, i) => (
                     <div key={i} className="flex items-center gap-4">
                       <div className="w-10 h-10 rounded-xl bg-bg-elevated flex items-center justify-center shrink-0 border border-white/5 shadow-sm">
-                        <item.icon size={18} className="text-blue-400" />
+                        <item.icon size={18} className="text-amber-400" />
                       </div>
                       <span className="text-sm font-semibold text-white">{item.text}</span>
                     </div>
                   ))}
                 </div>
-              </div>
+              </FadeIn>
 
-              <div className="relative">
+              <FadeIn direction="left" delay={0.1} className="relative">
                 <div
                   className="absolute inset-0 rounded-full pointer-events-none"
                   style={{ background: 'radial-gradient(closest-side, rgba(134,188,37,0.22), transparent 75%)' }}
                 />
-                <div className="relative p-10 md:p-14 rounded-3xl glass-light border border-white/10 flex flex-col justify-center items-center text-center shadow-[0_8px_32px_rgba(0,0,0,0.5)]">
-                  <div className="w-20 h-20 rounded-2xl bg-gradient-to-br from-accent to-emerald-500 flex items-center justify-center mb-8 shadow-lg">
-                    <ShieldCheck size={40} className="text-bg-primary" />
+                {/* Illustrative only -- every number here comes from the
+                    hard-coded `exampleFactors` above. No API, no context. */}
+                <div className="relative p-6 md:p-8 rounded-3xl glass-light border border-white/10 shadow-[0_8px_32px_rgba(0,0,0,0.5)]">
+                  <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-3 mb-6">
+                    <div className="min-w-0">
+                      <h3 className="text-lg font-bold text-white truncate">Northwind Analytics</h3>
+                      <p className="text-xs text-text-tertiary mt-1 font-medium">Churn risk score</p>
+                    </div>
+                    <div className="flex items-center gap-3 shrink-0">
+                      <span className="text-3xl font-extrabold text-white tabular-nums">82%</span>
+                      <span className="px-2.5 py-1 rounded-full bg-[#EF4444]/10 border border-[#EF4444]/30 text-[#EF4444] text-[11px] font-bold uppercase tracking-wider">
+                        High risk
+                      </span>
+                    </div>
                   </div>
-                  <h3 className="text-2xl font-bold text-white mb-4">Human-in-the-Loop</h3>
-                  <p className="text-base text-text-secondary leading-relaxed font-medium">
-                    We believe AI should empower humans, not replace them. Every AI-generated outreach email requires explicit human review and approval before sending. No rogue automation.
-                  </p>
+
+                  <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[11px] text-text-tertiary mb-3 font-medium">
+                    <span className="flex items-center gap-1.5">
+                      <span className="w-2.5 h-2.5 rounded-sm bg-[#EF4444]" /> Pushes risk up
+                    </span>
+                    <span className="flex items-center gap-1.5">
+                      <span className="w-2.5 h-2.5 rounded-sm bg-[#4ADE80]" /> Pulls risk down
+                    </span>
+                  </div>
+
+                  {/* ResponsiveContainer keeps the chart inside the card at
+                      every width; the axis carries the labels so nothing
+                      needs to overflow on mobile. */}
+                  <div className="h-60 sm:h-64">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={exampleFactors} layout="vertical" margin={{ top: 4, right: 12, bottom: 4, left: 0 }}>
+                        <XAxis type="number" domain={[-0.25, 0.4]} hide />
+                        <YAxis
+                          type="category"
+                          dataKey="factor"
+                          tick={{ fontSize: 10, fill: '#9BA3B8' }}
+                          width={152}
+                          axisLine={false}
+                          tickLine={false}
+                        />
+                        <ReferenceLine x={0} stroke="#6B7490" strokeWidth={1} />
+                        <Tooltip
+                          cursor={{ fill: 'rgba(255,255,255,0.04)' }}
+                          content={({ active, payload }) => active && payload?.[0] ? (
+                            <div className="bg-bg-secondary border border-border rounded-lg p-2.5 shadow-xl text-xs max-w-[220px]">
+                              <p className="text-text-primary font-medium">{payload[0].payload.factor}</p>
+                              <p className="text-text-secondary mt-1">
+                                {payload[0].value > 0 ? 'Pushes risk up' : 'Pulls risk down'}
+                              </p>
+                            </div>
+                          ) : null}
+                        />
+                        <Bar dataKey="contribution" radius={[0, 4, 4, 0]} barSize={16}>
+                          {exampleFactors.map((entry) => (
+                            <Cell key={entry.factor} fill={entry.fill} />
+                          ))}
+                        </Bar>
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+
+                  <div className="mt-4 pt-4 border-t border-white/10">
+                    <p className="text-[11px] font-bold uppercase tracking-wider text-text-tertiary mb-1.5">Suggested action</p>
+                    <p className="text-sm text-white font-medium leading-relaxed">
+                      Schedule an onboarding refresh for unused seats.
+                    </p>
+                  </div>
+
+                  <p className="text-[11px] text-text-tertiary mt-4 font-medium">Example data for illustration</p>
                 </div>
-              </div>
+              </FadeIn>
             </div>
           </div>
         </div>
