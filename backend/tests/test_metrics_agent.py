@@ -220,7 +220,10 @@ def test_market_impact_estimates_loss_without_revenue_field_instead_of_blanking(
     explanation = metrics["marketImpactExplanation"]
     assert "$" in explanation  # a real dollar figure now appears, not a blank
     assert "estimate" in explanation.lower()
-    assert "upload a monthly or annual revenue column" in explanation
+    # The card no longer asks the user to upload a column; it points at the
+    # integration instead, and says so only inside the collapsed detail.
+    assert "Connecting billing data gives a more precise figure." in explanation
+    assert "upload a monthly or annual revenue column" not in explanation
     # Churn rate and count are still real, computed numbers.
     assert mi["churnRatePct"] == 20.0
     assert f"{mi['churnRatePct']}%" in explanation
@@ -326,3 +329,66 @@ def test_market_impact_explanation_states_benchmark_is_not_live_data():
     entry = _entry(mappings={"m": "monthly_charges"})
     metrics = metrics_agent.compute_dataset_metrics(entry, _result(customers=customers), ["monthly_charges"])
     assert "not live market data" in metrics["marketImpactExplanation"]
+
+
+def test_market_impact_exposes_numeric_benchmark_range_for_the_ui():
+    """The card renders "typical: 20-30%" from these two numbers rather than
+    picking apart benchmarkUsed, so both must be present and must agree with
+    the pre-formatted string."""
+    customers = [_customer("a", 90, monthly=50)] + [_customer(f"b{i}", 10, monthly=50) for i in range(9)]
+    entry = _entry(mappings={"m": "monthly_charges"})
+    metrics = metrics_agent.compute_dataset_metrics(entry, _result(customers=customers), ["monthly_charges"])
+    mi = metrics["componentBreakdown"]["marketImpact"]
+
+    assert isinstance(mi["benchmarkLow"], int)
+    assert isinstance(mi["benchmarkHigh"], int)
+    assert mi["benchmarkLow"] < mi["benchmarkHigh"]
+    assert mi["benchmarkUsed"] == f"{mi['benchmarkLow']}-{mi['benchmarkHigh']}%"
+
+
+def test_generic_benchmark_wording_does_not_claim_an_industry():
+    """With no industry column the benchmark is the cross-industry fallback,
+    so the prose must not say "for your industry" -- and must not produce the
+    old "the average churn rate in a general cross-industry is around" line."""
+    customers = [_customer(f"a{i}", 90, monthly=50) for i in range(30)] + [
+        _customer(f"b{i}", 10, monthly=50) for i in range(70)
+    ]
+    entry = _entry(mappings={"m": "monthly_charges"})
+    metrics = metrics_agent.compute_dataset_metrics(entry, _result(customers=customers), ["monthly_charges"])
+    mi = metrics["componentBreakdown"]["marketImpact"]
+    explanation = metrics["marketImpactExplanation"]
+
+    assert mi["benchmarkIsGeneric"] is True
+    assert "for your industry" not in explanation
+    assert "the average churn rate in a general cross-industry" not in explanation
+    assert "a typical churn rate across industries is around" in explanation
+    # A ratio well above 1.05 -- the severity sentence is the one that used to
+    # hard-code "for your industry", so make sure it actually ran.
+    assert mi["vsBenchmarkRatio"] > 1.05
+    assert "higher than typical." in explanation
+
+
+def test_detected_industry_wording_still_names_the_industry():
+    customers = [_customer(f"a{i}", 90, monthly=50) for i in range(30)] + [
+        _customer(f"b{i}", 10, monthly=50) for i in range(70)
+    ]
+    raw_df = pd.DataFrame({"Industry": ["Banking"] * 100})
+    entry = _entry(mappings={"m": "monthly_charges"}, raw_df=raw_df)
+    metrics = metrics_agent.compute_dataset_metrics(entry, _result(customers=customers), ["monthly_charges"])
+    explanation = metrics["marketImpactExplanation"]
+
+    assert metrics["componentBreakdown"]["marketImpact"]["benchmarkIsGeneric"] is False
+    assert "for your industry" in explanation
+    assert "the average churn rate in banking" in explanation.lower()
+
+
+def test_market_impact_explanation_has_no_double_hyphens():
+    """Double hyphens are an editing artefact, not an em dash -- they should
+    never reach the card, open or collapsed."""
+    no_revenue = [_customer(f"c{i}", 90 if i < 10 else 10, monthly=None) for i in range(50)]
+    with_revenue = [_customer(f"c{i}", 90 if i < 10 else 10, monthly=50) for i in range(50)]
+
+    for customers, fields in ((no_revenue, []), (with_revenue, ["monthly_charges"])):
+        entry = _entry(mappings={"m": "monthly_charges"} if fields else {})
+        metrics = metrics_agent.compute_dataset_metrics(entry, _result(customers=customers), fields)
+        assert "--" not in metrics["marketImpactExplanation"]

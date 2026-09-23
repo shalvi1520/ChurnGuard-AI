@@ -439,23 +439,33 @@ def _fmt_money(x: float) -> str:
 
 
 def _benchmark_phrase(r: Dict[str, Any]) -> str:
-    generic = r["benchmarkIsGeneric"]
+    # The generic fallback benchmark has no industry to name, so it gets its
+    # own sentence rather than being slotted into the industry one -- doing
+    # that produced "the average churn rate in a general cross-industry is
+    # around 20-30%".
+    if r["benchmarkIsGeneric"]:
+        return (
+            f"For context, a typical churn rate across industries is around {r['benchmarkUsed']} annually "
+            "(a general reference figure, not live market data)."
+        )
     label = r["benchmarkIndustry"]
-    reference_note = "a general cross-industry reference figure" if generic else f"a general reference figure for {label}"
     return (
         f"For context, the average churn rate in {label} is around {r['benchmarkUsed']} annually "
-        f"({reference_note}, not live market data)."
+        f"(a general reference figure for {label}, not live market data)."
     )
 
 
-def _severity_phrase(ratio: Optional[float]) -> str:
+def _severity_phrase(ratio: Optional[float], generic: bool = False) -> str:
+    # With the generic fallback benchmark there is no detected industry, so
+    # "for your industry" would be claiming more than we know.
+    scope = "" if generic else " for your industry"
     if ratio is None:
         return ""
     if ratio > 1.05:
-        return f"So your churn rate is currently running about {ratio:.1f}x higher than typical for your industry."
+        return f"So your churn rate is currently running about {ratio:.1f}x higher than typical{scope}."
     if ratio < 0.95:
-        return f"So your churn rate is currently running below typical for your industry (about {ratio:.1f}x the benchmark rate)."
-    return "So your churn rate is currently running roughly in line with the typical range for your industry."
+        return f"So your churn rate is currently running below typical{scope} (about {ratio:.1f}x the benchmark rate)."
+    return f"So your churn rate is currently running roughly in line with the typical range{scope}."
 
 
 def _confidence_level_for_real_data(at_risk_count: int, priced_at_risk_count: int) -> str:
@@ -498,6 +508,10 @@ def _market_impact_explanation(entry, customers: List[Dict[str, Any]]) -> Dict[s
         "totalCustomers": total,
         "benchmarkIndustry": benchmark["label"],
         "benchmarkUsed": f"{benchmark['low']}-{benchmark['high']}%",
+        # The same range as benchmarkUsed, unformatted, so the UI can render
+        # it without picking the string apart.
+        "benchmarkLow": benchmark["low"],
+        "benchmarkHigh": benchmark["high"],
         "benchmarkIsGeneric": industry_key == "generic",
         "vsBenchmarkRatio": ratio,
         "severity": severity,
@@ -547,10 +561,9 @@ def _market_impact_explanation(entry, customers: List[Dict[str, Any]]) -> Dict[s
             f"Your churn rate is currently {churn_rate_pct}% ({len(at_risk)} of {total} customers).",
             f"You didn't include a revenue field in this upload, so we've estimated the financial impact using "
             f"{estimate_basis}: roughly {_fmt_money(estimated_annual_loss)} per year at risk. This is an "
-            "estimate, not your actual numbers -- upload a monthly or annual revenue column next time for a "
-            "precise figure.",
+            "estimate, not your actual numbers. Connecting billing data gives a more precise figure.",
             _benchmark_phrase(result),
-            _severity_phrase(ratio),
+            _severity_phrase(ratio, result["benchmarkIsGeneric"]),
             "The revenue estimate above should still be treated as a rough figure, not a precise result.",
         ]
         result["explanation"] = "\n\n".join(line for line in lines if line)
@@ -582,7 +595,7 @@ def _market_impact_explanation(entry, customers: List[Dict[str, Any]]) -> Dict[s
         f"If this continues unchanged, you're on track to lose approximately {_fmt_money(projected_annual_loss)} "
         "in annual revenue from these customers alone.",
         _benchmark_phrase(result),
-        _severity_phrase(ratio),
+        _severity_phrase(ratio, result["benchmarkIsGeneric"]),
         f"If nothing changes, at this pace you could see a cumulative loss of roughly "
         f"{_fmt_money(cumulative['cumulativeLostRevenue'])} over the next 12 months as at-risk customers "
         "continue to churn at the current rate.",

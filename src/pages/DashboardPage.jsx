@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import {
   Users, AlertTriangle, TrendingUp, DollarSign, ArrowRight, ChevronRight, Activity,
-  Gauge, CheckCircle2, XCircle, AlertCircle,
+  Gauge, CheckCircle2, XCircle, AlertCircle, ChevronDown,
 } from 'lucide-react';
 import {
   PieChart, Pie, Cell, ResponsiveContainer, XAxis, YAxis,
@@ -144,11 +144,15 @@ const MARKET_IMPACT_SEVERITY_STYLE = {
 // non-technical reader should never have to infer for themselves whether a
 // number is fine or not. Keyed off the same severity classification as the
 // badge above, never the raw ratio, so the two can't disagree.
+//
+// Critical shares High's line deliberately: the backend classifies four
+// severities but there are only three distinct things to *do*, and the badge
+// beside it already carries the finer distinction.
 const MARKET_IMPACT_ACTION_LINE = {
-  Low: 'Your risk is currently manageable — keep monitoring, no urgent action needed.',
-  Moderate: 'This is close to typical for your industry — worth keeping an eye on your highest-risk accounts.',
-  High: 'This is running well above typical for your industry — reviewing your highest-risk accounts soon is recommended.',
-  Critical: 'This is running well above typical for your industry — reviewing your highest-risk accounts soon is recommended.',
+  Low: 'Keep monitoring. No urgent action needed.',
+  Moderate: 'Review high-risk accounts this month.',
+  High: 'Act on high-risk accounts now.',
+  Critical: 'Act on high-risk accounts now.',
 };
 
 // The gauge's domain is 0x-2x the industry benchmark (clamped), and its zone
@@ -165,12 +169,26 @@ const MARKET_IMPACT_GAUGE_ZONES = [
   { pct: 42.5, color: 'var(--color-risk-critical)' },
 ];
 
-const ESTIMATE_TOOLTIP = 'Calculated using typical revenue-per-customer for your industry, since no revenue field was included in this upload.';
+const ESTIMATE_TOOLTIP = 'Connect billing data for a more precise figure.';
+
+// Short money format for the headline ("$137K"), mirroring the backend's own
+// _fmt_money() in generic/metrics_agent.py so the headline figure and the
+// figures inside the collapsed explanation round the same way.
+function formatMoneyShort(value) {
+  if (value == null) return null;
+  const sign = value < 0 ? '-' : '';
+  const abs = Math.abs(value);
+  if (abs >= 1_000_000) return `${sign}$${(abs / 1_000_000).toFixed(1)}M`;
+  if (abs >= 1_000) return `${sign}$${Math.round(abs / 1_000)}K`;
+  return `${sign}$${formatNumber(Math.round(abs))}`;
+}
 
 // Always visible, keyed to the active dataset -- same rationale as
 // ReliabilitySection above. Degraded mode (no revenue field mapped) renders
 // its own clear message rather than hiding the section or showing a $0.
-function MarketImpactSection({ marketImpact }) {
+export function MarketImpactSection({ marketImpact }) {
+  const [showMethod, setShowMethod] = useState(false);
+
   if (!marketImpact) return null;
 
   if (marketImpact.unavailable) {
@@ -188,7 +206,8 @@ function MarketImpactSection({ marketImpact }) {
 
   const {
     churnRatePct, atRiskCount, totalCustomers, isEstimated, severity,
-    projectedAnnualLoss, vsBenchmarkRatio, impactHeadline, explanation,
+    projectedAnnualLoss, vsBenchmarkRatio, explanation,
+    benchmarkLow, benchmarkHigh, benchmarkUsed,
   } = marketImpact;
 
   // Only the fully degenerate case (no customers scored at all) ever leaves
@@ -198,7 +217,7 @@ function MarketImpactSection({ marketImpact }) {
   const lossSub = projectedAnnualLoss == null
     ? 'not enough data to estimate'
     : isEstimated
-      ? 'estimated — no billing field mapped'
+      ? 'estimated'
       : 'if at-risk customers churn';
 
   const sevStyle = MARKET_IMPACT_SEVERITY_STYLE[severity] || MARKET_IMPACT_SEVERITY_STYLE.Moderate;
@@ -206,6 +225,19 @@ function MarketImpactSection({ marketImpact }) {
   const markerPct = vsBenchmarkRatio != null
     ? Math.min(100, Math.max(0, (vsBenchmarkRatio / MARKET_IMPACT_GAUGE_MAX_RATIO) * 100))
     : null;
+
+  // Lead with the conclusion. Built from structured fields only -- never by
+  // reading anything back out of `explanation`.
+  const lossShort = formatMoneyShort(projectedAnnualLoss);
+  const headline = lossShort
+    ? `${severity} risk — about ${lossShort}/year at stake`
+    : `${severity} risk`;
+
+  // benchmarkLow/High are newer than some persisted metrics rows, so fall
+  // back to the pre-formatted range string those older rows still carry.
+  const benchmarkRange = benchmarkLow != null && benchmarkHigh != null
+    ? `${benchmarkLow}–${benchmarkHigh}%`
+    : benchmarkUsed || null;
 
   return (
     <section aria-labelledby="market-impact">
@@ -219,9 +251,13 @@ function MarketImpactSection({ marketImpact }) {
             <sevStyle.Icon size={13} aria-hidden="true" />
             {severity} impact
           </Badge>
-          <p className="text-lg font-bold text-text-primary tracking-tight">{churnRatePct}% churn rate</p>
+          <p className="text-lg font-bold text-text-primary tracking-tight">{headline}</p>
         </div>
-        <p className="text-sm text-text-secondary mt-1 mb-4">{impactHeadline}</p>
+
+        {/* The one actionable line -- what a non-technical reader should
+            actually do, directly under the conclusion rather than buried
+            below several paragraphs of description. */}
+        <p className="text-sm font-semibold text-text-primary mt-1 mb-4">{actionLine}</p>
 
         {/* The primary visual: where this dataset's churn rate falls versus
             the industry, not a bare "1.3x" number. */}
@@ -249,39 +285,69 @@ function MarketImpactSection({ marketImpact }) {
           </p>
         </div>
 
-        <div className="space-y-2.5">
-          {explanation.split('\n\n').map((paragraph, i) => (
-            <p key={i} className="text-sm text-text-secondary leading-relaxed">{paragraph}</p>
-          ))}
-        </div>
-
-        {/* The one actionable line -- what a non-technical reader should
-            actually do with everything above, not just more description. */}
-        <p className="text-sm font-semibold text-text-primary mt-4">{actionLine}</p>
-
-        {/* The three figures, now supporting detail behind the plain-language
-            read above rather than three equally-weighted boxes. */}
+        {/* The three figures. */}
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mt-5 pt-4 border-t border-border">
           <div>
             <p className="text-[11px] text-text-tertiary uppercase tracking-wider">Churn rate</p>
             <p className="text-sm font-semibold text-text-primary tabular-nums mt-0.5">{churnRatePct}%</p>
-            <p className="text-[11px] text-text-tertiary mt-0.5">{atRiskCount} of {totalCustomers} customers</p>
+            <p className="text-[11px] text-text-tertiary mt-0.5">
+              {formatNumber(atRiskCount)} of {formatNumber(totalCustomers)}
+            </p>
           </div>
           <div>
             <p className="text-[11px] text-text-tertiary uppercase tracking-wider flex items-center gap-1">
-              {isEstimated ? 'Projected annual loss (estimated)' : 'Projected annual loss'}
-              {isEstimated && <InfoTip content={ESTIMATE_TOOLTIP} label="Why this is estimated" size={11} />}
+              Est. annual loss
+              {/* Tooltip only carries text while the figure is an estimate.
+                  Tooltip renders its trigger bare when `content` is null, so
+                  the icon stays put either way and the layout doesn't shift. */}
+              <InfoTip
+                content={isEstimated ? ESTIMATE_TOOLTIP : null}
+                label="About this figure"
+                size={11}
+              />
             </p>
             <p className="text-sm font-semibold text-text-primary tabular-nums mt-0.5">{lossValue}</p>
             <p className="text-[11px] text-text-tertiary mt-0.5">{lossSub}</p>
           </div>
           <div>
-            <p className="text-[11px] text-text-tertiary uppercase tracking-wider">Vs. industry benchmark</p>
+            <p className="text-[11px] text-text-tertiary uppercase tracking-wider">Vs. benchmark</p>
             <p className="text-sm font-semibold text-text-primary tabular-nums mt-0.5">
               {vsBenchmarkRatio != null ? `${vsBenchmarkRatio.toFixed(1)}x` : '—'}
             </p>
-            <p className="text-[11px] text-text-tertiary mt-0.5">typical rate for reference</p>
+            <p className="text-[11px] text-text-tertiary mt-0.5">
+              {benchmarkRange ? `typical: ${benchmarkRange}` : 'no benchmark available'}
+            </p>
           </div>
+        </div>
+
+        {isEstimated && (
+          <p className="text-[11px] text-text-tertiary mt-3">Estimated based on average customer value.</p>
+        )}
+
+        {/* Everything the card used to say up front, kept in full but out of
+            the way. Nothing is lost -- it just isn't the first thing read. */}
+        <div className="mt-4 pt-4 border-t border-border">
+          <button
+            type="button"
+            onClick={() => setShowMethod((v) => !v)}
+            aria-expanded={showMethod}
+            className="flex items-center gap-1.5 text-xs font-medium text-text-secondary hover:text-text-primary transition-colors cursor-pointer"
+          >
+            <ChevronDown
+              size={13}
+              aria-hidden="true"
+              className={`transition-transform ${showMethod ? 'rotate-180' : ''}`}
+            />
+            How is this calculated?
+          </button>
+
+          {showMethod && (
+            <div className="space-y-2.5 mt-3">
+              {explanation.split('\n\n').map((paragraph, i) => (
+                <p key={i} className="text-sm text-text-secondary leading-relaxed">{paragraph}</p>
+              ))}
+            </div>
+          )}
         </div>
       </Card>
     </section>
