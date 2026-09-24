@@ -1,7 +1,8 @@
-import { useCallback, useState } from 'react';
+import { useCallback } from 'react';
 import { useDropzone } from 'react-dropzone';
-import { Upload, FileSpreadsheet, X, Sparkles, AlertTriangle, ChevronDown, ArrowLeft } from 'lucide-react';
+import { Upload, FileSpreadsheet, X, Sparkles, AlertTriangle, ArrowLeft } from 'lucide-react';
 import Card from '../ui/Card';
+import Disclosure from '../ui/Disclosure';
 import Button from '../ui/Button';
 import Badge from '../ui/Badge';
 import { CHURNGUARD_FIELDS } from '../../mock/datasetSchema';
@@ -61,7 +62,6 @@ export default function UploadStep({
   error,
   onError,
 }) {
-  const [showFields, setShowFields] = useState(false);
 
   const onDrop = useCallback(
     (accepted) => {
@@ -210,55 +210,40 @@ export default function UploadStep({
         )}
 
         {/* ---------- What it looks for (collapsed: no longer a task) ---------- */}
-        <div className="mt-4 border-t border-border/60 pt-4">
-          <button
-            type="button"
-            onClick={() => setShowFields((v) => !v)}
-            aria-expanded={showFields}
-            className="flex items-center gap-1.5 text-xs font-medium text-text-secondary hover:text-text-primary transition-colors cursor-pointer"
-          >
-            <ChevronDown
-              size={13}
-              className={`transition-transform ${showFields ? 'rotate-180' : ''}`}
-            />
-            What does ChurnGuard look for in my file?
-          </button>
-
-          {showFields && (
-            <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-3">
-              <div>
-                <p className="text-[10px] font-semibold uppercase tracking-wider text-text-tertiary mb-2">
-                  Needed to predict churn
-                </p>
-                <ul className="space-y-1.5">
-                  {requiredFields.map((f) => (
-                    <li key={f.key} className="text-xs text-text-secondary leading-relaxed">
-                      <span className="font-medium text-text-primary">{f.label}</span> —{' '}
-                      {f.description}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-              <div>
-                <p className="text-[10px] font-semibold uppercase tracking-wider text-text-tertiary mb-2">
-                  Used if present
-                </p>
-                <ul className="space-y-1.5">
-                  {optionalFields.map((f) => (
-                    <li key={f.key} className="text-xs text-text-secondary leading-relaxed">
-                      <span className="font-medium text-text-primary">{f.label}</span> —{' '}
-                      {f.description}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-              <p className="sm:col-span-2 text-xs text-text-tertiary leading-relaxed">
-                Your column names do not have to match these. Any other columns in the file are
-                kept as additional data and simply not used for scoring.
-              </p>
-            </div>
-          )}
-        </div>
+        <Disclosure
+          className="mt-4 border-t border-border/60 pt-4"
+          label="What does ChurnGuard look for in my file?"
+          contentClassName="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-3"
+        >
+          <div>
+            <p className="text-[10px] font-semibold uppercase tracking-wider text-text-tertiary mb-2">
+              Needed to predict churn
+            </p>
+            <ul className="space-y-1.5">
+              {requiredFields.map((f) => (
+                <li key={f.key} className="text-xs text-text-secondary leading-relaxed">
+                  <span className="font-medium text-text-primary">{f.label}</span> — {f.description}
+                </li>
+              ))}
+            </ul>
+          </div>
+          <div>
+            <p className="text-[10px] font-semibold uppercase tracking-wider text-text-tertiary mb-2">
+              Used if present
+            </p>
+            <ul className="space-y-1.5">
+              {optionalFields.map((f) => (
+                <li key={f.key} className="text-xs text-text-secondary leading-relaxed">
+                  <span className="font-medium text-text-primary">{f.label}</span> — {f.description}
+                </li>
+              ))}
+            </ul>
+          </div>
+          <p className="sm:col-span-2 text-xs text-text-tertiary leading-relaxed">
+            Your column names do not have to match these. Any other columns in the file are kept as
+            additional data and simply not used for scoring.
+          </p>
+        </Disclosure>
       </Card>
 
       {/* ---------- Demo dataset ---------- */}

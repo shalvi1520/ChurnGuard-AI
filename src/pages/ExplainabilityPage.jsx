@@ -13,9 +13,10 @@ import PageTrail from '../components/ui/PageTrail';
 import RetentionFlow from '../components/ui/RetentionFlow';
 import { SkeletonChart } from '../components/ui/Skeleton';
 import { explainabilityService, customerService } from '../services/api';
-import { getRiskTier } from '../utils/helpers';
+import { getRiskColor, getRiskTier } from '../utils/helpers';
 import { metric } from '../utils/glossary';
 import { useWorkflowNav, withCustomer } from '../utils/navigation';
+import { useApp } from '../context/AppContext';
 
 /**
  * Stage 1 of the retention workflow: WHY is this account at risk.
@@ -26,6 +27,7 @@ import { useWorkflowNav, withCustomer } from '../utils/navigation';
  * carry a compact summary of what is shown here.
  */
 export default function ExplainabilityPage() {
+  const { resolvedTheme } = useApp();
   const [searchParams, setSearchParams] = useSearchParams();
   const location = useLocation();
   const { from, customersPath, drill, goBackTo } = useWorkflowNav();
@@ -81,10 +83,25 @@ export default function ExplainabilityPage() {
     return () => { cancelled = true; };
   }, [selectedCustomer]);
 
+  // Resolved from the theme tokens, not hardcoded hex: the light theme
+  // darkens every risk colour, so a fixed value is unreadable in one of the
+  // two themes. `resolvedTheme` is read here purely so this recomputes when
+  // the appearance setting changes.
+  // `theme` is carried along the same way Portfolio & Risk carries it: the
+  // colours are read from the active theme's CSS tokens, so the dependency is
+  // real even though it never appears in the output.
+  const factorFill = {
+    theme: resolvedTheme,
+    increases: getRiskColor('high'),
+    decreases: getRiskColor('low'),
+  };
+  const factorColor = (direction) =>
+    direction === 'increases' ? factorFill.increases : factorFill.decreases;
+
   const chartData = explanation?.features?.map(f => ({
     feature: f.feature,
     contribution: f.contribution,
-    fill: f.direction === 'increases' ? '#F97316' : '#4ADE80',
+    fill: factorColor(f.direction),
   })) || [];
 
   // The selector lists the 200 riskiest accounts; one opened from Customers
@@ -205,19 +222,23 @@ export default function ExplainabilityPage() {
             <div className="h-80">
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={chartData} layout="vertical" margin={{ left: 20, bottom: 14 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#2A2F42" horizontal={false} />
+                  <CartesianGrid strokeDasharray="3 3" horizontal={false} />
                   <XAxis
                     type="number"
-                    tick={{ fontSize: 11, fill: '#6B7490' }}
+                    tick={{ fontSize: 11 }}
                     axisLine={false}
                     tickLine={false}
-                    domain={[-0.15, 0.4]}
+                    /* Fits the account's own factors, with zero always on the
+                       axis. The old fixed [-0.15, 0.4] window silently clipped
+                       any factor stronger than 0.4 -- exactly the ones worth
+                       seeing -- and stretched small ones to look decisive. */
+                    domain={[(min) => Math.min(0, min), (max) => Math.max(0, max)]}
                     // The raw numbers alone carry no unit -- names the scale
                     // without changing what it measures.
-                    label={{ value: 'Impact on churn risk', position: 'insideBottom', offset: -2, fontSize: 10, fill: '#6B7490' }}
+                    label={{ value: 'Impact on churn risk', position: 'insideBottom', offset: -2, fontSize: 10, fill: 'var(--color-text-tertiary)' }}
                   />
-                  <ReferenceLine x={0} stroke="#6B7490" strokeWidth={1} />
-                  <YAxis type="category" dataKey="feature" tick={{ fontSize: 12, fill: '#9BA3B8' }} width={160} axisLine={false} tickLine={false} />
+                  <ReferenceLine x={0} stroke="var(--color-border)" strokeWidth={1} />
+                  <YAxis type="category" dataKey="feature" tick={{ fontSize: 12 }} width={160} axisLine={false} tickLine={false} />
                   <Tooltip content={({ active, payload }) => active && payload?.[0] ? (
                     <div className="bg-bg-secondary border border-border rounded-lg p-3 shadow-xl text-xs max-w-[240px]">
                       <p className="text-text-primary font-medium">{payload[0].payload.feature}</p>
@@ -249,7 +270,7 @@ export default function ExplainabilityPage() {
                   <li key={`${f.feature}-${i}`} className="rounded-lg border border-border/60 bg-bg-tertiary/20">
                     <div className="flex items-center justify-between gap-3 py-2.5 px-3">
                       <span className="flex items-center gap-3 min-w-0">
-                        <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: f.direction === 'increases' ? '#F97316' : '#4ADE80' }} />
+                        <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: factorColor(f.direction) }} aria-hidden="true" />
                         <span className="min-w-0">
                           <span className="text-sm font-medium text-text-primary">{f.feature}</span>
                           <span className="text-xs text-text-tertiary ml-2">{f.value}</span>
@@ -259,7 +280,7 @@ export default function ExplainabilityPage() {
                         <Badge variant={f.direction === 'increases' ? 'high' : 'low'} size="xs">
                           {f.direction === 'increases' ? 'Raises risk' : 'Lowers risk'}
                         </Badge>
-                        <span className="text-sm font-semibold tabular-nums" style={{ color: f.direction === 'increases' ? '#F97316' : '#4ADE80' }}>
+                        <span className="text-sm font-semibold tabular-nums" style={{ color: factorColor(f.direction) }}>
                           {f.contribution > 0 ? '+' : ''}{f.contribution.toFixed(2)}
                         </span>
                       </span>

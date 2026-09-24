@@ -582,7 +582,7 @@ export default function DataManagementPage() {
           <h1 className="text-xl font-bold text-text-primary tracking-tight">Data Management</h1>
           <p className="text-sm text-text-secondary mt-1.5 leading-relaxed">
             {complete
-              ? 'The dataset powering every prediction, explanation and draft in ChurnGuard — what it contains, what was measured in it, and which of your columns the model is using.'
+              ? 'The data behind every prediction, explanation and draft in ChurnGuard: what is in it, and what ChurnGuard did with it.'
               : 'Connect the customer data ChurnGuard analyses. It reads your file, checks its quality, works out which column is which, and trains a model on it.'}
           </p>
         </div>

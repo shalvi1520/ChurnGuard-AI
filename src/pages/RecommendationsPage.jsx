@@ -231,11 +231,14 @@ export default function RecommendationsPage() {
             <motion.div key={rec.id} initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.05 }}>
               <Card className={rec.status === 'approved' ? 'border-risk-low/30' : rec.status === 'rejected' ? 'border-risk-critical/30 opacity-60' : ''}>
                 <div className="flex items-start justify-between gap-4">
-                  <div className="flex items-start gap-3">
+                  {/* flex-1/min-w-0 so the description and the two detail
+                      panels use the card's width instead of shrink-wrapping
+                      to their longest line and leaving a ragged right edge. */}
+                  <div className="flex items-start gap-3 flex-1 min-w-0">
                     <div className="w-9 h-9 rounded-lg bg-accent/10 flex items-center justify-center shrink-0 mt-0.5">
                       <Sparkles size={16} className="text-accent" />
                     </div>
-                    <div>
+                    <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-2 flex-wrap mb-1">
                         <h3 className="text-sm font-semibold text-text-primary">{rec.title}</h3>
                         <Badge variant={priorityConfig[rec.priority]?.color} size="xs">{priorityConfig[rec.priority]?.label} Priority</Badge>

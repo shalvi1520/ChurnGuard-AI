@@ -4,14 +4,13 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   LayoutDashboard, Users, Brain, Lightbulb, Mail,
   Database, Settings, ChevronLeft, Shield, Presentation, LogOut,
-  Search, Bell, Menu, X, Lock, Check, History, Clock
+  Search, Menu, X, Lock, Check, History, Clock
 } from 'lucide-react';
 import { cn } from '../utils/helpers';
 import { requiresDatasetSetup } from '../routes/accessRules';
 import { useAuth } from '../context/AuthContext';
 import { useApp } from '../context/AppContext';
 import Avatar from '../components/ui/Avatar';
-import NotificationPanel from '../features/notifications/NotificationPanel';
 import SearchCommand from '../components/SearchCommand';
 import ToastContainer from '../components/ui/Toast';
 import Badge from '../components/ui/Badge';
@@ -126,8 +125,7 @@ function NavGroupLabel({ children, collapsed }) {
 
 export default function AppLayout({ children }) {
   const { user, logout } = useAuth();
-  const { sidebarCollapsed, presentationMode, demoMode, unreadCount, dispatch, searchOpen, datasetSetupComplete } = useApp();
-  const [notifOpen, setNotifOpen] = useState(false);
+  const { sidebarCollapsed, presentationMode, demoMode, dispatch, searchOpen, datasetSetupComplete } = useApp();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
   const profileCloseTimer = useRef(null);
@@ -165,7 +163,7 @@ export default function AppLayout({ children }) {
     };
   }, []);
 
-  // Matches Modal/NotificationPanel/Tooltip: Escape closes whatever overlay
+  // Matches Modal/Tooltip/the search palette: Escape closes whatever overlay
   // is open.
   useEffect(() => {
     if (!profileMenuOpen) return undefined;
@@ -323,15 +321,6 @@ export default function AppLayout({ children }) {
           >
             <Search size={18} aria-hidden="true" />
           </button>
-          <button
-            onClick={() => setNotifOpen(!notifOpen)}
-            aria-label={unreadCount > 0 ? `Notifications, ${unreadCount} unread` : 'Notifications'}
-            aria-expanded={notifOpen}
-            className="p-1.5 text-text-tertiary relative cursor-pointer"
-          >
-            <Bell size={18} aria-hidden="true" />
-            {unreadCount > 0 && <span className="absolute -top-0.5 -right-0.5 w-4 h-4 rounded-full bg-risk-critical text-[9px] text-white flex items-center justify-center font-bold">{unreadCount}</span>}
-          </button>
         </div>
       </div>
 
@@ -431,23 +420,6 @@ export default function AppLayout({ children }) {
               >
                 <Presentation size={16} />
               </button>
-              <div className="relative">
-                <button
-                  onClick={() => setNotifOpen(!notifOpen)}
-                  className="p-2 rounded-lg text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary transition-colors relative cursor-pointer"
-                  title="Notifications"
-                  aria-label={unreadCount > 0 ? `Notifications, ${unreadCount} unread` : 'Notifications'}
-                  aria-expanded={notifOpen}
-                >
-                  <Bell size={16} />
-                  {unreadCount > 0 && (
-                    <span className="absolute top-1 right-1 w-4 h-4 rounded-full bg-risk-critical text-[9px] text-white flex items-center justify-center font-bold">
-                      {unreadCount}
-                    </span>
-                  )}
-                </button>
-                <NotificationPanel isOpen={notifOpen} onClose={() => setNotifOpen(false)} />
-              </div>
               <div className="w-px h-6 bg-border mx-2" />
               <div
                 className="relative"

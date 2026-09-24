@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import {
   Users, AlertTriangle, TrendingUp, DollarSign, ArrowRight, ChevronRight, Activity,
-  Gauge, CheckCircle2, XCircle, AlertCircle, ChevronDown,
+  Gauge, CheckCircle2, XCircle, AlertCircle,
 } from 'lucide-react';
 import {
   PieChart, Pie, Cell, ResponsiveContainer, XAxis, YAxis,
@@ -12,6 +12,7 @@ import {
 import MetricCard from '../components/ui/MetricCard';
 import DataSourceBadge from '../components/data-setup/DataSourceBadge';
 import Card from '../components/ui/Card';
+import Disclosure from '../components/ui/Disclosure';
 import ChartCard from '../components/ui/ChartCard';
 import Button from '../components/ui/Button';
 import Badge from '../components/ui/Badge';
@@ -187,8 +188,6 @@ function formatMoneyShort(value) {
 // ReliabilitySection above. Degraded mode (no revenue field mapped) renders
 // its own clear message rather than hiding the section or showing a $0.
 export function MarketImpactSection({ marketImpact }) {
-  const [showMethod, setShowMethod] = useState(false);
-
   if (!marketImpact) return null;
 
   if (marketImpact.unavailable) {
@@ -326,29 +325,15 @@ export function MarketImpactSection({ marketImpact }) {
 
         {/* Everything the card used to say up front, kept in full but out of
             the way. Nothing is lost -- it just isn't the first thing read. */}
-        <div className="mt-4 pt-4 border-t border-border">
-          <button
-            type="button"
-            onClick={() => setShowMethod((v) => !v)}
-            aria-expanded={showMethod}
-            className="flex items-center gap-1.5 text-xs font-medium text-text-secondary hover:text-text-primary transition-colors cursor-pointer"
-          >
-            <ChevronDown
-              size={13}
-              aria-hidden="true"
-              className={`transition-transform ${showMethod ? 'rotate-180' : ''}`}
-            />
-            How is this calculated?
-          </button>
-
-          {showMethod && (
-            <div className="space-y-2.5 mt-3">
-              {explanation.split('\n\n').map((paragraph, i) => (
-                <p key={i} className="text-sm text-text-secondary leading-relaxed">{paragraph}</p>
-              ))}
-            </div>
-          )}
-        </div>
+        <Disclosure
+          className="mt-4 pt-4 border-t border-border"
+          label="How is this calculated?"
+          contentClassName="space-y-2.5"
+        >
+          {explanation.split('\n\n').map((paragraph, i) => (
+            <p key={i} className="text-sm text-text-secondary leading-relaxed">{paragraph}</p>
+          ))}
+        </Disclosure>
       </Card>
     </section>
   );
@@ -806,13 +791,15 @@ export default function DashboardPage() {
                     type="category"
                     dataKey="driver"
                     tick={{ fontSize: 10 }}
-                    width={150}
+                    width={172}
                     axisLine={false}
                     tickLine={false}
                     // Full name is still on hover (tooltip) and for screen
                     // readers (ChartFigures below) -- this just keeps long,
-                    // properly-spaced names from clipping the plot area.
-                    tickFormatter={(v) => (v.length > 20 ? `${v.slice(0, 19)}…` : v)}
+                    // properly-spaced names from clipping the plot area. The
+                    // cut-off matches the Executive View's copy of this chart
+                    // so the same driver isn't abbreviated two ways.
+                    tickFormatter={(v) => (v.length > 24 ? `${v.slice(0, 23)}…` : v)}
                   />
                   <ReferenceLine x={0} stroke={NEUTRAL_FILL} />
                   <Tooltip

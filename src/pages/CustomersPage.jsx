@@ -263,7 +263,9 @@ export default function CustomersPage() {
         <div className="p-4 border-b border-border space-y-3">
           <div className="flex flex-wrap items-end gap-3">
             <div className="flex-1 min-w-[200px]">
-              <label htmlFor="customer-search" className="block text-[10px] uppercase tracking-wide text-text-tertiary mb-1">
+              {/* Same label treatment as the two Selects beside it -- this
+                  row read as three controls in two different type styles. */}
+              <label htmlFor="customer-search" className="block text-sm font-medium text-text-secondary mb-1.5">
                 Search
               </label>
               <div className="relative">
@@ -278,30 +280,37 @@ export default function CustomersPage() {
                 />
               </div>
             </div>
-            <Select
-              label="Risk tier"
-              value={risk}
-              onChange={(e) => updateParams({ risk: e.target.value, page: null })}
-              options={[
-                { value: 'all', label: 'All risk tiers' },
-                { value: 'critical', label: 'Critical (80%+)' },
-                { value: 'high', label: 'High (60–79%)' },
-                { value: 'medium', label: 'Medium (35–59%)' },
-                { value: 'low', label: 'Low (under 35%)' },
-              ]}
-              placeholder=""
-            />
-            <Select
-              label="Account status"
-              value={status}
-              onChange={(e) => updateParams({ status: e.target.value, page: null })}
-              options={[
-                { value: 'all', label: 'All statuses' },
-                { value: 'active', label: 'Active' },
-                { value: 'at-risk', label: 'At risk' },
-              ]}
-              placeholder=""
-            />
+            {/* Fixed, equal widths: left to size themselves the two filters
+                came out different widths from their longest option, which
+                reads as a misaligned row rather than a pair. */}
+            <div className="w-full sm:w-52">
+              <Select
+                label="Risk tier"
+                value={risk}
+                onChange={(e) => updateParams({ risk: e.target.value, page: null })}
+                options={[
+                  { value: 'all', label: 'All risk tiers' },
+                  { value: 'critical', label: 'Critical (80%+)' },
+                  { value: 'high', label: 'High (60–79%)' },
+                  { value: 'medium', label: 'Medium (35–59%)' },
+                  { value: 'low', label: 'Low (under 35%)' },
+                ]}
+                placeholder=""
+              />
+            </div>
+            <div className="w-full sm:w-52">
+              <Select
+                label="Account status"
+                value={status}
+                onChange={(e) => updateParams({ status: e.target.value, page: null })}
+                options={[
+                  { value: 'all', label: 'All statuses' },
+                  { value: 'active', label: 'Active' },
+                  { value: 'at-risk', label: 'At risk' },
+                ]}
+                placeholder=""
+              />
+            </div>
           </div>
 
           <div className="flex items-center gap-2 flex-wrap min-h-[24px]" aria-live="polite">

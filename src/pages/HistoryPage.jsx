@@ -83,10 +83,13 @@ function DatasetRow({ record, isActive, onOpen, opening, onDelete, deleting, pre
         </Badge>
       </div>
 
-      <dl className="grid grid-cols-2 sm:grid-cols-4 gap-4 mt-4">
+      {/* Three columns, not four: Recall was removed at the user's request —
+          a model-quality metric is not what someone is deciding between
+          datasets on, and this row is for telling them apart. The backend
+          still returns it; nothing here reads it. */}
+      <dl className="grid grid-cols-2 sm:grid-cols-3 gap-4 mt-4">
         <Fact label="Rows" value={record.rowCount != null ? formatNumber(record.rowCount) : '—'} />
         <Fact label="Columns" value={record.columnCount != null ? formatNumber(record.columnCount) : '—'} />
-        <Fact label="Recall" value={record.metrics?.recall != null ? `${(record.metrics.recall * 100).toFixed(0)}%` : '—'} />
         <Fact label="First uploaded" value={formatDate(record.uploadedAt)} />
       </dl>
 

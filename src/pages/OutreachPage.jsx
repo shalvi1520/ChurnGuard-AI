@@ -485,7 +485,7 @@
 //           <div className="min-w-0">
 //             <p className="text-sm font-medium text-text-primary">Nothing here sends itself.</p>
 //             <p className="text-xs text-text-tertiary mt-1">
-//               Click "Approve & Send" to deliver it — ChurnGuard only contacts a customer after a human reviews
+//               Click "Approve and Send" to deliver it — ChurnGuard only contacts a customer after a human reviews
 //               and approves the message here.
               
               
@@ -970,22 +970,32 @@ export default function OutreachPage() {
                   <CardTitle>What has happened to this draft</CardTitle>
                   <p className="text-xs text-text-tertiary mt-1">A record of who did what, and when.</p>
                 </CardHeader>
-                <div className="space-y-2">
-                  {(selectedEmail.auditTrail || []).map((entry, i) => (
-                    <div key={i} className="flex items-center gap-3 py-1.5">
-                      <div className="w-6 h-6 rounded-full bg-bg-tertiary flex items-center justify-center shrink-0">
-                        {entry.action.includes('generated') ? <Sparkles size={11} className="text-accent" /> :
-                         entry.action.includes('Approved') ? <CheckCircle size={11} className="text-risk-low" /> :
-                         <Clock size={11} className="text-text-tertiary" />}
+                {/* An empty trail is a real state (a draft the backend
+                    recorded no events for) -- say so rather than leaving the
+                    card looking like it failed to load. */}
+                {selectedEmail.auditTrail?.length ? (
+                  <div className="space-y-2">
+                    {selectedEmail.auditTrail.map((entry, i) => (
+                      <div key={i} className="flex items-center gap-3 py-1.5">
+                        <div className="w-6 h-6 rounded-full bg-bg-tertiary flex items-center justify-center shrink-0">
+                          {entry.action.includes('generated') ? <Sparkles size={11} className="text-accent" /> :
+                           entry.action.includes('Approved') ? <CheckCircle size={11} className="text-risk-low" /> :
+                           <Clock size={11} className="text-text-tertiary" />}
+                        </div>
+                        <div>
+                          <span className="text-xs text-text-primary font-medium">{entry.action}</span>
+                          <span className="text-xs text-text-tertiary ml-2">by {entry.user}</span>
+                        </div>
+                        <span className="text-[10px] text-text-tertiary ml-auto">{formatRelativeDate(entry.timestamp)}</span>
                       </div>
-                      <div>
-                        <span className="text-xs text-text-primary font-medium">{entry.action}</span>
-                        <span className="text-xs text-text-tertiary ml-2">by {entry.user}</span>
-                      </div>
-                      <span className="text-[10px] text-text-tertiary ml-auto">{formatRelativeDate(entry.timestamp)}</span>
-                    </div>
-                  ))}
-                </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-xs text-text-tertiary leading-relaxed">
+                    Nothing recorded for this draft yet. Editing, approving and sending it will
+                    show up here, and on the Activity page.
+                  </p>
+                )}
               </Card>
             </>
           ) : (
@@ -1001,7 +1011,7 @@ export default function OutreachPage() {
           <div className="min-w-0">
             <p className="text-sm font-medium text-text-primary">Nothing here sends itself.</p>
             <p className="text-xs text-text-tertiary mt-1">
-              Click "Approve & Send" to deliver it — ChurnGuard only contacts a customer after a human reviews
+              Click "Approve and Send" to deliver it — ChurnGuard only contacts a customer after a human reviews
               and approves the message here.
             </p>
           </div>

@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { motion } from 'framer-motion';
-import { User, Building2, Bell, Shield, Palette, Save, LogOut } from 'lucide-react';
+import { User, Building2, Shield, Palette, Save, LogOut } from 'lucide-react';
 import Card, { CardHeader, CardTitle } from '../components/ui/Card';
 import Button from '../components/ui/Button';
 import Input from '../components/ui/Input';
@@ -14,10 +14,15 @@ import { useNavigate } from 'react-router-dom';
 // Data lives in Data Management and History, not here. The old "Data source"
 // and "Data preferences" tabs were removed: the first restated an environment
 // variable, the second collected values nothing read.
+//
+// Notifications is gone for the same reason, one step further on: the product
+// has no notification delivery, so a page of toggles was a promise nothing
+// kept. The backend/demo notification code is untouched -- this is a UI
+// visibility decision, not a teardown. Re-adding the tab means shipping the
+// delivery behind it first.
 const tabs = [
   { id: 'profile', label: 'Profile', icon: User },
   { id: 'organization', label: 'Organization', icon: Building2 },
-  { id: 'notifications', label: 'Notifications', icon: Bell },
   { id: 'security', label: 'Security', icon: Shield },
   { id: 'appearance', label: 'Appearance', icon: Palette },
 ];
@@ -33,13 +38,6 @@ export default function SettingsPage() {
     title: user?.title || '',
     company: user?.company || '',
   });
-  const [notifPrefs, setNotifPrefs] = useState({
-    riskAlerts: true,
-    outreachUpdates: true,
-    dataProcessing: true,
-    weeklyDigest: false,
-    emailNotifs: true,
-  });
 
   const handleSave = () => {
     addToast({ type: 'success', message: 'Settings saved successfully' });
@@ -53,19 +51,27 @@ export default function SettingsPage() {
   };
 
   return (
-    <div className="space-y-6">
+    // Capped to the width its content actually needs: every panel here is a
+    // short form, and a tab rule stretched across a wide monitor above a
+    // half-empty card reads as an unfinished page.
+    <div className="space-y-6 max-w-3xl">
       <div>
         <h1 className="text-xl font-bold text-text-primary tracking-tight">Settings</h1>
-        <p className="text-sm text-text-tertiary mt-0.5">Manage your account, preferences, and integrations.</p>
+        <p className="text-sm text-text-secondary mt-1">Your account, your organization, and how ChurnGuard looks on this device.</p>
       </div>
 
       <Tabs tabs={tabs} defaultTab="profile" onChange={setActiveTab} />
 
-      <motion.div key={activeTab} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.2 }}>
+      <motion.div
+        key={activeTab}
+        initial={{ opacity: 0, y: 10 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.2 }}
+      >
         {activeTab === 'profile' && (
           <Card>
             <CardHeader><CardTitle>Profile Information</CardTitle></CardHeader>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 max-w-2xl">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <Input label="Full Name" value={profile.name} onChange={(e) => setProfile(p => ({ ...p, name: e.target.value }))} />
               <Input label="Email" type="email" value={profile.email} onChange={(e) => setProfile(p => ({ ...p, email: e.target.value }))} />
               <Input label="Job Title" value={profile.title} onChange={(e) => setProfile(p => ({ ...p, title: e.target.value }))} />
@@ -96,36 +102,16 @@ export default function SettingsPage() {
         {activeTab === 'organization' && (
           <Card>
             <CardHeader><CardTitle>Organization</CardTitle></CardHeader>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 max-w-2xl">
-              <Input label="Organization Name" value="ChurnGuard" />
-              <Input label="Industry" value="SaaS / Technology" />
-              <Select label="Plan" options={[{ value: 'enterprise', label: 'Enterprise' }, { value: 'professional', label: 'Professional' }]} value="enterprise" />
-              <Input label="Team Size" value="12" />
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {/* Uncontrolled (defaultValue, not value): with `value` and no
+                  onChange these render as permanently read-only fields and
+                  React warns about it on every mount. */}
+              <Input label="Organization Name" defaultValue="ChurnGuard" />
+              <Input label="Industry" defaultValue="SaaS / Technology" />
+              <Select label="Plan" options={[{ value: 'enterprise', label: 'Enterprise' }, { value: 'professional', label: 'Professional' }]} defaultValue="enterprise" placeholder="" />
+              <Input label="Team Size" defaultValue="12" />
             </div>
             <Button icon={Save} onClick={handleSave} className="mt-6">Save Changes</Button>
-          </Card>
-        )}
-
-        {activeTab === 'notifications' && (
-          <Card>
-            <CardHeader><CardTitle>Notification Preferences</CardTitle></CardHeader>
-            <div className="space-y-4 max-w-lg">
-              {Object.entries(notifPrefs).map(([key, value]) => (
-                <div key={key} className="flex items-center justify-between py-2">
-                  <div>
-                    <p className="text-sm font-medium text-text-primary">{key.replace(/([A-Z])/g, ' $1').replace(/^./, s => s.toUpperCase())}</p>
-                    <p className="text-xs text-text-tertiary">Receive notifications for {key.replace(/([A-Z])/g, ' $1').toLowerCase()}</p>
-                  </div>
-                  <button
-                    onClick={() => setNotifPrefs(p => ({ ...p, [key]: !value }))}
-                    className={`w-10 h-5 rounded-full transition-colors cursor-pointer ${value ? 'bg-accent' : 'bg-bg-tertiary'}`}
-                  >
-                    <div className={`w-4 h-4 rounded-full bg-white transition-transform mx-0.5 ${value ? 'translate-x-5' : ''}`} />
-                  </button>
-                </div>
-              ))}
-            </div>
-            <Button icon={Save} onClick={handleSave} className="mt-6">Save Preferences</Button>
           </Card>
         )}
 

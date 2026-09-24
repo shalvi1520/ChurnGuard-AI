@@ -84,7 +84,7 @@ export const METRICS = {
   impactScore: {
     label: 'Impact Score',
     description: 'How much this factor drives the account\'s risk, 0–100',
-    help: 'This driver\'s SHAP effect on the account\'s score, scaled against the account\'s single strongest driver.',
+    help: 'How strongly this factor moved the account\'s score, measured against the account\'s single strongest factor — so the strongest one is always 100.',
   },
 
   // ---------- Charts and analysis ----------
@@ -109,9 +109,9 @@ export const METRICS = {
     help: 'Drivers are ranked by their real contribution to the model\'s predictions for customers it already flags as high-risk or worse — not diluted by your healthy majority, and not guesswork. Orange factors raise risk, green ones lower it, and a longer bar means a bigger effect. A driver dominating this list points to a structural fix — pricing, onboarding, a specific plan — rather than one-by-one outreach. Drivers for one specific account live on the Explainability page.',
   },
   shapContribution: {
-    label: 'Feature Contributions',
-    description: 'Powered by SHAP, a widely trusted technique for explaining individual model predictions',
-    help: 'Each bar is one factor\'s real SHAP effect on this customer\'s score. Bars to the right push risk up, bars to the left pull it down, and longer bars matter more.',
+    label: 'Factors Affecting Churn Risk',
+    description: 'What raised this customer\'s risk score, what lowered it, and by how much',
+    help: 'Each bar is one factor\'s measured effect on this customer\'s score. Bars to the right push risk up, bars to the left pull it down, and longer bars matter more. Calculated with SHAP, a standard method for explaining one prediction.',
   },
   riskByPlan: {
     label: 'Risk by Contract Type',
